@@ -42,8 +42,8 @@ D3D12App::D3D12App(HINSTANCE hInstance) : camera(XMFLOAT3(0.0f, 3.0f, -10.0f))
     hwnd = NULL;
     WindowName = L"3D12D_PBR_Render";
     WindowTitle = L"PBR IBL Model Viewer";
-    Width = 1920;
-    Height = 1200;
+    Width = 2560;
+    Height = 1600;
     FullScreen = false;
     Running = true;
 
@@ -159,7 +159,7 @@ bool D3D12App::InitD3D()
     if (!m_pipelineManager.Initialize(&m_deviceContext, Width, Height, frameBufferCount)) return false;
 
     // Stream Assets & Build IBL: Load 3D models and HDR textures into VRAM and bake IBL components
-    auto sceneData = Assets::GetSniperAlleyScene();
+    auto sceneData = Assets::GetPerformanceTestScene();
     if (!m_resourceManager.LoadAssets(&m_deviceContext, sceneData, frameBufferCount)) return false;
     m_resourceManager.InitIBL(&m_deviceContext, currentHDRPath.c_str());
 

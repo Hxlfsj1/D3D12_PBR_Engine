@@ -151,7 +151,7 @@ public:
         for (int i = 0; i < frameBufferCount; ++i)
         {
             auto prop = CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_UPLOAD);
-            auto buf = CD3DX12_RESOURCE_DESC::Buffer(1024 * 64);
+            auto buf = CD3DX12_RESOURCE_DESC::Buffer(2048 * 2048);
 
             dc->GetDevice()->CreateCommittedResource(&prop, D3D12_HEAP_FLAG_NONE, &buf, D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&constantBufferUploadHeap[i]));
             constantBufferUploadHeap[i]->Map(0, nullptr, reinterpret_cast<void**>(&cbvGPUAddress[i]));
