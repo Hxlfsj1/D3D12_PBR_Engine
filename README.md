@@ -78,6 +78,42 @@ By default, Visual Studio tries to compile `.hlsl` files during the build proces
 
 ---
 
+## 🔄 How to Change the 3D Model or Skybox
+
+The scene configuration is hardcoded in `Assets.h` for simplicity. You can easily swap out the default model and HDR environment.
+
+1. **Add your asset files:**
+   * Drop your 3D model into the `Models/` folder. **(⚠️ Note: The model MUST be in `.glb` format, the loader will reject other formats).**
+   * Drop your HDR skybox image into the `HDRs/` folder.
+2. **Edit `Assets.h`:**
+   Open `Assets.h` and update the file paths and transform data (Position, Rotation, Scale):
+
+   ```cpp
+   class Assets {
+   public:
+       // Change Skybox
+       static const char* GetSkyboxPath() {
+           return "HDRs/your_new_skybox.hdr"; // <-- Update this line
+       }
+
+       // Change Model(s)
+       static std::vector<InstanceDesc> GetSniperAlleyScene() {
+           return {
+               {
+                   "My_Custom_Model",
+                   "Models/your_new_model.glb", // <-- Update this line
+                   { 0.0f, 0.0f, 0.0f }, // Position (X, Y, Z)
+                   { 0.0f, 0.0f, 0.0f }, // Rotation (Roll, Pitch, Yaw)
+                   { 1.0f, 1.0f, 1.0f }  // Scale (X, Y, Z)
+               }
+           };
+       }
+   };
+   ```
+3. **Rebuild (F5)** to see your new scene!
+
+---
+
 ## 🚀 Build and Run
 
 1. Ensure your Visual Studio solution platform is set to **x64**.
