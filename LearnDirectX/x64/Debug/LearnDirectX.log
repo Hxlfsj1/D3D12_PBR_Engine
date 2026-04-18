@@ -1,0 +1,16 @@
+﻿  PBR_Render.cpp
+  pbrmaterial.h is deprecated. Please update to PBR materials in materials.h and glTF-specific items in GltfMaterial.h
+D:\项目\LearnDirectX\IBLBaker.h(293,28): warning C4244: “初始化”: 从“double”转换到“float”，可能丢失数据
+  (编译源文件“PBR_Render.cpp”)
+  
+D:\项目\LearnDirectX\IBLBaker.h(294,29): warning C4244: “初始化”: 从“double”转换到“float”，可能丢失数据
+  (编译源文件“PBR_Render.cpp”)
+  
+D:\项目\LearnDirectX\SceneObject.h(8,8): warning C4099: “Model”: 类型名称以前使用“class”现在使用的是“struct”
+  (编译源文件“PBR_Render.cpp”)
+      D:\项目\LearnDirectX\PBR_Model.h(136,7):
+      参见“Model”的声明
+  
+  LearnDirectX.vcxproj -> D:\项目\LearnDirectX\x64\Debug\LearnDirectX.exe
+  'pwsh.exe' 不是内部或外部命令，也不是可运行的程序
+  或批处理文件。

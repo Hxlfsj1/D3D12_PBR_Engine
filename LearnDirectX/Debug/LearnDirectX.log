@@ -1,0 +1,15 @@
+﻿  1.CreateWindow.cpp
+  2.DrawBlueScreen.cpp
+  3DrawAShape.cpp
+  4.DepthTest.cpp
+  5.ConstantBuffers.cpp
+  6.DrawCube.cpp
+  Mesh.cpp
+D:\项目\LearnDirectX\Mesh.cpp(1,1): warning C4819: 该文件包含不能在当前代码页(936)中表示的字符。请将该文件保存为 Unicode 格式以防止数据丢失
+  正在生成代码...
+Mesh.obj : error LNK2019: 无法解析的外部符号 "public: __thiscall Assimp::Importer::Importer(void)" (??0Importer@Assimp@@QAE@XZ)，函数 _WinMain@16 中引用了该符号
+Mesh.obj : error LNK2019: 无法解析的外部符号 "public: __thiscall Assimp::Importer::~Importer(void)" (??1Importer@Assimp@@QAE@XZ)，函数 _WinMain@16 中引用了该符号
+Mesh.obj : error LNK2019: 无法解析的外部符号 "public: struct aiScene const * __thiscall Assimp::Importer::ReadFile(char const *,unsigned int)" (?ReadFile@Importer@Assimp@@QAEPBUaiScene@@PBDI@Z)，函数 _WinMain@16 中引用了该符号
+Mesh.obj : error LNK2019: 无法解析的外部符号 "public: char const * __thiscall Assimp::Importer::GetErrorString(void)const " (?GetErrorString@Importer@Assimp@@QBEPBDXZ)，函数 _WinMain@16 中引用了该符号
+MSVCRTD.lib(exe_main.obj) : error LNK2019: 无法解析的外部符号 _main，函数 "int __cdecl invoke_main(void)" (?invoke_main@@YAHXZ) 中引用了该符号
+D:\项目\LearnDirectX\Debug\LearnDirectX.exe : fatal error LNK1120: 5 个无法解析的外部命令

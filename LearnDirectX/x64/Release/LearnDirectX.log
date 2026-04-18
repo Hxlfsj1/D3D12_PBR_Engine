@@ -1,0 +1,15 @@
+﻿  1.CreateWindow.cpp
+  2.DrawBlueScreen.cpp
+  3DrawAShape.cpp
+  4.DepthTest.cpp
+  5.ConstantBuffers.cpp
+  6.DrawCube.cpp
+  PBR_Render.cpp
+  pbrmaterial.h is deprecated. Please update to PBR materials in materials.h and glTF-specific items in GltfMaterial.h
+D:\项目\LearnDirectX\PBR_Shader.h(1,1): warning C4819: 该文件包含不能在当前代码页(936)中表示的字符。请将该文件保存为 Unicode 格式以防止数据丢失
+  (编译源文件“PBR_Render.cpp”)
+  
+D:\项目\LearnDirectX\PBR_Render.cpp(834,24): warning C4244: “初始化”: 从“double”转换到“float”，可能丢失数据
+D:\项目\LearnDirectX\PBR_Render.cpp(835,25): warning C4244: “初始化”: 从“double”转换到“float”，可能丢失数据
+MSVCRT.lib(exe_main.obj) : error LNK2001: 无法解析的外部符号 main
+D:\项目\LearnDirectX\x64\Release\LearnDirectX.exe : fatal error LNK1120: 1 个无法解析的外部命令

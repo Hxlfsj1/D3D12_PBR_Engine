@@ -1,0 +1,7 @@
+<Solution>
+  <Configurations>
+    <Platform Name="x64" />
+    <Platform Name="x86" />
+  </Configurations>
+  <Project Path="LearnDirectX.vcxproj" Id="94b5c74b-94cb-436b-af74-2734687aae70" />
+</Solution>
