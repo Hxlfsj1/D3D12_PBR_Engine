@@ -99,6 +99,12 @@
     <ClInclude Include="stb_image.h">
       <Filter>头文件\ThirdParty</Filter>
     </ClInclude>
+    <ClInclude Include="tiny_gltf.h">
+      <Filter>头文件\ThirdParty</Filter>
+    </ClInclude>
+    <ClInclude Include="json.hpp">
+      <Filter>头文件\ThirdParty</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="PBR_Render.cpp">

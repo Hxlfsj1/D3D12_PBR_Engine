@@ -1,7 +1,5 @@
-cbuffer ConstantBuffer : register(b0)
+cbuffer PassConstants : register(b0)
 {
-    float4x4 wvpMat;
-    float4x4 worldMat;
     float3 camPos;
     float padding1;
     float3 lightPos;
@@ -13,9 +11,17 @@ cbuffer ConstantBuffer : register(b0)
 Texture2D tAlbedo : register(t0);
 Texture2D tNormal : register(t1);
 Texture2D tMR : register(t2);
-TextureCube tIrradiance : register(t3);
+Texture2D tEmissive : register(t3);
 TextureCube tPrefilter : register(t4);
 Texture2D tBRDF : register(t5);
+
+struct InstanceData
+{
+    float4x4 wvpMat;
+    float4x4 worldMat;
+    float4x4 normalMat;
+};
+StructuredBuffer<InstanceData> gInstanceData : register(t6);
 
 SamplerState s1 : register(s0);
 
@@ -24,6 +30,7 @@ cbuffer MaterialFlags : register(b1)
     int hasAlbedo;
     int hasNormal;
     int hasORM;
+    int hasEmissive;
 };
 
 cbuffer SHBuffer : register(b2)
@@ -40,6 +47,7 @@ struct VS_INPUT
     float3 bitangent : BITANGENT;
     int4 boneIds : BLENDINDICES;
     float4 weights : BLENDWEIGHT;
+    uint instanceID : SV_InstanceID;
 };
 
 struct VS_OUTPUT
@@ -59,13 +67,18 @@ VS_OUTPUT VSMain(VS_INPUT input)
 {
     VS_OUTPUT output;
     
-    // Pre-calculate the MVP matrix on the CPU and upload it via the Upload Heap, bypassing in-shader computation
+    // Get model's matrix by its ID
+    float4x4 wvpMat = gInstanceData[input.instanceID].wvpMat;
+    float4x4 worldMat = gInstanceData[input.instanceID].worldMat;
+    float4x4 normalMat = gInstanceData[input.instanceID].normalMat;
+
     output.pos = mul(float4(input.pos, 1.0f), wvpMat);
     output.worldPos = mul(float4(input.pos, 1.0f), worldMat).xyz;
     
-    output.normal = normalize(mul(input.normal, (float3x3) worldMat));
-    output.tangent = normalize(mul(input.tangent, (float3x3) worldMat));
-    output.bitangent = normalize(mul(input.bitangent, (float3x3) worldMat));
+    // Completely fix the non-uniform scaling issue for normals by implementing a dedicated Normal Matrix
+    output.normal = normalize(mul(input.normal, (float3x3) normalMat));
+    output.tangent = normalize(mul(input.tangent, (float3x3) normalMat));
+    output.bitangent = normalize(mul(input.bitangent, (float3x3) normalMat));
     output.texCoord = input.texCoord;
     
     return output;
@@ -203,7 +216,9 @@ float4 PSMain(VS_OUTPUT input) : SV_TARGET
     float3 specular_IBL = prefilteredColor * (F0 * brdf.x + brdf.y);
     
     float3 ambient = (kD_IBL * diffuse_IBL + specular_IBL) * ao;
-    float3 color = ambient + Lo;
+    // Add emissive (if applicable)
+    float3 emissive = hasEmissive ? pow(tEmissive.Sample(s1, input.texCoord).rgb, 2.2) : float3(0.0, 0.0, 0.0);
+    float3 color = ambient + Lo + emissive;
 
     // ACES Filmic Tone Mapping
     const float a = 2.51;

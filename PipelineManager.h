@@ -125,7 +125,7 @@ private:
         }
 
         // Allocate 8 root parameters
-        D3D12_ROOT_PARAMETER rootParameters[9];
+        D3D12_ROOT_PARAMETER rootParameters[10];
 
         // Global Constant Matrix (Root CBV), typically the MVP matrix
         rootParameters[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
@@ -153,13 +153,18 @@ private:
         rootParameters[8].Descriptor.RegisterSpace = 0;
         rootParameters[8].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
 
+        rootParameters[9].ParameterType = D3D12_ROOT_PARAMETER_TYPE_SRV;
+        rootParameters[9].Descriptor.ShaderRegister = 6;
+        rootParameters[9].Descriptor.RegisterSpace = 0;
+        rootParameters[9].ShaderVisibility = D3D12_SHADER_VISIBILITY_VERTEX;
+
         // Define static samplers for texture filtering and addressing
         D3D12_STATIC_SAMPLER_DESC sampler = CD3DX12_STATIC_SAMPLER_DESC(0, D3D12_FILTER_ANISOTROPIC);
         sampler.MaxAnisotropy = 16;
 
         // Serialize the Root Signature
         CD3DX12_ROOT_SIGNATURE_DESC rsDesc;
-        rsDesc.Init(9, rootParameters, 1, &sampler, D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT);
+        rsDesc.Init(10, rootParameters, 1, &sampler, D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT);
 
         ComPtr<ID3DBlob> rsBlob;
         HRESULT hr = D3D12SerializeRootSignature(&rsDesc, D3D_ROOT_SIGNATURE_VERSION_1, &rsBlob, nullptr);

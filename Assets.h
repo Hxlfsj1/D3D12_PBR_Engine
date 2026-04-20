@@ -27,19 +27,12 @@ public:
         return
         {
             {
-                "Sniper_MP5_1",
-                "Models/MP5.glb",
+                "First",
+                "Models/Sn_Tashkent_of_Azure_Lane.glb",
                 { 0.0f, 0.0f, 0.0f },
                 { 0.0f, 0.0f, 0.0f },
                 { 1.0f, 1.0f, 1.0f }
             },
-            {
-                "Sniper_MP5_2",
-                "Models/MP5.glb",
-                { 5.0f, 0.0f, -2.0f },
-                { 0.0f, 1.5708f, 0.0f },
-                { 1.2f, 1.2f, 1.2f }
-            }
         };
     }
 

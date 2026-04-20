@@ -7,6 +7,10 @@
 #define D3D12_MODEL_H
 
 #include "stdafx.h"
+#define TINYGLTF_IMPLEMENTATION
+#define TINYGLTF_NO_STB_IMAGE_WRITE
+#include "tiny_gltf.h"
+
 #include <wrl/client.h>
 #include <ResourceUploadBatch.h>
 #include <WICTextureLoader.h>
@@ -50,6 +54,9 @@ inline XMMATRIX AssimpToDXMatrix(const aiMatrix4x4& aiMat)
     );
 }
 
+// Responsible for managing CPU-side 3D model geometry data (vertices and indices), 
+// safely and efficiently uploading it to high-speed GPU VRAM, 
+// and providing a ready-to-use interface for on-demand rendering
 class Mesh
 {
 public:
@@ -62,18 +69,19 @@ public:
 
     Mesh(ID3D12Device* device, ID3D12GraphicsCommandList* cmdList, std::vector<Vertex>& vertices, std::vector<unsigned int>& indices, std::vector<Texture>& textures)
     {
-        this->vertices = vertices;
-        this->indices = indices;
-        this->textures = textures;
+        this->vertices = std::move(vertices);
+        this->indices = std::move(indices);
+        this->textures = std::move(textures);
         setupMesh(device, cmdList);
     }
 
-    void Draw(ID3D12GraphicsCommandList* cmdList)
+    void Draw(ID3D12GraphicsCommandList* cmdList, UINT instanceCount = 1)
     {
         cmdList->IASetVertexBuffers(0, 1, &vertexBufferView);
         cmdList->IASetIndexBuffer(&indexBufferView);
         cmdList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-        cmdList->DrawIndexedInstanced(static_cast<UINT>(indices.size()), 1, 0, 0, 0);
+
+        cmdList->DrawIndexedInstanced(static_cast<UINT>(indices.size()), instanceCount, 0, 0, 0);
     }
 
 private:
@@ -133,6 +141,10 @@ private:
     }
 };
 
+// Acts as the factory and manager for an entire 3D model.
+// It reads the GLB file into memory, coordinates Assimp (for geometry) 
+// and TinyGLTF (for materials) to parse the scene graph, and bakes 
+// the static transforms into a collection of GPU-ready Mesh objects
 class Model
 {
 public:
@@ -166,19 +178,40 @@ public:
     }
 
 private:
+    tinygltf::Model gltfModel;
+
     void loadModel(ID3D12Device* device, ID3D12GraphicsCommandList* cmdList, DirectX::ResourceUploadBatch& upload, std::string const& path)
     {
+        std::vector<unsigned char> modelData = ReadFileToBuffer(path);
+        if (modelData.empty())
+        {
+            OutputDebugStringA("Disk read failed, file may not exist\n");
+            return;
+        }
+
+        tinygltf::TinyGLTF loader;
+        std::string err, warn;
+
+        bool ret = loader.LoadBinaryFromMemory(&gltfModel, &err, &warn, modelData.data(), static_cast<unsigned int>(modelData.size()));
+
+        if (!ret)
+        {
+            OutputDebugStringA(("TinyGLTF parsing failed: " + err + "\n").c_str());
+        }
+
         Assimp::Importer importer;
         unsigned int flags = aiProcess_Triangulate | aiProcess_GenSmoothNormals |
             aiProcess_CalcTangentSpace | aiProcess_JoinIdenticalVertices |
             aiProcess_MakeLeftHanded | aiProcess_FlipWindingOrder | aiProcess_FlipUVs;
 
-        const aiScene* scene = importer.ReadFile(path, flags);
+        const aiScene* scene = importer.ReadFileFromMemory(modelData.data(), modelData.size(), flags, path.c_str());
 
         if (!scene || scene->mFlags & AI_SCENE_FLAGS_INCOMPLETE || !scene->mRootNode)
         {
+            OutputDebugStringA("Assimp memory parsing failed\n");
             return;
         }
+
         processNode(device, cmdList, upload, scene->mRootNode, scene, XMMatrixIdentity());
     }
 
@@ -203,6 +236,8 @@ private:
         std::vector<unsigned int> indices;
         std::vector<Texture> textures;
 
+        DirectX::XMMATRIX invTranspose = DirectX::XMMatrixTranspose(DirectX::XMMatrixInverse(nullptr, nodeTransform));
+
         for (unsigned int i = 0; i < mesh->mNumVertices; i++)
         {
             Vertex vertex = {};
@@ -214,7 +249,7 @@ private:
             if (mesh->HasNormals())
             {
                 XMVECTOR norm = XMVectorSet(mesh->mNormals[i].x, mesh->mNormals[i].y, mesh->mNormals[i].z, 0.0f);
-                norm = XMVector3Normalize(XMVector4Transform(norm, nodeTransform));
+                norm = XMVector3Normalize(XMVector3TransformNormal(norm, invTranspose));
                 XMStoreFloat3(&vertex.Normal, norm);
             }
 
@@ -223,11 +258,11 @@ private:
                 vertex.TexCoords = { mesh->mTextureCoords[0][i].x, mesh->mTextureCoords[0][i].y };
 
                 XMVECTOR tan = XMVectorSet(mesh->mTangents[i].x, mesh->mTangents[i].y, mesh->mTangents[i].z, 0.0f);
-                tan = XMVector3Normalize(XMVector4Transform(tan, nodeTransform));
+                tan = XMVector3Normalize(XMVector3TransformNormal(tan, invTranspose));
                 XMStoreFloat3(&vertex.Tangent, tan);
 
                 XMVECTOR bitan = XMVectorSet(mesh->mBitangents[i].x, mesh->mBitangents[i].y, mesh->mBitangents[i].z, 0.0f);
-                bitan = XMVector3Normalize(XMVector4Transform(bitan, nodeTransform));
+                bitan = XMVector3Normalize(XMVector3TransformNormal(bitan, invTranspose));
                 XMStoreFloat3(&vertex.Bitangent, bitan);
             }
             vertices.push_back(vertex);
@@ -241,59 +276,69 @@ private:
             }
         }
 
-        if (mesh->mMaterialIndex >= 0)
+        if (mesh->mMaterialIndex >= 0 && mesh->mMaterialIndex < gltfModel.materials.size())
         {
-            aiMaterial* material = scene->mMaterials[mesh->mMaterialIndex];
+            auto& gltfMat = gltfModel.materials[mesh->mMaterialIndex];
 
-            loadMaterialTextures(device, upload, material, aiTextureType_DIFFUSE, "texture_diffuse", textures, scene);
-            loadMaterialTextures(device, upload, material, aiTextureType_NORMALS, "texture_normal", textures, scene);
+            LoadGLTFTextureFromIndex(device, upload, gltfMat.pbrMetallicRoughness.baseColorTexture.index, "texture_diffuse", textures, scene);
 
-            loadMaterialTextures(device, upload, material, aiTextureType_UNKNOWN, "texture_metallicRoughness", textures, scene);
-            loadMaterialTextures(device, upload, material, aiTextureType_METALNESS, "texture_metallicRoughness", textures, scene);
-            loadMaterialTextures(device, upload, material, aiTextureType_DIFFUSE_ROUGHNESS, "texture_metallicRoughness", textures, scene);
+            LoadGLTFTextureFromIndex(device, upload, gltfMat.normalTexture.index, "texture_normal", textures, scene);
 
-            if (material->GetTextureCount(aiTextureType_SPECULAR) > 0)
+            LoadGLTFTextureFromIndex(device, upload, gltfMat.pbrMetallicRoughness.metallicRoughnessTexture.index, "texture_metallicRoughness", textures, scene);
+
+            LoadGLTFTextureFromIndex(device, upload, gltfMat.occlusionTexture.index, "texture_ao", textures, scene);
+
+            int emissiveIdx = gltfMat.emissiveTexture.index;
+            bool isUnlit = gltfMat.extensions.find("KHR_materials_unlit") != gltfMat.extensions.end();
+
+            if (emissiveIdx >= 0)
             {
-                loadMaterialTextures(device, upload, material, aiTextureType_SPECULAR, "texture_metallicRoughness", textures, scene);
+                LoadGLTFTextureFromIndex(device, upload, emissiveIdx, "texture_emissive", textures, scene);
             }
-
-            loadMaterialTextures(device, upload, material, aiTextureType_LIGHTMAP, "texture_ao", textures, scene);
+            else if (isUnlit)
+            {
+                LoadGLTFTextureFromIndex(device, upload, gltfMat.pbrMetallicRoughness.baseColorTexture.index, "texture_emissive", textures, scene);
+            }
         }
 
         return Mesh(device, cmdList, vertices, indices, textures);
     }
 
-    void loadMaterialTextures(ID3D12Device* device, DirectX::ResourceUploadBatch& upload, aiMaterial* mat, aiTextureType type, std::string typeName, std::vector<Texture>& textures, const aiScene* scene)
+    void LoadGLTFTextureFromIndex(ID3D12Device* device, DirectX::ResourceUploadBatch& upload, int gltfTextureIndex, std::string typeName, std::vector<Texture>& textures, const aiScene* scene)
     {
-        for (unsigned int i = 0; i < mat->GetTextureCount(type); i++)
+        if (gltfTextureIndex < 0 || gltfTextureIndex >= gltfModel.textures.size())
         {
-            aiString str;
-            mat->GetTexture(type, i, &str);
+            return;
+        }
 
-            bool skip = false;
-            for (unsigned int j = 0; j < textures_loaded.size(); j++)
-            {
-                if (std::strcmp(textures_loaded[j].path.data(), str.C_Str()) == 0)
-                {
-                    textures.push_back(textures_loaded[j]);
-                    skip = true;
-                    break;
-                }
-            }
+        int imageIndex = gltfModel.textures[gltfTextureIndex].source;
+        if (imageIndex < 0 || (unsigned int)imageIndex >= scene->mNumTextures) return;
 
-            if (!skip)
+        std::string fakePath = "*" + std::to_string(imageIndex);
+        bool skip = false;
+
+        for (unsigned int j = 0; j < textures_loaded.size(); j++)
+        {
+            if (textures_loaded[j].path == fakePath)
             {
-                Texture texture;
-                const aiTexture* embeddedTex = scene->GetEmbeddedTexture(str.C_Str());
-                if (embeddedTex)
-                {
-                    TextureFromMemory(device, upload, embeddedTex, texture);
-                    texture.type = typeName;
-                    texture.path = str.C_Str();
-                    textures.push_back(texture);
-                    textures_loaded.push_back(texture);
-                }
+                Texture cachedTexture = textures_loaded[j];
+                cachedTexture.type = typeName;
+                textures.push_back(cachedTexture);
+                skip = true;
+                break;
             }
+        }
+
+        if (!skip)
+        {
+            Texture texture;
+            const aiTexture* embeddedTex = scene->mTextures[imageIndex];
+
+            TextureFromMemory(device, upload, embeddedTex, texture);
+            texture.type = typeName;
+            texture.path = fakePath;
+            textures.push_back(texture);
+            textures_loaded.push_back(texture);
         }
     }
 
@@ -308,6 +353,26 @@ private:
             outTex.Resource.GetAddressOf(),
             true
         );
+    }
+
+    std::vector<unsigned char> ReadFileToBuffer(const std::string& path)
+    {
+        std::ifstream file(path, std::ios::binary | std::ios::ate);
+        if (!file.is_open())
+        {
+            return {};
+        }
+
+        std::streamsize size = file.tellg();
+        file.seekg(0, std::ios::beg);
+
+        std::vector<unsigned char> buffer(size);
+        if (file.read(reinterpret_cast<char*>(buffer.data()), size))
+        {
+            return buffer;
+        }
+
+        return {};
     }
 };
 #endif

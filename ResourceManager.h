@@ -14,6 +14,7 @@
 #include <unordered_map>
 #include <ResourceUploadBatch.h>
 #include <WICTextureLoader.h>
+#include <algorithm>
 
 using Microsoft::WRL::ComPtr;
 
@@ -72,14 +73,17 @@ public:
         unsigned char colorWhite[] = { 255, 255, 255, 255 };
         unsigned char colorFlatNormal[] = { 128, 128, 255, 255 };
         unsigned char colorDefaultORM[] = { 255, 128, 0, 255 };
+        unsigned char colorBlack[] = { 0, 0, 0, 255 };
 
         ComPtr<ID3D12Resource> localAlbedoUpload;
         ComPtr<ID3D12Resource> localNormalUpload;
         ComPtr<ID3D12Resource> localORMUpload;
+        ComPtr<ID3D12Resource> localEmissiveUpload;
 
         CreateDummyTexture(dc->GetDevice(), dc->GetCommandList(), colorWhite, dummyAlbedo, localAlbedoUpload);
         CreateDummyTexture(dc->GetDevice(), dc->GetCommandList(), colorFlatNormal, dummyNormal, localNormalUpload);
         CreateDummyTexture(dc->GetDevice(), dc->GetCommandList(), colorDefaultORM, dummyORM, localORMUpload);
+        CreateDummyTexture(dc->GetDevice(), dc->GetCommandList(), colorBlack, dummyEmissive, localEmissiveUpload);
 
         auto CreateSrvForDummy = [&](ComPtr<ID3D12Resource>& tex, UINT& idx)
             {
@@ -95,6 +99,7 @@ public:
         CreateSrvForDummy(dummyAlbedo, dummyAlbedoIdx);
         CreateSrvForDummy(dummyNormal, dummyNormalIdx);
         CreateSrvForDummy(dummyORM, dummyORMIdx);
+        CreateSrvForDummy(dummyEmissive, dummyEmissiveIdx);
 
         DirectX::ResourceUploadBatch resourceUpload(dc->GetDevice());
         resourceUpload.Begin();
@@ -193,6 +198,11 @@ public:
             dc->GetFence(frameIndex)->SetEventOnCompletion(dc->GetFenceValue(frameIndex), dc->GetFenceEvent());
             WaitForSingleObject(dc->GetFenceEvent(), INFINITE);
         }
+
+        std::sort(m_sceneInstances.begin(), m_sceneInstances.end(), [](const ModelInstance& a, const ModelInstance& b)
+        {
+            return a.pModel < b.pModel;
+        });
 
         return true;
     }
@@ -356,6 +366,11 @@ public:
         return dummyORMIdx;
     }
 
+    UINT GetDummyEmissiveIdx()
+    {
+        return dummyEmissiveIdx;
+    }
+
     UINT GetTextureSrvIdx(ID3D12Resource* tex)
     {
         return textureSrvIndices[tex];
@@ -389,6 +404,9 @@ private:
 
     ComPtr<ID3D12Resource> dummyORM;
     UINT dummyORMIdx;
+
+    ComPtr<ID3D12Resource> dummyEmissive;
+    UINT dummyEmissiveIdx;
 
     std::vector<ComPtr<ID3D12Resource>> constantBufferUploadHeap;
     std::vector<UINT8*> cbvGPUAddress;

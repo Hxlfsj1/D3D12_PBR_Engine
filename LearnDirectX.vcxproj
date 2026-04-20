@@ -139,6 +139,7 @@
     <ClInclude Include="D3D12App.h" />
     <ClInclude Include="IBLBaker.h" />
     <ClInclude Include="InputManager.h" />
+    <ClInclude Include="json.hpp" />
     <ClInclude Include="PBR_Model.h" />
     <ClInclude Include="PBR_Shader.h" />
     <ClInclude Include="PipelineManager.h" />
@@ -147,6 +148,7 @@
     <ClInclude Include="SceneObject.h" />
     <ClInclude Include="stb_image.h" />
     <ClInclude Include="stdafx.h" />
+    <ClInclude Include="tiny_gltf.h" />
     <ClInclude Include="Window.h" />
   </ItemGroup>
   <ItemGroup>

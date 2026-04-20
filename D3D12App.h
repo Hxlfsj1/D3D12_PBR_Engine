@@ -75,24 +75,31 @@ private:
     D3D12_RECT scissorRect;
 
     // Dynamic CPU-to-GPU data payloads updated per frame (Constant Buffers)
-    struct alignas(256) ConstantBufferPerObject
+    struct alignas(256) PassConstants
     {
-        DirectX::XMFLOAT4X4 wvpMat;
-        DirectX::XMFLOAT4X4 worldMat;
         DirectX::XMFLOAT3 camPos;
         float padding1;
         DirectX::XMFLOAT3 lightPos;
         float padding2;
         DirectX::XMFLOAT3 lightColor;
         float padding3;
-        float padTo256[20];
+        float padTo256[52];
     };
 
-    ConstantBufferPerObject cbPerObject;
+    struct InstanceData
+    {
+        DirectX::XMFLOAT4X4 wvpMat;
+        DirectX::XMFLOAT4X4 worldMat;
+        DirectX::XMFLOAT4X4 normalMat;
+    };
 
     // Runtime game state, user input, and spatial transformations
     Camera camera;
     float deltaTime;
+
+    // FPS
+    int frameCount = 0;
+    float timeElapsed = 0.0f;
 };
 
 #endif
