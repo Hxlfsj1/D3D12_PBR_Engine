@@ -28,7 +28,7 @@ public:
         {
             {
                 "First",
-                "Models/Cartoon_Frog.glb",
+                "Models/Sn_Tashkent_of_Azure_Lane.glb",
                 { 0.0f, 0.0f, 0.0f },
                 { 0.0f, 0.0f, 0.0f },
                 { 1.0f, 1.0f, 1.0f }
