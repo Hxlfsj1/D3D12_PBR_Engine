@@ -42,6 +42,7 @@ private:
 
     // Render passes
     void BeginFrame();
+    void DrawShadowMap();
     void DrawPBRModel();
     void DrawSkybox();
     void EndFrame();
@@ -83,7 +84,8 @@ private:
         float padding2;
         DirectX::XMFLOAT3 lightColor;
         float padding3;
-        float padTo256[52];
+        DirectX::XMFLOAT4X4 lightViewProj;
+        float padTo256[36];
     };
 
     struct InstanceData

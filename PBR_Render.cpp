@@ -42,8 +42,8 @@ D3D12App::D3D12App(HINSTANCE hInstance) : camera(XMFLOAT3(0.0f, 3.0f, -10.0f))
     hwnd = NULL;
     WindowName = L"3D12D_PBR_Render";
     WindowTitle = L"PBR IBL Model Viewer";
-    Width = 2560;
-    Height = 1600;
+    Width = 1920;
+    Height = 1200;
     FullScreen = false;
     Running = true;
 
@@ -163,6 +163,8 @@ bool D3D12App::InitD3D()
     if (!m_resourceManager.LoadAssets(&m_deviceContext, sceneData, frameBufferCount)) return false;
     m_resourceManager.InitIBL(&m_deviceContext, currentHDRPath.c_str());
 
+    if (!m_resourceManager.InitShadowResources(&m_deviceContext)) return false;
+    
     viewport = CD3DX12_VIEWPORT(0.0f, 0.0f, (float)Width, (float)Height);
     scissorRect = CD3DX12_RECT(0, 0, Width, Height);
 
@@ -209,6 +211,15 @@ void D3D12App::Update()
     passCb.camPos = camera.Position;
     passCb.lightPos = XMFLOAT3(10.0f, 20.0f, -10.0f);
     passCb.lightColor = XMFLOAT3(500.0f, 500.0f, 500.0f);
+
+    XMVECTOR lightPosVec = XMLoadFloat3(&passCb.lightPos);
+    XMVECTOR lightTarget = XMVectorSet(0.0f, 0.0f, 0.0f, 1.0f);
+    XMVECTOR lightUp = XMVectorSet(0.0f, 1.0f, 0.0f, 0.0f);
+    XMMATRIX lightView = XMMatrixLookAtLH(lightPosVec, lightTarget, lightUp);
+    XMMATRIX lightProj = XMMatrixOrthographicLH(50.0f, 50.0f, 1.0f, 100.0f);
+    XMMATRIX lightViewProj = lightView * lightProj;
+    XMStoreFloat4x4(&passCb.lightViewProj, XMMatrixTranspose(lightViewProj));
+
     memcpy(cbvAddress, &passCb, sizeof(PassConstants));
 
     InstanceData* mappedInstanceData = reinterpret_cast<InstanceData*>(cbvAddress + 256);
@@ -263,6 +274,15 @@ void D3D12App::BeginFrame()
 
 void D3D12App::DrawPBRModel()
 {
+    m_deviceContext.GetCommandList()->RSSetViewports(1, &viewport);
+    m_deviceContext.GetCommandList()->RSSetScissorRects(1, &scissorRect);
+
+    CD3DX12_CPU_DESCRIPTOR_HANDLE rtv = m_pipelineManager.GetRTVHandle(frameIndex);
+    CD3DX12_CPU_DESCRIPTOR_HANDLE dsv = m_pipelineManager.GetDSVHandle();
+    m_deviceContext.GetCommandList()->OMSetRenderTargets(1, &rtv, FALSE, &dsv);
+
+    m_deviceContext.GetCommandList()->SetPipelineState(m_pipelineManager.GetPBR_PSO());
+
     auto& instances = m_resourceManager.GetSceneInstances();
     if (instances.empty()) return;
 
@@ -288,6 +308,8 @@ void D3D12App::DrawPBRModel()
 
     m_deviceContext.GetCommandList()->SetGraphicsRootDescriptorTable(5, CD3DX12_GPU_DESCRIPTOR_HANDLE(hStart, m_resourceManager.GetIblPrefilterIdx(), srvDescSize));
     m_deviceContext.GetCommandList()->SetGraphicsRootDescriptorTable(6, CD3DX12_GPU_DESCRIPTOR_HANDLE(hStart, m_resourceManager.GetIblBRDFIdx(), srvDescSize));
+
+    m_deviceContext.GetCommandList()->SetGraphicsRootDescriptorTable(10, CD3DX12_GPU_DESCRIPTOR_HANDLE(hStart, m_resourceManager.GetShadowSrvIdx(), srvDescSize));
 
     Model* currentModel = nullptr;
     UINT instanceStartOffset = 0;
@@ -374,6 +396,72 @@ void D3D12App::DrawSkybox()
     m_deviceContext.GetCommandList()->DrawInstanced(36, 1, 0, 0);
 }
 
+void D3D12App::DrawShadowMap()
+{
+    auto cmdList = m_deviceContext.GetCommandList();
+
+    CD3DX12_RESOURCE_BARRIER toDepthWrite = CD3DX12_RESOURCE_BARRIER::Transition(
+        m_resourceManager.GetShadowMap(),
+        D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+        D3D12_RESOURCE_STATE_DEPTH_WRITE);
+    cmdList->ResourceBarrier(1, &toDepthWrite);
+
+    cmdList->SetGraphicsRootSignature(m_pipelineManager.GetShadowRootSignature());
+    cmdList->SetPipelineState(m_pipelineManager.GetShadowPSO());
+
+    D3D12_VIEWPORT shadowViewport = { 0.0f, 0.0f, 2048.0f, 2048.0f, 0.0f, 1.0f };
+    D3D12_RECT shadowScissor = { 0, 0, 2048, 2048 };
+    cmdList->RSSetViewports(1, &shadowViewport);
+    cmdList->RSSetScissorRects(1, &shadowScissor);
+
+    CD3DX12_CPU_DESCRIPTOR_HANDLE dsv = m_resourceManager.GetShadowDsvHandle();
+    cmdList->OMSetRenderTargets(0, nullptr, FALSE, &dsv);
+    cmdList->ClearDepthStencilView(dsv, D3D12_CLEAR_FLAG_DEPTH, 1.0f, 0, 0, nullptr);
+
+    D3D12_GPU_VIRTUAL_ADDRESS baseGpuAddress = m_resourceManager.GetCBVGPUAddress(frameIndex);
+    cmdList->SetGraphicsRootConstantBufferView(0, baseGpuAddress);
+    cmdList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+
+    auto& instances = m_resourceManager.GetSceneInstances();
+    Model* currentModel = nullptr;
+    UINT instanceStartOffset = 0;
+    UINT currentInstanceCount = 0;
+
+    for (size_t i = 0; i <= instances.size(); ++i)
+    {
+        bool isEnd = (i == instances.size());
+        Model* thisModel = isEnd ? nullptr : instances[i].pModel;
+
+        if ((isEnd || thisModel != currentModel) && currentInstanceCount > 0 && currentModel != nullptr)
+        {
+            D3D12_GPU_VIRTUAL_ADDRESS srvAddress = baseGpuAddress + 256 + (instanceStartOffset * sizeof(InstanceData));
+            cmdList->SetGraphicsRootShaderResourceView(1, srvAddress);
+
+            for (auto& mesh : currentModel->meshes)
+            {
+                mesh.Draw(cmdList, currentInstanceCount);
+            }
+        }
+
+        if (!isEnd)
+        {
+            if (thisModel != currentModel)
+            {
+                currentModel = thisModel;
+                instanceStartOffset = i;
+                currentInstanceCount = 1;
+            }
+            else currentInstanceCount++;
+        }
+    }
+
+    CD3DX12_RESOURCE_BARRIER toSrv = CD3DX12_RESOURCE_BARRIER::Transition(
+        m_resourceManager.GetShadowMap(),
+        D3D12_RESOURCE_STATE_DEPTH_WRITE,
+        D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+    cmdList->ResourceBarrier(1, &toSrv);
+}
+
 void D3D12App::EndFrame()
 {
     // Define the required framebuffers as 'presentation states' rather than 'canvases'
@@ -390,6 +478,7 @@ void D3D12App::EndFrame()
 void D3D12App::Render()
 {
     BeginFrame();
+    DrawShadowMap();
     DrawPBRModel();
     DrawSkybox();
     EndFrame();

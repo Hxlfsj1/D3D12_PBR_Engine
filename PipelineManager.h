@@ -24,8 +24,8 @@ public:
         if (!CreateDescriptorHeapsAndViews(dc, width, height, frameBufferCount)) return false;
         if (!BuildRootSignature(dc)) return false;
         if (!BuildPipelineStates(dc)) return false;
-
         if (!BuildComputePipeline(dc)) return false;
+        if (!BuildShadowPipeline(dc)) return false;
 
         return true;
     }
@@ -46,6 +46,9 @@ public:
 
     ID3D12RootSignature* GetComputeRootSignature() { return computeRootSignature.Get(); }
     ID3D12PipelineState* GetComputePSO() { return computePSO.Get(); }
+
+    ID3D12RootSignature* GetShadowRootSignature() { return shadowRootSignature.Get(); }
+    ID3D12PipelineState* GetShadowPSO() { return shadowPSO.Get(); }
 
 private:
 
@@ -112,8 +115,8 @@ private:
     // Root Signature: Defines the data binding layout for GPU submissions
     bool BuildRootSignature(RenderDevice* dc)
     {
-        // Define 6 contiguous texture sampling rules
-        D3D12_DESCRIPTOR_RANGE ranges[6];
+        // Define texture sampling rules
+        D3D12_DESCRIPTOR_RANGE ranges[7];
 
         for (int i = 0; i < 6; i++)
         {
@@ -124,8 +127,14 @@ private:
             ranges[i].OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
         }
 
+        ranges[6].RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
+        ranges[6].NumDescriptors = 1;
+        ranges[6].BaseShaderRegister = 7;
+        ranges[6].RegisterSpace = 0;
+        ranges[6].OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
+
         // Allocate 8 root parameters
-        D3D12_ROOT_PARAMETER rootParameters[10];
+        D3D12_ROOT_PARAMETER rootParameters[11];
 
         // Global Constant Matrix (Root CBV), typically the MVP matrix
         rootParameters[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
@@ -158,13 +167,28 @@ private:
         rootParameters[9].Descriptor.RegisterSpace = 0;
         rootParameters[9].ShaderVisibility = D3D12_SHADER_VISIBILITY_VERTEX;
 
+        rootParameters[10].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+        rootParameters[10].DescriptorTable.NumDescriptorRanges = 1;
+        rootParameters[10].DescriptorTable.pDescriptorRanges = &ranges[6];
+        rootParameters[10].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+
         // Define static samplers for texture filtering and addressing
-        D3D12_STATIC_SAMPLER_DESC sampler = CD3DX12_STATIC_SAMPLER_DESC(0, D3D12_FILTER_ANISOTROPIC);
-        sampler.MaxAnisotropy = 16;
+        D3D12_STATIC_SAMPLER_DESC samplers[2];
+        samplers[0] = CD3DX12_STATIC_SAMPLER_DESC(0, D3D12_FILTER_ANISOTROPIC);
+        samplers[0].MaxAnisotropy = 16;
+
+        samplers[1] = CD3DX12_STATIC_SAMPLER_DESC
+        (1,
+            D3D12_FILTER_COMPARISON_MIN_MAG_LINEAR_MIP_POINT,
+            D3D12_TEXTURE_ADDRESS_MODE_BORDER,
+            D3D12_TEXTURE_ADDRESS_MODE_BORDER,
+            D3D12_TEXTURE_ADDRESS_MODE_BORDER);
+        samplers[1].ComparisonFunc = D3D12_COMPARISON_FUNC_LESS_EQUAL;
+        samplers[1].BorderColor = D3D12_STATIC_BORDER_COLOR_OPAQUE_WHITE;
 
         // Serialize the Root Signature
         CD3DX12_ROOT_SIGNATURE_DESC rsDesc;
-        rsDesc.Init(10, rootParameters, 1, &sampler, D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT);
+        rsDesc.Init(11, rootParameters, 2, samplers, D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT);
 
         ComPtr<ID3DBlob> rsBlob;
         HRESULT hr = D3D12SerializeRootSignature(&rsDesc, D3D_ROOT_SIGNATURE_VERSION_1, &rsBlob, nullptr);
@@ -299,6 +323,67 @@ private:
         return true;
     }
 
+    bool BuildShadowPipeline(RenderDevice* dc)
+    {
+        D3D12_ROOT_PARAMETER rootParams[2];
+
+        rootParams[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
+        rootParams[0].Descriptor.ShaderRegister = 0;
+        rootParams[0].Descriptor.RegisterSpace = 0;
+        rootParams[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_VERTEX;
+
+        rootParams[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_SRV;
+        rootParams[1].Descriptor.ShaderRegister = 0;
+        rootParams[1].Descriptor.RegisterSpace = 0;
+        rootParams[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_VERTEX;
+
+        CD3DX12_ROOT_SIGNATURE_DESC rsDesc;
+        rsDesc.Init(2, rootParams, 0, nullptr, D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT);
+
+        ComPtr<ID3DBlob> rsBlob;
+        if (FAILED(D3D12SerializeRootSignature(&rsDesc, D3D_ROOT_SIGNATURE_VERSION_1, &rsBlob, nullptr))) return false;
+        if (FAILED(dc->GetDevice()->CreateRootSignature(0, rsBlob->GetBufferPointer(), rsBlob->GetBufferSize(), IID_PPV_ARGS(&shadowRootSignature)))) return false;
+
+        auto vs = ShaderCompiler::CompileFromFile(L"Shaders/Shaders_For_Shadow.hlsl", "VSMain", "vs_5_0");
+
+        D3D12_INPUT_ELEMENT_DESC layout[] =
+        {
+            { "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 0, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+            { "NORMAL", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 12, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+            { "TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT, 0, 24, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+            { "TANGENT", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 32, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+            { "BITANGENT", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 44, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+            { "BLENDINDICES", 0, DXGI_FORMAT_R32G32B32A32_SINT, 0, 56, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+            { "BLENDWEIGHT", 0, DXGI_FORMAT_R32G32B32A32_FLOAT, 0, 72, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 }
+        };
+
+        D3D12_GRAPHICS_PIPELINE_STATE_DESC psoDesc = {};
+        psoDesc.InputLayout = { layout, _countof(layout) };
+        psoDesc.pRootSignature = shadowRootSignature.Get();
+        psoDesc.VS = CD3DX12_SHADER_BYTECODE(vs.Get());
+        psoDesc.PS = { nullptr, 0 };
+
+        auto rasterizerState = CD3DX12_RASTERIZER_DESC(D3D12_DEFAULT);
+        rasterizerState.DepthBias = 100000;
+        rasterizerState.DepthBiasClamp = 0.0f;
+        rasterizerState.SlopeScaledDepthBias = 1.0f;
+        psoDesc.RasterizerState = rasterizerState;
+
+        psoDesc.BlendState = CD3DX12_BLEND_DESC(D3D12_DEFAULT);
+        psoDesc.DepthStencilState = CD3DX12_DEPTH_STENCIL_DESC(D3D12_DEFAULT);
+        psoDesc.SampleMask = UINT_MAX;
+        psoDesc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+
+        psoDesc.NumRenderTargets = 0;
+        psoDesc.RTVFormats[0] = DXGI_FORMAT_UNKNOWN;
+        psoDesc.DSVFormat = DXGI_FORMAT_D32_FLOAT;
+        psoDesc.SampleDesc.Count = 1;
+
+        if (FAILED(dc->GetDevice()->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(&shadowPSO)))) return false;
+
+        return true;
+    }
+
 private:
     int rtvDescriptorSize;
 
@@ -312,6 +397,9 @@ private:
 
     ComPtr<ID3D12RootSignature> computeRootSignature;
     ComPtr<ID3D12PipelineState> computePSO;
+
+    ComPtr<ID3D12RootSignature> shadowRootSignature;
+    ComPtr<ID3D12PipelineState> shadowPSO;
 };
 
 #endif

@@ -34,6 +34,9 @@
     <Filter Include="头文件\ThirdParty">
       <UniqueIdentifier>{2a9b3764-7b83-4719-b2e1-eab783846441}</UniqueIdentifier>
     </Filter>
+    <Filter Include="头文件\Pass">
+      <UniqueIdentifier>{649f9af8-0e4e-482c-9719-5a930eda3f05}</UniqueIdentifier>
+    </Filter>
   </ItemGroup>
   <ItemGroup>
     <None Include="packages.config" />
@@ -53,6 +56,9 @@
       <Filter>源文件\Shaders</Filter>
     </None>
     <None Include="Shaders\Shaders_For_SH_Calculate.hlsl">
+      <Filter>源文件\Shaders</Filter>
+    </None>
+    <None Include="Shaders\Shaders_For_Shadow.hlsl">
       <Filter>源文件\Shaders</Filter>
     </None>
   </ItemGroup>
@@ -104,6 +110,9 @@
     </ClInclude>
     <ClInclude Include="json.hpp">
       <Filter>头文件\ThirdParty</Filter>
+    </ClInclude>
+    <ClInclude Include="Pass_Shadow.h">
+      <Filter>头文件\Pass</Filter>
     </ClInclude>
   </ItemGroup>
   <ItemGroup>

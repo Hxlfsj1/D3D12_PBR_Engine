@@ -27,12 +27,20 @@ public:
         return
         {
             {
-                "First",
-                "Models/Sn_Tashkent_of_Azure_Lane.glb",
+                "Receiver_AMX",
+                "Models/AMX-40.glb",
                 { 0.0f, 0.0f, 0.0f },
                 { 0.0f, 0.0f, 0.0f },
                 { 1.0f, 1.0f, 1.0f }
             },
+
+            {
+                "Receiver_Plane",
+                "Models/Plane.glb",
+                { 0.0f,-5.0f, 0.0f },
+                { 0.0f, 0.0f, 0.0f },
+                { 1.0f, 1.0f, 1.0f }
+            }
         };
     }
 

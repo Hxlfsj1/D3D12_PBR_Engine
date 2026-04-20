@@ -290,6 +290,60 @@ public:
         cmdList->ResourceBarrier(1, &barrier);
     }
 
+    bool InitShadowResources(RenderDevice* dc)
+    {
+        D3D12_DESCRIPTOR_HEAP_DESC dsvHeapDesc = {};
+        dsvHeapDesc.NumDescriptors = 1;
+        dsvHeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_DSV;
+        dsvHeapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
+
+        if (FAILED(dc->GetDevice()->CreateDescriptorHeap(&dsvHeapDesc, IID_PPV_ARGS(&m_shadowDsvHeap)))) {
+            return false;
+        }
+
+        D3D12_RESOURCE_DESC texDesc = CD3DX12_RESOURCE_DESC::Tex2D(
+            DXGI_FORMAT_R32_TYPELESS,
+            m_shadowMapSize, m_shadowMapSize,
+            1, 1, 1, 0,
+            D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL
+        );
+
+        D3D12_CLEAR_VALUE optClear = {};
+        optClear.Format = DXGI_FORMAT_D32_FLOAT;
+        optClear.DepthStencil.Depth = 1.0f;
+        optClear.DepthStencil.Stencil = 0;
+
+        auto defHeapProps = CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_DEFAULT);
+
+        if (FAILED(dc->GetDevice()->CreateCommittedResource(
+            &defHeapProps,
+            D3D12_HEAP_FLAG_NONE,
+            &texDesc,
+            D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+            &optClear,
+            IID_PPV_ARGS(&m_shadowMap)))) {
+            return false;
+        }
+
+        D3D12_DEPTH_STENCIL_VIEW_DESC dsvDesc = {};
+        dsvDesc.Format = DXGI_FORMAT_D32_FLOAT;
+        dsvDesc.ViewDimension = D3D12_DSV_DIMENSION_TEXTURE2D;
+        dsvDesc.Flags = D3D12_DSV_FLAG_NONE;
+        dc->GetDevice()->CreateDepthStencilView(m_shadowMap.Get(), &dsvDesc, m_shadowDsvHeap->GetCPUDescriptorHandleForHeapStart());
+
+        m_shadowSrvIdx = srvIdx++;
+        D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
+        srvDesc.Format = DXGI_FORMAT_R32_FLOAT;
+        srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+        srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+        srvDesc.Texture2D.MipLevels = 1;
+
+        CD3DX12_CPU_DESCRIPTOR_HANDLE hSrv(mainDescriptorHeap->GetCPUDescriptorHandleForHeapStart(), m_shadowSrvIdx, srvDescriptorSize);
+        dc->GetDevice()->CreateShaderResourceView(m_shadowMap.Get(), &srvDesc, hSrv);
+
+        return true;
+    }
+
     D3D12_GPU_VIRTUAL_ADDRESS GetSHBufferGPUAddress()
     {
         return shBuffer->GetGPUVirtualAddress();
@@ -376,6 +430,21 @@ public:
         return textureSrvIndices[tex];
     }
 
+    ID3D12Resource* GetShadowMap()
+    {
+        return m_shadowMap.Get();
+    }
+
+    CD3DX12_CPU_DESCRIPTOR_HANDLE GetShadowDsvHandle()
+    {
+        return CD3DX12_CPU_DESCRIPTOR_HANDLE(m_shadowDsvHeap->GetCPUDescriptorHandleForHeapStart());
+    }
+
+    UINT GetShadowSrvIdx()
+    {
+        return m_shadowSrvIdx;
+    }
+
 private:
     UINT srvIdx;
     UINT srvDescriptorSize;
@@ -415,6 +484,11 @@ private:
     D3D12_VERTEX_BUFFER_VIEW skyboxVBV;
 
     ComPtr<ID3D12Resource> shBuffer;
+
+    Microsoft::WRL::ComPtr<ID3D12Resource> m_shadowMap;
+    Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> m_shadowDsvHeap;
+    UINT m_shadowSrvIdx;
+    const UINT m_shadowMapSize = 2048;
 };
 
 #endif

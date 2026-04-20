@@ -6,6 +6,7 @@ cbuffer PassConstants : register(b0)
     float padding2;
     float3 lightColor;
     float padding3;
+    float4x4 lightViewProj;
 };
 
 Texture2D tAlbedo : register(t0);
@@ -14,6 +15,7 @@ Texture2D tMR : register(t2);
 Texture2D tEmissive : register(t3);
 TextureCube tPrefilter : register(t4);
 Texture2D tBRDF : register(t5);
+Texture2D tShadowMap : register(t7);
 
 struct InstanceData
 {
@@ -24,6 +26,7 @@ struct InstanceData
 StructuredBuffer<InstanceData> gInstanceData : register(t6);
 
 SamplerState s1 : register(s0);
+SamplerComparisonState shadowSampler : register(s1);
 
 cbuffer MaterialFlags : register(b1)
 {
@@ -58,6 +61,7 @@ struct VS_OUTPUT
     float2 texCoord : TEXCOORD;
     float3 tangent : TANGENT;
     float3 bitangent : BITANGENT;
+    float4 lightSpacePos : LIGHTSPACE;
 };
 
 static const float PI = 3.14159265359;
@@ -80,6 +84,8 @@ VS_OUTPUT VSMain(VS_INPUT input)
     output.tangent = normalize(mul(input.tangent, (float3x3) normalMat));
     output.bitangent = normalize(mul(input.bitangent, (float3x3) normalMat));
     output.texCoord = input.texCoord;
+    
+    output.lightSpacePos = mul(float4(output.worldPos, 1.0f), lightViewProj);
     
     return output;
 }
@@ -160,6 +166,30 @@ float3 fresnelSchlickRoughness(float cosTheta, float3 F0, float roughness)
     return F0 + (max(float3(1.0 - roughness, 1.0 - roughness, 1.0 - roughness), F0) - F0) * pow(clamp(1.0 - cosTheta, 0.0, 1.0), 5.0);
 }
 
+float CalcShadowFactor(float4 lightSpacePos)
+{
+    float3 projCoords = lightSpacePos.xyz / lightSpacePos.w;
+    
+    projCoords.x = projCoords.x * 0.5f + 0.5f;
+    projCoords.y = -projCoords.y * 0.5f + 0.5f;
+    
+    if (projCoords.z > 1.0f || projCoords.x < 0.0f || projCoords.x > 1.0f || projCoords.y < 0.0f || projCoords.y > 1.0f)
+        return 1.0f;
+        
+    float shadow = 0.0f;
+    float2 texelSize = 1.0f / 2048.0f;
+    
+    for (int x = -1; x <= 1; ++x)
+    {
+        for (int y = -1; y <= 1; ++y)
+        {
+            shadow += tShadowMap.SampleCmpLevelZero(shadowSampler, projCoords.xy + float2(x, y) * texelSize, projCoords.z).r;
+        }
+    }
+    
+    return shadow / 9.0f;
+}
+
 // PBR pixel Shader
 float4 PSMain(VS_OUTPUT input) : SV_TARGET
 {
@@ -197,9 +227,11 @@ float4 PSMain(VS_OUTPUT input) : SV_TARGET
     float3 kD = float3(1.0, 1.0, 1.0) - kS;
     kD *= 1.0 - metallic;
 
+    float shadow = CalcShadowFactor(input.lightSpacePos);
+    
     // Calculate final light
     float NdotL = max(dot(N, L), 0.0);
-    float3 Lo = (kD * albedo / PI + specular) * radiance * NdotL;
+    float3 Lo = (kD * albedo / PI + specular) * radiance * NdotL * shadow;
     
     // Diffuse IBL
     float3 F_IBL = fresnelSchlickRoughness(max(dot(N, V), 0.0), F0, roughness);
