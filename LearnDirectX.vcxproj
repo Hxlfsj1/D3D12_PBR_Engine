@@ -140,6 +140,7 @@
     <ClInclude Include="IBLBaker.h" />
     <ClInclude Include="InputManager.h" />
     <ClInclude Include="json.hpp" />
+    <ClInclude Include="Pass_Shadow.h" />
     <ClInclude Include="PBR_Model.h" />
     <ClInclude Include="PBR_Shader.h" />
     <ClInclude Include="PipelineManager.h" />
@@ -170,6 +171,11 @@
   </ItemGroup>
   <ItemGroup>
     <None Include="Shaders\Shaders_For_SH_Calculate.hlsl">
+      <FileType>Document</FileType>
+    </None>
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="Shaders\Shaders_For_Shadow.hlsl">
       <FileType>Document</FileType>
     </None>
   </ItemGroup>

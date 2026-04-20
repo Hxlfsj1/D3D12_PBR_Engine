@@ -1,16 +1,7 @@
-// 1. Accepts GLB format only to ensure PBR parameter accuracy
-// 2. Leveraging the Assimp library for data processing
-// 3. Identify textures unrecognized by Assimp as ORM maps for shader processing
-// 4. Static baking is applied to models (thus, only static models can be loaded)
-
 #ifndef D3D12_MODEL_H
 #define D3D12_MODEL_H
 
 #include "stdafx.h"
-#define TINYGLTF_IMPLEMENTATION
-#define TINYGLTF_NO_STB_IMAGE_WRITE
-#include "tiny_gltf.h"
-
 #include <wrl/client.h>
 #include <ResourceUploadBatch.h>
 #include <WICTextureLoader.h>
@@ -20,6 +11,7 @@
 #include <assimp/pbrmaterial.h>
 #include <string>
 #include <vector>
+#include <fstream>
 
 #define MAX_BONE_INFLUENCE 4
 
@@ -54,9 +46,6 @@ inline XMMATRIX AssimpToDXMatrix(const aiMatrix4x4& aiMat)
     );
 }
 
-// Responsible for managing CPU-side 3D model geometry data (vertices and indices), 
-// safely and efficiently uploading it to high-speed GPU VRAM, 
-// and providing a ready-to-use interface for on-demand rendering
 class Mesh
 {
 public:
@@ -141,10 +130,6 @@ private:
     }
 };
 
-// Acts as the factory and manager for an entire 3D model.
-// It reads the GLB file into memory, coordinates Assimp (for geometry) 
-// and TinyGLTF (for materials) to parse the scene graph, and bakes 
-// the static transforms into a collection of GPU-ready Mesh objects
 class Model
 {
 public:
@@ -178,25 +163,12 @@ public:
     }
 
 private:
-    tinygltf::Model gltfModel;
-
     void loadModel(ID3D12Device* device, ID3D12GraphicsCommandList* cmdList, DirectX::ResourceUploadBatch& upload, std::string const& path)
     {
         std::vector<unsigned char> modelData = ReadFileToBuffer(path);
         if (modelData.empty())
         {
-            OutputDebugStringA("Disk read failed, file may not exist\n");
             return;
-        }
-
-        tinygltf::TinyGLTF loader;
-        std::string err, warn;
-
-        bool ret = loader.LoadBinaryFromMemory(&gltfModel, &err, &warn, modelData.data(), static_cast<unsigned int>(modelData.size()));
-
-        if (!ret)
-        {
-            OutputDebugStringA(("TinyGLTF parsing failed: " + err + "\n").c_str());
         }
 
         Assimp::Importer importer;
@@ -208,7 +180,6 @@ private:
 
         if (!scene || scene->mFlags & AI_SCENE_FLAGS_INCOMPLETE || !scene->mRootNode)
         {
-            OutputDebugStringA("Assimp memory parsing failed\n");
             return;
         }
 
@@ -276,69 +247,101 @@ private:
             }
         }
 
-        if (mesh->mMaterialIndex >= 0 && mesh->mMaterialIndex < gltfModel.materials.size())
+        if (mesh->mMaterialIndex >= 0)
         {
-            auto& gltfMat = gltfModel.materials[mesh->mMaterialIndex];
+            aiMaterial* material = scene->mMaterials[mesh->mMaterialIndex];
 
-            LoadGLTFTextureFromIndex(device, upload, gltfMat.pbrMetallicRoughness.baseColorTexture.index, "texture_diffuse", textures, scene);
-
-            LoadGLTFTextureFromIndex(device, upload, gltfMat.normalTexture.index, "texture_normal", textures, scene);
-
-            LoadGLTFTextureFromIndex(device, upload, gltfMat.pbrMetallicRoughness.metallicRoughnessTexture.index, "texture_metallicRoughness", textures, scene);
-
-            LoadGLTFTextureFromIndex(device, upload, gltfMat.occlusionTexture.index, "texture_ao", textures, scene);
-
-            int emissiveIdx = gltfMat.emissiveTexture.index;
-            bool isUnlit = gltfMat.extensions.find("KHR_materials_unlit") != gltfMat.extensions.end();
-
-            if (emissiveIdx >= 0)
+            if (material->GetTextureCount(aiTextureType_BASE_COLOR) > 0)
             {
-                LoadGLTFTextureFromIndex(device, upload, emissiveIdx, "texture_emissive", textures, scene);
+                LoadAssimpTexture(device, upload, material, aiTextureType_BASE_COLOR, "texture_diffuse", textures, scene);
             }
-            else if (isUnlit)
+            else if (material->GetTextureCount(aiTextureType_DIFFUSE) > 0)
             {
-                LoadGLTFTextureFromIndex(device, upload, gltfMat.pbrMetallicRoughness.baseColorTexture.index, "texture_emissive", textures, scene);
+                LoadAssimpTexture(device, upload, material, aiTextureType_DIFFUSE, "texture_diffuse", textures, scene);
+            }
+
+            if (material->GetTextureCount(aiTextureType_NORMALS) > 0)
+            {
+                LoadAssimpTexture(device, upload, material, aiTextureType_NORMALS, "texture_normal", textures, scene);
+            }
+            else if (material->GetTextureCount(aiTextureType_NORMAL_CAMERA) > 0)
+            {
+                LoadAssimpTexture(device, upload, material, aiTextureType_NORMAL_CAMERA, "texture_normal", textures, scene);
+            }
+
+            if (material->GetTextureCount(aiTextureType_UNKNOWN) > 0)
+            {
+                LoadAssimpTexture(device, upload, material, aiTextureType_UNKNOWN, "texture_metallicRoughness", textures, scene);
+            }
+            else if (material->GetTextureCount(aiTextureType_METALNESS) > 0)
+            {
+                LoadAssimpTexture(device, upload, material, aiTextureType_METALNESS, "texture_metallicRoughness", textures, scene);
+            }
+
+            if (material->GetTextureCount(aiTextureType_AMBIENT_OCCLUSION) > 0)
+            {
+                LoadAssimpTexture(device, upload, material, aiTextureType_AMBIENT_OCCLUSION, "texture_ao", textures, scene);
+            }
+            else if (material->GetTextureCount(aiTextureType_LIGHTMAP) > 0)
+            {
+                LoadAssimpTexture(device, upload, material, aiTextureType_LIGHTMAP, "texture_ao", textures, scene);
+            }
+
+            if (material->GetTextureCount(aiTextureType_EMISSION_COLOR) > 0)
+            {
+                LoadAssimpTexture(device, upload, material, aiTextureType_EMISSION_COLOR, "texture_emissive", textures, scene);
+            }
+            else if (material->GetTextureCount(aiTextureType_EMISSIVE) > 0)
+            {
+                LoadAssimpTexture(device, upload, material, aiTextureType_EMISSIVE, "texture_emissive", textures, scene);
             }
         }
 
         return Mesh(device, cmdList, vertices, indices, textures);
     }
 
-    void LoadGLTFTextureFromIndex(ID3D12Device* device, DirectX::ResourceUploadBatch& upload, int gltfTextureIndex, std::string typeName, std::vector<Texture>& textures, const aiScene* scene)
+    void LoadAssimpTexture(ID3D12Device* device, DirectX::ResourceUploadBatch& upload, aiMaterial* mat, aiTextureType type, std::string typeName, std::vector<Texture>& textures, const aiScene* scene)
     {
-        if (gltfTextureIndex < 0 || gltfTextureIndex >= gltfModel.textures.size())
+        if (mat->GetTextureCount(type) > 0)
         {
-            return;
-        }
+            aiString str;
+            mat->GetTexture(type, 0, &str);
+            std::string path = str.C_Str();
 
-        int imageIndex = gltfModel.textures[gltfTextureIndex].source;
-        if (imageIndex < 0 || (unsigned int)imageIndex >= scene->mNumTextures) return;
-
-        std::string fakePath = "*" + std::to_string(imageIndex);
-        bool skip = false;
-
-        for (unsigned int j = 0; j < textures_loaded.size(); j++)
-        {
-            if (textures_loaded[j].path == fakePath)
+            bool skip = false;
+            for (unsigned int j = 0; j < textures_loaded.size(); j++)
             {
-                Texture cachedTexture = textures_loaded[j];
-                cachedTexture.type = typeName;
-                textures.push_back(cachedTexture);
-                skip = true;
-                break;
+                if (textures_loaded[j].path == path)
+                {
+                    Texture cachedTexture = textures_loaded[j];
+                    cachedTexture.type = typeName;
+                    textures.push_back(cachedTexture);
+                    skip = true;
+                    break;
+                }
             }
-        }
 
-        if (!skip)
-        {
-            Texture texture;
-            const aiTexture* embeddedTex = scene->mTextures[imageIndex];
+            if (!skip)
+            {
+                Texture texture;
+                if (!path.empty() && path[0] == '*')
+                {
+                    int imageIndex = std::stoi(path.substr(1));
+                    if (imageIndex >= 0 && (unsigned int)imageIndex < scene->mNumTextures)
+                    {
+                        const aiTexture* embeddedTex = scene->mTextures[imageIndex];
+                        TextureFromMemory(device, upload, embeddedTex, texture);
+                    }
+                }
 
-            TextureFromMemory(device, upload, embeddedTex, texture);
-            texture.type = typeName;
-            texture.path = fakePath;
-            textures.push_back(texture);
-            textures_loaded.push_back(texture);
+                if (texture.Resource != nullptr)
+                {
+                    texture.type = typeName;
+                    texture.path = path;
+                    textures.push_back(texture);
+                    textures_loaded.push_back(texture);
+                }
+            }
         }
     }
 
@@ -375,4 +378,5 @@ private:
         return {};
     }
 };
+
 #endif

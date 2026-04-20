@@ -28,7 +28,7 @@ public:
         {
             {
                 "First",
-                "Models/Sn_Tashkent_of_Azure_Lane.glb",
+                "Models/MP5.glb",
                 { 0.0f, 0.0f, 0.0f },
                 { 0.0f, 0.0f, 0.0f },
                 { 1.0f, 1.0f, 1.0f }
