@@ -28,7 +28,7 @@ public:
         {
             {
                 "First",
-                "Models/MP5.glb",
+                "Models/Cartoon_Frog.glb",
                 { 0.0f, 0.0f, 0.0f },
                 { 0.0f, 0.0f, 0.0f },
                 { 1.0f, 1.0f, 1.0f }

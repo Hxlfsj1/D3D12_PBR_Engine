@@ -2,6 +2,11 @@
 #define D3D12_MODEL_H
 
 #include "stdafx.h"
+
+#define TINYGLTF_IMPLEMENTATION
+#define TINYGLTF_NO_STB_IMAGE_WRITE
+#include "tiny_gltf.h"
+
 #include <wrl/client.h>
 #include <ResourceUploadBatch.h>
 #include <WICTextureLoader.h>
@@ -69,14 +74,12 @@ public:
         cmdList->IASetVertexBuffers(0, 1, &vertexBufferView);
         cmdList->IASetIndexBuffer(&indexBufferView);
         cmdList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-
         cmdList->DrawIndexedInstanced(static_cast<UINT>(indices.size()), instanceCount, 0, 0, 0);
     }
 
 private:
     ComPtr<ID3D12Resource> vertexBuffer;
     D3D12_VERTEX_BUFFER_VIEW vertexBufferView;
-
     ComPtr<ID3D12Resource> indexBuffer;
     D3D12_INDEX_BUFFER_VIEW indexBufferView;
 
@@ -86,13 +89,11 @@ private:
         UINT indexBufferSize = static_cast<UINT>(indices.size() * sizeof(unsigned int));
 
         vertexBuffer = CreateDefaultBuffer(device, cmdList, vertices.data(), vertexBufferSize, vertexBufferUploader);
-
         vertexBufferView.BufferLocation = vertexBuffer->GetGPUVirtualAddress();
         vertexBufferView.StrideInBytes = sizeof(Vertex);
         vertexBufferView.SizeInBytes = vertexBufferSize;
 
         indexBuffer = CreateDefaultBuffer(device, cmdList, indices.data(), indexBufferSize, indexBufferUploader);
-
         indexBufferView.BufferLocation = indexBuffer->GetGPUVirtualAddress();
         indexBufferView.Format = DXGI_FORMAT_R32_UINT;
         indexBufferView.SizeInBytes = indexBufferSize;
@@ -101,17 +102,12 @@ private:
     ComPtr<ID3D12Resource> CreateDefaultBuffer(ID3D12Device* device, ID3D12GraphicsCommandList* cmdList, const void* initData, UINT64 byteSize, ComPtr<ID3D12Resource>& uploadBuffer)
     {
         ComPtr<ID3D12Resource> defaultBuffer;
-
         auto heapPropsDefault = CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_DEFAULT);
         auto bufferDesc = CD3DX12_RESOURCE_DESC::Buffer(byteSize);
-        device->CreateCommittedResource(
-            &heapPropsDefault, D3D12_HEAP_FLAG_NONE, &bufferDesc,
-            D3D12_RESOURCE_STATE_COMMON, nullptr, IID_PPV_ARGS(&defaultBuffer));
+        device->CreateCommittedResource(&heapPropsDefault, D3D12_HEAP_FLAG_NONE, &bufferDesc, D3D12_RESOURCE_STATE_COMMON, nullptr, IID_PPV_ARGS(&defaultBuffer));
 
         auto heapPropsUpload = CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_UPLOAD);
-        device->CreateCommittedResource(
-            &heapPropsUpload, D3D12_HEAP_FLAG_NONE, &bufferDesc,
-            D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&uploadBuffer));
+        device->CreateCommittedResource(&heapPropsUpload, D3D12_HEAP_FLAG_NONE, &bufferDesc, D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&uploadBuffer));
 
         D3D12_SUBRESOURCE_DATA subResourceData = {};
         subResourceData.pData = initData;
@@ -120,9 +116,7 @@ private:
 
         auto barrierEnter = CD3DX12_RESOURCE_BARRIER::Transition(defaultBuffer.Get(), D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_COPY_DEST);
         cmdList->ResourceBarrier(1, &barrierEnter);
-
         UpdateSubresources<1>(cmdList, defaultBuffer.Get(), uploadBuffer.Get(), 0, 0, 1, &subResourceData);
-
         auto barrierExit = CD3DX12_RESOURCE_BARRIER::Transition(defaultBuffer.Get(), D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_GENERIC_READ);
         cmdList->ResourceBarrier(1, &barrierExit);
 
@@ -163,13 +157,16 @@ public:
     }
 
 private:
+    tinygltf::Model gltfModel;
+
     void loadModel(ID3D12Device* device, ID3D12GraphicsCommandList* cmdList, DirectX::ResourceUploadBatch& upload, std::string const& path)
     {
         std::vector<unsigned char> modelData = ReadFileToBuffer(path);
-        if (modelData.empty())
-        {
-            return;
-        }
+        if (modelData.empty()) return;
+
+        tinygltf::TinyGLTF loader;
+        std::string err, warn;
+        loader.LoadBinaryFromMemory(&gltfModel, &err, &warn, modelData.data(), static_cast<unsigned int>(modelData.size()));
 
         Assimp::Importer importer;
         unsigned int flags = aiProcess_Triangulate | aiProcess_GenSmoothNormals |
@@ -177,11 +174,7 @@ private:
             aiProcess_MakeLeftHanded | aiProcess_FlipWindingOrder | aiProcess_FlipUVs;
 
         const aiScene* scene = importer.ReadFileFromMemory(modelData.data(), modelData.size(), flags, path.c_str());
-
-        if (!scene || scene->mFlags & AI_SCENE_FLAGS_INCOMPLETE || !scene->mRootNode)
-        {
-            return;
-        }
+        if (!scene || scene->mFlags & AI_SCENE_FLAGS_INCOMPLETE || !scene->mRootNode) return;
 
         processNode(device, cmdList, upload, scene->mRootNode, scene, XMMatrixIdentity());
     }
@@ -189,7 +182,6 @@ private:
     void processNode(ID3D12Device* device, ID3D12GraphicsCommandList* cmdList, DirectX::ResourceUploadBatch& upload, aiNode* node, const aiScene* scene, XMMATRIX parentTransform)
     {
         XMMATRIX nodeTransform = AssimpToDXMatrix(node->mTransformation) * parentTransform;
-
         for (unsigned int i = 0; i < node->mNumMeshes; i++)
         {
             aiMesh* mesh = scene->mMeshes[node->mMeshes[i]];
@@ -212,7 +204,6 @@ private:
         for (unsigned int i = 0; i < mesh->mNumVertices; i++)
         {
             Vertex vertex = {};
-
             XMVECTOR pos = XMVectorSet(mesh->mVertices[i].x, mesh->mVertices[i].y, mesh->mVertices[i].z, 1.0f);
             pos = XMVector4Transform(pos, nodeTransform);
             XMStoreFloat3(&vertex.Position, pos);
@@ -227,11 +218,9 @@ private:
             if (mesh->mTextureCoords[0])
             {
                 vertex.TexCoords = { mesh->mTextureCoords[0][i].x, mesh->mTextureCoords[0][i].y };
-
                 XMVECTOR tan = XMVectorSet(mesh->mTangents[i].x, mesh->mTangents[i].y, mesh->mTangents[i].z, 0.0f);
                 tan = XMVector3Normalize(XMVector3TransformNormal(tan, invTranspose));
                 XMStoreFloat3(&vertex.Tangent, tan);
-
                 XMVECTOR bitan = XMVectorSet(mesh->mBitangents[i].x, mesh->mBitangents[i].y, mesh->mBitangents[i].z, 0.0f);
                 bitan = XMVector3Normalize(XMVector3TransformNormal(bitan, invTranspose));
                 XMStoreFloat3(&vertex.Bitangent, bitan);
@@ -251,49 +240,36 @@ private:
         {
             aiMaterial* material = scene->mMaterials[mesh->mMaterialIndex];
 
-            if (material->GetTextureCount(aiTextureType_BASE_COLOR) > 0)
+            if (material->GetTextureCount(aiTextureType_BASE_COLOR) > 0) LoadAssimpTexture(device, upload, material, aiTextureType_BASE_COLOR, "texture_diffuse", textures, scene);
+            else if (material->GetTextureCount(aiTextureType_DIFFUSE) > 0) LoadAssimpTexture(device, upload, material, aiTextureType_DIFFUSE, "texture_diffuse", textures, scene);
+
+            if (material->GetTextureCount(aiTextureType_NORMALS) > 0) LoadAssimpTexture(device, upload, material, aiTextureType_NORMALS, "texture_normal", textures, scene);
+            else if (material->GetTextureCount(aiTextureType_NORMAL_CAMERA) > 0) LoadAssimpTexture(device, upload, material, aiTextureType_NORMAL_CAMERA, "texture_normal", textures, scene);
+
+            if (material->GetTextureCount(aiTextureType_UNKNOWN) > 0) LoadAssimpTexture(device, upload, material, aiTextureType_UNKNOWN, "texture_metallicRoughness", textures, scene);
+            else if (material->GetTextureCount(aiTextureType_METALNESS) > 0) LoadAssimpTexture(device, upload, material, aiTextureType_METALNESS, "texture_metallicRoughness", textures, scene);
+
+            if (material->GetTextureCount(aiTextureType_AMBIENT_OCCLUSION) > 0) LoadAssimpTexture(device, upload, material, aiTextureType_AMBIENT_OCCLUSION, "texture_ao", textures, scene);
+            else if (material->GetTextureCount(aiTextureType_LIGHTMAP) > 0) LoadAssimpTexture(device, upload, material, aiTextureType_LIGHTMAP, "texture_ao", textures, scene);
+
+            aiString matName;
+            material->Get(AI_MATKEY_NAME, matName);
+            bool isUnlit = false;
+            for (size_t k = 0; k < gltfModel.materials.size(); k++)
             {
-                LoadAssimpTexture(device, upload, material, aiTextureType_BASE_COLOR, "texture_diffuse", textures, scene);
-            }
-            else if (material->GetTextureCount(aiTextureType_DIFFUSE) > 0)
-            {
-                LoadAssimpTexture(device, upload, material, aiTextureType_DIFFUSE, "texture_diffuse", textures, scene);
+                if (gltfModel.materials[k].name == matName.C_Str())
+                {
+                    isUnlit = gltfModel.materials[k].extensions.find("KHR_materials_unlit") != gltfModel.materials[k].extensions.end();
+                    break;
+                }
             }
 
-            if (material->GetTextureCount(aiTextureType_NORMALS) > 0)
+            if (material->GetTextureCount(aiTextureType_EMISSION_COLOR) > 0) LoadAssimpTexture(device, upload, material, aiTextureType_EMISSION_COLOR, "texture_emissive", textures, scene);
+            else if (material->GetTextureCount(aiTextureType_EMISSIVE) > 0) LoadAssimpTexture(device, upload, material, aiTextureType_EMISSIVE, "texture_emissive", textures, scene);
+            else if (isUnlit)
             {
-                LoadAssimpTexture(device, upload, material, aiTextureType_NORMALS, "texture_normal", textures, scene);
-            }
-            else if (material->GetTextureCount(aiTextureType_NORMAL_CAMERA) > 0)
-            {
-                LoadAssimpTexture(device, upload, material, aiTextureType_NORMAL_CAMERA, "texture_normal", textures, scene);
-            }
-
-            if (material->GetTextureCount(aiTextureType_UNKNOWN) > 0)
-            {
-                LoadAssimpTexture(device, upload, material, aiTextureType_UNKNOWN, "texture_metallicRoughness", textures, scene);
-            }
-            else if (material->GetTextureCount(aiTextureType_METALNESS) > 0)
-            {
-                LoadAssimpTexture(device, upload, material, aiTextureType_METALNESS, "texture_metallicRoughness", textures, scene);
-            }
-
-            if (material->GetTextureCount(aiTextureType_AMBIENT_OCCLUSION) > 0)
-            {
-                LoadAssimpTexture(device, upload, material, aiTextureType_AMBIENT_OCCLUSION, "texture_ao", textures, scene);
-            }
-            else if (material->GetTextureCount(aiTextureType_LIGHTMAP) > 0)
-            {
-                LoadAssimpTexture(device, upload, material, aiTextureType_LIGHTMAP, "texture_ao", textures, scene);
-            }
-
-            if (material->GetTextureCount(aiTextureType_EMISSION_COLOR) > 0)
-            {
-                LoadAssimpTexture(device, upload, material, aiTextureType_EMISSION_COLOR, "texture_emissive", textures, scene);
-            }
-            else if (material->GetTextureCount(aiTextureType_EMISSIVE) > 0)
-            {
-                LoadAssimpTexture(device, upload, material, aiTextureType_EMISSIVE, "texture_emissive", textures, scene);
+                if (material->GetTextureCount(aiTextureType_BASE_COLOR) > 0) LoadAssimpTexture(device, upload, material, aiTextureType_BASE_COLOR, "texture_emissive", textures, scene);
+                else if (material->GetTextureCount(aiTextureType_DIFFUSE) > 0) LoadAssimpTexture(device, upload, material, aiTextureType_DIFFUSE, "texture_emissive", textures, scene);
             }
         }
 
@@ -348,34 +324,18 @@ private:
     void TextureFromMemory(ID3D12Device* device, DirectX::ResourceUploadBatch& upload, const aiTexture* aiTex, Texture& outTex)
     {
         size_t dataSize = aiTex->mHeight == 0 ? aiTex->mWidth : aiTex->mWidth * aiTex->mHeight * 4;
-        DirectX::CreateWICTextureFromMemory(
-            device,
-            upload,
-            reinterpret_cast<const uint8_t*>(aiTex->pcData),
-            dataSize,
-            outTex.Resource.GetAddressOf(),
-            true
-        );
+        DirectX::CreateWICTextureFromMemory(device, upload, reinterpret_cast<const uint8_t*>(aiTex->pcData), dataSize, outTex.Resource.GetAddressOf(), true);
     }
 
     std::vector<unsigned char> ReadFileToBuffer(const std::string& path)
     {
         std::ifstream file(path, std::ios::binary | std::ios::ate);
-        if (!file.is_open())
-        {
-            return {};
-        }
-
+        if (!file.is_open()) return {};
         std::streamsize size = file.tellg();
         file.seekg(0, std::ios::beg);
-
         std::vector<unsigned char> buffer(size);
-        if (file.read(reinterpret_cast<char*>(buffer.data()), size))
-        {
-            return buffer;
-        }
-
-        return {};
+        file.read(reinterpret_cast<char*>(buffer.data()), size);
+        return buffer;
     }
 };
 
