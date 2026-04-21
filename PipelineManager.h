@@ -1,3 +1,7 @@
+// 1. Root Signatures: Define the register layouts and data binding interfaces between CPU and GPU
+// 2. PSOs: Pre-compile shaders and fixed-function states into immutable hardware blueprints
+// 3. Descriptor Heaps: Initialize RTVs for swapchain back buffers and DSV for depth testing
+
 #ifndef PIPELINE_MANAGER_H
 #define PIPELINE_MANAGER_H
 
@@ -40,15 +44,40 @@ public:
         return CD3DX12_CPU_DESCRIPTOR_HANDLE(dsDescriptorHeap->GetCPUDescriptorHandleForHeapStart());
     }
 
-    ID3D12RootSignature* GetRootSignature() { return rootSignature.Get(); }
-    ID3D12PipelineState* GetPBR_PSO() { return pipelineStateObject.Get(); }
-    ID3D12PipelineState* GetSkybox_PSO() { return psoSkybox.Get(); }
+    ID3D12RootSignature* GetRootSignature()
+    {
+        return rootSignature.Get();
+    }
 
-    ID3D12RootSignature* GetComputeRootSignature() { return computeRootSignature.Get(); }
-    ID3D12PipelineState* GetComputePSO() { return computePSO.Get(); }
+    ID3D12PipelineState* GetPBR_PSO()
+    {
+        return pipelineStateObject.Get();
+    }
 
-    ID3D12RootSignature* GetShadowRootSignature() { return shadowRootSignature.Get(); }
-    ID3D12PipelineState* GetShadowPSO() { return shadowPSO.Get(); }
+    ID3D12PipelineState* GetSkybox_PSO()
+    {
+        return psoSkybox.Get();
+    }
+
+    ID3D12RootSignature* GetComputeRootSignature()
+    {
+        return computeRootSignature.Get();
+    }
+
+    ID3D12PipelineState* GetComputePSO()
+    {
+        return computePSO.Get();
+    }
+
+    ID3D12RootSignature* GetShadowRootSignature()
+    {
+        return shadowRootSignature.Get();
+    }
+
+    ID3D12PipelineState* GetShadowPSO()
+    {
+        return shadowPSO.Get();
+    }
 
 private:
 
