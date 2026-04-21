@@ -28,7 +28,7 @@ public:
         {
             {
                 "Receiver_AMX",
-                "Models/AMX-40.glb",
+                "Models/V-22.glb",
                 { 0.0f, 0.0f, 0.0f },
                 { 0.0f, 0.0f, 0.0f },
                 { 1.0f, 1.0f, 1.0f }

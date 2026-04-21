@@ -166,28 +166,92 @@ float3 fresnelSchlickRoughness(float cosTheta, float3 F0, float roughness)
     return F0 + (max(float3(1.0 - roughness, 1.0 - roughness, 1.0 - roughness), F0) - F0) * pow(clamp(1.0 - cosTheta, 0.0, 1.0), 5.0);
 }
 
+static const float2 POISSON_DISK[16] =
+{
+    float2(-0.94201624, -0.39906216), float2(0.94558609, -0.76890725),
+    float2(-0.094184101, -0.92938870), float2(0.34495938, 0.29387760),
+    float2(-0.91588581, 0.45771432), float2(-0.81544232, -0.87912464),
+    float2(-0.38277543, 0.27676845), float2(0.97484398, 0.75648379),
+    float2(0.44323325, -0.97511554), float2(0.53742981, -0.47373420),
+    float2(-0.26496911, -0.41893023), float2(0.79197514, 0.19090188),
+    float2(-0.24188840, 0.99706507), float2(-0.81409955, 0.91437590),
+    float2(0.19984126, 0.78641367), float2(0.14383161, -0.14100467)
+};
+
+// Pseudo-random number generator (PRNG) for rotating the Poisson Disk
+float Rand(float2 co)
+{
+    return frac(sin(dot(co.xy, float2(12.9898, 78.233))) * 43758.5453);
+}
+
+// Blocker search using Poisson Disk sampling
+void FindBlocker(out float avgBlockerDepth, out float numBlockers, float2 uv, float zReceiver, float searchRadius)
+{
+    float blockerSum = 0.0;
+    numBlockers = 0.0;
+    
+    float randomAngle = Rand(uv) * 2.0 * PI;
+    float cosTheta = cos(randomAngle);
+    float sinTheta = sin(randomAngle);
+    float2x2 rotMat = float2x2(cosTheta, -sinTheta, sinTheta, cosTheta);
+
+    for (int i = 0; i < 16; ++i)
+    {
+        float2 offset = mul(POISSON_DISK[i], rotMat) * searchRadius;
+        float shadowMapDepth = tShadowMap.SampleLevel(s1, uv + offset, 0).r;
+        
+        if (shadowMapDepth < zReceiver - 0.001)
+        {
+            blockerSum += shadowMapDepth;
+            numBlockers += 1.0;
+        }
+    }
+    avgBlockerDepth = numBlockers > 0.0 ? blockerSum / numBlockers : 1.0;
+}
+
 float CalcShadowFactor(float4 lightSpacePos)
 {
     float3 projCoords = lightSpacePos.xyz / lightSpacePos.w;
-    
     projCoords.x = projCoords.x * 0.5f + 0.5f;
     projCoords.y = -projCoords.y * 0.5f + 0.5f;
     
     if (projCoords.z > 1.0f || projCoords.x < 0.0f || projCoords.x > 1.0f || projCoords.y < 0.0f || projCoords.y > 1.0f)
         return 1.0f;
-        
-    float shadow = 0.0f;
-    float2 texelSize = 1.0f / 2048.0f;
+
+    float zReceiver = projCoords.z;
     
-    for (int x = -1; x <= 1; ++x)
+    // Adjustable shadow parameters
+    float LIGHT_WORLD_SIZE = 1.0;
+    float LIGHT_FRUSTUM_WIDTH = 50.0;
+    float LIGHT_SIZE_UV = LIGHT_WORLD_SIZE / LIGHT_FRUSTUM_WIDTH;
+    
+    // First, perform a blocker search using Poisson Disk sampling
+    float avgBlockerDepth = 1.0;
+    float numBlockers = 0.0;
+    float searchRadius = LIGHT_SIZE_UV * 0.5;
+    FindBlocker(avgBlockerDepth, numBlockers, projCoords.xy, zReceiver, searchRadius);
+    
+    if (numBlockers < 1.0)
+        return 1.0f;
+
+    // Next, scale the Poisson Disk radius using similar triangles to achieve a variable penumbra
+    float penumbraRatio = (zReceiver - avgBlockerDepth) / max(avgBlockerDepth, 0.0001);
+    float filterRadius = penumbraRatio * LIGHT_SIZE_UV;
+
+    // Finally, perform the shadow calculation using the variable-radius Poisson Disk
+    float shadow = 0.0f;
+    float randomAngle = Rand(projCoords.xy + float2(1.0, 1.0)) * 2.0 * PI;
+    float cosTheta = cos(randomAngle);
+    float sinTheta = sin(randomAngle);
+    float2x2 rotMat = float2x2(cosTheta, -sinTheta, sinTheta, cosTheta);
+
+    for (int i = 0; i < 16; ++i)
     {
-        for (int y = -1; y <= 1; ++y)
-        {
-            shadow += tShadowMap.SampleCmpLevelZero(shadowSampler, projCoords.xy + float2(x, y) * texelSize, projCoords.z).r;
-        }
+        float2 offset = mul(POISSON_DISK[i], rotMat) * filterRadius;
+        shadow += tShadowMap.SampleCmpLevelZero(shadowSampler, projCoords.xy + offset, zReceiver).r;
     }
     
-    return shadow / 9.0f;
+    return shadow / 16.0f;
 }
 
 // PBR pixel Shader
@@ -210,9 +274,7 @@ float4 PSMain(VS_OUTPUT input) : SV_TARGET
     F0 = lerp(F0, albedo, metallic);
     float3 L = normalize(lightPos - input.worldPos);
     float3 H = normalize(V + L);
-    float distance = length(lightPos - input.worldPos);
-    float attenuation = 1.0 / (distance * distance + 0.001);
-    float3 radiance = lightColor * attenuation;
+    float3 radiance = lightColor;
 
     float NDF = DistributionGGX(N, H, roughness);
     float G = GeometrySmith(N, V, L, roughness);
