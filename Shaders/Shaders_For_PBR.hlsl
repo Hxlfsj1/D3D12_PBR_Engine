@@ -2,7 +2,7 @@ cbuffer PassConstants : register(b0)
 {
     float3 camPos;
     float padding1;
-    float3 lightPos;
+    float3 lightDir;
     float padding2;
     float3 lightColor;
     float padding3;
@@ -248,6 +248,7 @@ float CalcShadowFactor(float4 lightSpacePos)
     for (int i = 0; i < 16; ++i)
     {
         float2 offset = mul(POISSON_DISK[i], rotMat) * filterRadius;
+        // Here is a hardware-accelerated 2x2 bilinear interpolation for anti-aliasing
         shadow += tShadowMap.SampleCmpLevelZero(shadowSampler, projCoords.xy + offset, zReceiver).r;
     }
     
@@ -272,7 +273,7 @@ float4 PSMain(VS_OUTPUT input) : SV_TARGET
     float3 R = reflect(-V, N);
     float3 F0 = float3(0.04, 0.04, 0.04);
     F0 = lerp(F0, albedo, metallic);
-    float3 L = normalize(lightPos - input.worldPos);
+    float3 L = normalize(-lightDir);
     float3 H = normalize(V + L);
     float3 radiance = lightColor;
 

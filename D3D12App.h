@@ -80,7 +80,7 @@ private:
     {
         DirectX::XMFLOAT3 camPos;
         float padding1;
-        DirectX::XMFLOAT3 lightPos;
+        DirectX::XMFLOAT3 lightDir;
         float padding2;
         DirectX::XMFLOAT3 lightColor;
         float padding3;

@@ -209,14 +209,19 @@ void D3D12App::Update()
     // Refresh per-frame constants, including the MVP transform
     PassConstants passCb;
     passCb.camPos = camera.Position;
-    passCb.lightPos = XMFLOAT3(10.0f, 20.0f, -10.0f);
-    passCb.lightColor = XMFLOAT3(500.0f, 500.0f, 500.0f);
 
-    XMVECTOR lightPosVec = XMLoadFloat3(&passCb.lightPos);
+    XMVECTOR dirVec = XMVectorSet(-0.5f, -1.0f, 0.5f, 0.0f);
+    dirVec = XMVector3Normalize(dirVec);
+    XMStoreFloat3(&passCb.lightDir, dirVec);
+
+    passCb.lightColor = XMFLOAT3(5.0f, 5.0f, 5.0f);
+
     XMVECTOR lightTarget = XMVectorSet(0.0f, 0.0f, 0.0f, 1.0f);
+    XMVECTOR lightPosVec = lightTarget - (dirVec * 50.0f);
     XMVECTOR lightUp = XMVectorSet(0.0f, 1.0f, 0.0f, 0.0f);
     XMMATRIX lightView = XMMatrixLookAtLH(lightPosVec, lightTarget, lightUp);
     XMMATRIX lightProj = XMMatrixOrthographicLH(50.0f, 50.0f, 1.0f, 100.0f);
+
     XMMATRIX lightViewProj = lightView * lightProj;
     XMStoreFloat4x4(&passCb.lightViewProj, XMMatrixTranspose(lightViewProj));
 

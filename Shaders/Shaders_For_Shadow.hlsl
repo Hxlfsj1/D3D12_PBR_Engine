@@ -2,7 +2,7 @@ cbuffer PassConstants : register(b0)
 {
     float3 camPos;
     float padding1;
-    float3 lightPos;
+    float3 lightDir;
     float padding2;
     float3 lightColor;
     float padding3;
