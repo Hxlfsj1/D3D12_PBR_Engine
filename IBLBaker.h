@@ -1,9 +1,20 @@
-// Pre-process IBL maps at initialization
+/*
+IBL Pipeline Architecture (The 4-Step Lifecycle):
 
-// 1. Convert equirectangular HDR to an environment cubemap
-// 2. Compute Spherical Harmonics (SH) coefficients for diffuse irradiance
-// 3. Generate the prefiltered cubemap via importance sampling (for specular)
-// 4. Integrate the BRDF LUT
+1. [Record]  CPU records rendering/compute commands to the Command List
+2. [Execute] GPU executes the commands to bake IBL resources in VRAM
+3. [Seal]    CPU blocks via Fence (Wait) and transitions resources to Read-Only
+4. [Runtime] PBR Shaders sample these pre-baked resources with zero overhead
+*/
+
+/*
+Pre-process IBL maps at initialization
+
+1. Convert equirectangular HDR to an environment cubemap
+2. Compute Spherical Harmonics (SH) coefficients for diffuse irradiance
+3. Generate the prefiltered cubemap via importance sampling (for specular)
+4. Integrate the BRDF LUT
+*/
 
 #ifndef IBL_BAKER_H
 #define IBL_BAKER_H

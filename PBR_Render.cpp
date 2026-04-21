@@ -156,7 +156,7 @@ bool D3D12App::InitD3D()
     frameIndex = m_deviceContext.GetSwapChain()->GetCurrentBackBufferIndex();
 
     // Compile Pipeline States: Precompute Root Signatures and PSOs for both Graphics and Compute pipelines
-    if (!m_pipelineManager.Initialize(&m_deviceContext, Width, Height, frameBufferCount)) return false;
+    if (!m_pipelineManager.Initialize(&m_deviceContext)) return false;
 
     // Stream Assets & Build IBL: Load 3D models and HDR textures into VRAM and bake IBL components
     auto sceneData = Assets::GetSniperAlleyScene();
@@ -263,8 +263,8 @@ void D3D12App::BeginFrame()
     m_deviceContext.GetCommandList()->ResourceBarrier(1, &b);
 
     // Bind the Render Target View (RTV) and Depth Stencil View (DSV) for the current frame
-    CD3DX12_CPU_DESCRIPTOR_HANDLE rtv = m_pipelineManager.GetRTVHandle(frameIndex);
-    CD3DX12_CPU_DESCRIPTOR_HANDLE dsv = m_pipelineManager.GetDSVHandle();
+    CD3DX12_CPU_DESCRIPTOR_HANDLE rtv = m_deviceContext.GetRTVHandle(frameIndex);
+    CD3DX12_CPU_DESCRIPTOR_HANDLE dsv = m_deviceContext.GetDSVHandle();
     m_deviceContext.GetCommandList()->OMSetRenderTargets(1, &rtv, FALSE, &dsv);
 
     // Clear the canvas to a solid color to prevent ghosting from the previous frame
@@ -282,8 +282,8 @@ void D3D12App::DrawPBRModel()
     m_deviceContext.GetCommandList()->RSSetViewports(1, &viewport);
     m_deviceContext.GetCommandList()->RSSetScissorRects(1, &scissorRect);
 
-    CD3DX12_CPU_DESCRIPTOR_HANDLE rtv = m_pipelineManager.GetRTVHandle(frameIndex);
-    CD3DX12_CPU_DESCRIPTOR_HANDLE dsv = m_pipelineManager.GetDSVHandle();
+    CD3DX12_CPU_DESCRIPTOR_HANDLE rtv = m_deviceContext.GetRTVHandle(frameIndex);
+    CD3DX12_CPU_DESCRIPTOR_HANDLE dsv = m_deviceContext.GetDSVHandle();
     m_deviceContext.GetCommandList()->OMSetRenderTargets(1, &rtv, FALSE, &dsv);
 
     m_deviceContext.GetCommandList()->SetPipelineState(m_pipelineManager.GetPBR_PSO());
@@ -420,11 +420,15 @@ void D3D12App::DrawShadowMap()
     cmdList->RSSetScissorRects(1, &shadowScissor);
 
     CD3DX12_CPU_DESCRIPTOR_HANDLE dsv = m_resourceManager.GetShadowDsvHandle();
+    // Disable color writes, depth-only
     cmdList->OMSetRenderTargets(0, nullptr, FALSE, &dsv);
+    // Clear the entire canvas to 1 (representing infinity); the depth will be updated whenever closer objects (depth < 1) are encountered
     cmdList->ClearDepthStencilView(dsv, D3D12_CLEAR_FLAG_DEPTH, 1.0f, 0, 0, nullptr);
 
+    // Bind a light - space camera aligned with the light direction
     D3D12_GPU_VIRTUAL_ADDRESS baseGpuAddress = m_resourceManager.GetCBVGPUAddress(frameIndex);
     cmdList->SetGraphicsRootConstantBufferView(0, baseGpuAddress);
+
     cmdList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
 
     auto& instances = m_resourceManager.GetSceneInstances();

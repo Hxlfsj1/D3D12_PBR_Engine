@@ -29,6 +29,8 @@ struct VS_INPUT
     uint instanceID : SV_InstanceID;
 };
 
+// Outputs the 4D position of each vertex from the light's perspective
+// The rasterizer will later extract the depth (Z) from this to build the Shadow Map
 float4 VSMain(VS_INPUT input) : SV_POSITION
 {
     float4x4 worldMat = gInstanceData[input.instanceID].worldMat;

@@ -1,6 +1,7 @@
-// 1. Root Signatures: Define the register layouts and data binding interfaces between CPU and GPU
-// 2. PSOs: Pre-compile shaders and fixed-function states into immutable hardware blueprints
-// 3. Descriptor Heaps: Initialize RTVs for swapchain back buffers and DSV for depth testing
+/*
+1. Root Signatures: Define the register layouts and data binding interfaces between CPU and GPU
+2. PSOs: Pre-compile shaders and fixed-function states into immutable hardware blueprints
+*/
 
 #ifndef PIPELINE_MANAGER_H
 #define PIPELINE_MANAGER_H
@@ -16,32 +17,19 @@ class PipelineManager
 {
 public:
     PipelineManager()
-    {
-        rtvDescriptorSize = 0;
-    }
+    {}
 
     ~PipelineManager()
     {}
 
-    bool Initialize(RenderDevice* dc, int width, int height, int frameBufferCount)
+    bool Initialize(RenderDevice* dc)
     {
-        if (!CreateDescriptorHeapsAndViews(dc, width, height, frameBufferCount)) return false;
         if (!BuildRootSignature(dc)) return false;
         if (!BuildPipelineStates(dc)) return false;
         if (!BuildComputePipeline(dc)) return false;
         if (!BuildShadowPipeline(dc)) return false;
 
         return true;
-    }
-
-    CD3DX12_CPU_DESCRIPTOR_HANDLE GetRTVHandle(int frameIndex)
-    {
-        return CD3DX12_CPU_DESCRIPTOR_HANDLE(rtvDescriptorHeap->GetCPUDescriptorHandleForHeapStart(), frameIndex, rtvDescriptorSize);
-    }
-
-    CD3DX12_CPU_DESCRIPTOR_HANDLE GetDSVHandle()
-    {
-        return CD3DX12_CPU_DESCRIPTOR_HANDLE(dsDescriptorHeap->GetCPUDescriptorHandleForHeapStart());
     }
 
     ID3D12RootSignature* GetRootSignature()
@@ -80,66 +68,6 @@ public:
     }
 
 private:
-
-    // Create 3 RTVs and 1 DSV (not canvas)
-    // The GPU must understand their memory formats before writing
-    bool CreateDescriptorHeapsAndViews(RenderDevice* dc, int width, int height, int frameBufferCount)
-    {
-        // Create RTVs for the 3 swapchain back buffers
-        D3D12_DESCRIPTOR_HEAP_DESC rtvHeapDesc = {};
-        rtvHeapDesc.NumDescriptors = frameBufferCount;
-        rtvHeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
-        rtvHeapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
-
-        HRESULT hr = dc->GetDevice()->CreateDescriptorHeap(&rtvHeapDesc, IID_PPV_ARGS(&rtvDescriptorHeap));
-
-        if (FAILED(hr))
-        {
-            return false;
-        }
-
-        rtvDescriptorSize = dc->GetDevice()->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
-        CD3DX12_CPU_DESCRIPTOR_HANDLE rtvHandle(rtvDescriptorHeap->GetCPUDescriptorHandleForHeapStart());
-
-        for (int i = 0; i < frameBufferCount; i++)
-        {
-            ID3D12Resource* backBuffer = dc->GetRenderTarget(i);
-
-            dc->GetDevice()->CreateRenderTargetView(backBuffer, nullptr, rtvHandle);
-            rtvHandle.Offset(1, rtvDescriptorSize);
-        }
-
-        // Create a dedicated resource and DSV for depth testing
-        D3D12_DESCRIPTOR_HEAP_DESC dsvHeapDesc = {};
-        dsvHeapDesc.NumDescriptors = 1;
-        dsvHeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_DSV;
-        dsvHeapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
-
-        hr = dc->GetDevice()->CreateDescriptorHeap(&dsvHeapDesc, IID_PPV_ARGS(&dsDescriptorHeap));
-
-        if (FAILED(hr))
-        {
-            return false;
-        }
-
-        D3D12_CLEAR_VALUE depthClearValue = {};
-        depthClearValue.Format = DXGI_FORMAT_D32_FLOAT;
-        depthClearValue.DepthStencil.Depth = 1.0f;
-
-        CD3DX12_HEAP_PROPERTIES dsvHeapProps(D3D12_HEAP_TYPE_DEFAULT);
-        CD3DX12_RESOURCE_DESC dsvResDesc = CD3DX12_RESOURCE_DESC::Tex2D(DXGI_FORMAT_D32_FLOAT, width, height, 1, 0, 1, 0, D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL);
-
-        hr = dc->GetDevice()->CreateCommittedResource(&dsvHeapProps, D3D12_HEAP_FLAG_NONE, &dsvResDesc, D3D12_RESOURCE_STATE_DEPTH_WRITE, &depthClearValue, IID_PPV_ARGS(&depthStencilBuffer));
-
-        if (FAILED(hr))
-        {
-            return false;
-        }
-
-        dc->GetDevice()->CreateDepthStencilView(depthStencilBuffer.Get(), nullptr, dsDescriptorHeap->GetCPUDescriptorHandleForHeapStart());
-
-        return true;
-    }
 
     // Root Signature: Defines the data binding layout for GPU submissions
     bool BuildRootSignature(RenderDevice* dc)
@@ -414,11 +342,6 @@ private:
     }
 
 private:
-    int rtvDescriptorSize;
-
-    ComPtr<ID3D12DescriptorHeap> rtvDescriptorHeap;
-    ComPtr<ID3D12Resource> depthStencilBuffer;
-    ComPtr<ID3D12DescriptorHeap> dsDescriptorHeap;
 
     ComPtr<ID3D12PipelineState> pipelineStateObject;
     ComPtr<ID3D12PipelineState> psoSkybox;
