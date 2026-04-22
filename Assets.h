@@ -12,6 +12,7 @@ struct InstanceDesc
     DirectX::XMFLOAT3 pos;
     DirectX::XMFLOAT3 rot;
     DirectX::XMFLOAT3 scale;
+    bool isTransparent = false;
 };
 
 class Assets
@@ -28,18 +29,20 @@ public:
         {
             {
                 "Receiver_AMX",
-                "Models/V-22.glb",
+                "Models/cyberpunk_car.glb",
                 { 0.0f, 0.0f, 0.0f },
                 { 0.0f, 0.0f, 0.0f },
-                { 1.0f, 1.0f, 1.0f }
+                { 1.0f, 1.0f, 1.0f },
+                true
             },
 
             {
                 "Receiver_Plane",
-                "Models/Plane.glb",
+                "Models/Plain.glb",
                 { 0.0f,-5.0f, 0.0f },
                 { 0.0f, 0.0f, 0.0f },
-                { 1.0f, 1.0f, 1.0f }
+                { 1.0f, 1.0f, 1.0f },
+                false
             }
         };
     }

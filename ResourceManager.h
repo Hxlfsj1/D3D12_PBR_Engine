@@ -119,6 +119,7 @@ public:
             instance.translation = desc.pos;
             instance.rotation = desc.rot;
             instance.scale = desc.scale;
+            instance.isTransparent = desc.isTransparent;
 
             m_sceneInstances.push_back(instance);
         }

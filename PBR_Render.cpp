@@ -204,6 +204,23 @@ void D3D12App::Update()
     m_inputManager.Update(deltaTime, camera);
 
     auto& instances = m_resourceManager.GetSceneInstances();
+
+    XMFLOAT3 camPos = camera.Position;
+    std::sort(instances.begin(), instances.end(), [&camPos](const ModelInstance& a, const ModelInstance& b)
+        {
+            if (a.isTransparent != b.isTransparent) return !a.isTransparent;
+
+            if (!a.isTransparent) return a.pModel < b.pModel;
+
+            XMVECTOR posA = XMLoadFloat3(&a.translation);
+            XMVECTOR posB = XMLoadFloat3(&b.translation);
+            XMVECTOR cam = XMLoadFloat3(&camPos);
+
+            float distA = XMVectorGetX(XMVector3LengthSq(XMVectorSubtract(posA, cam)));
+            float distB = XMVectorGetX(XMVector3LengthSq(XMVectorSubtract(posB, cam)));
+            return distA > distB;
+        });
+
     UINT8* cbvAddress = m_resourceManager.GetCBVAddress(frameIndex);
 
     // Refresh per-frame constants, including the MVP transform
@@ -286,8 +303,6 @@ void D3D12App::DrawPBRModel()
     CD3DX12_CPU_DESCRIPTOR_HANDLE dsv = m_deviceContext.GetDSVHandle();
     m_deviceContext.GetCommandList()->OMSetRenderTargets(1, &rtv, FALSE, &dsv);
 
-    m_deviceContext.GetCommandList()->SetPipelineState(m_pipelineManager.GetPBR_PSO());
-
     auto& instances = m_resourceManager.GetSceneInstances();
     if (instances.empty()) return;
 
@@ -316,64 +331,86 @@ void D3D12App::DrawPBRModel()
 
     m_deviceContext.GetCommandList()->SetGraphicsRootDescriptorTable(10, CD3DX12_GPU_DESCRIPTOR_HANDLE(hStart, m_resourceManager.GetShadowSrvIdx(), srvDescSize));
 
-    Model* currentModel = nullptr;
-    UINT instanceStartOffset = 0;
-    UINT currentInstanceCount = 0;
-
-    // Iterate through all model instances that store transformations and model data addresses
-    for (size_t i = 0; i <= instances.size(); ++i)
+    size_t transparentStartIndex = instances.size();
+    for (size_t i = 0; i < instances.size(); ++i)
     {
-        bool isEnd = (i == instances.size());
-        Model* thisModel = isEnd ? nullptr : instances[i].pModel;
-
-        if ((isEnd || thisModel != currentModel) && currentInstanceCount > 0 && currentModel != nullptr)
+        if (instances[i].isTransparent)
         {
-            D3D12_GPU_VIRTUAL_ADDRESS srvAddress = baseGpuAddress + 256 + (instanceStartOffset * sizeof(InstanceData));
-            m_deviceContext.GetCommandList()->SetGraphicsRootShaderResourceView(9, srvAddress);
-
-            for (auto& mesh : currentModel->meshes)
-            {
-                // Configure fallback textures for the GPU to prevent errors in case of loading failures
-                UINT srvIdx[4] = { m_resourceManager.GetDummyAlbedoIdx(), m_resourceManager.GetDummyNormalIdx(), m_resourceManager.GetDummyORMIdx(), m_resourceManager.GetDummyEmissiveIdx() };
-                bool hasMap[4] = { false, false, false, false };
-
-                // Locate the texture assets and swap the placeholders with the actual model textures if available
-                for (auto& tex : mesh.textures)
-                {
-                    if (tex.type == "texture_diffuse") { srvIdx[0] = m_resourceManager.GetTextureSrvIdx(tex.Resource.Get()); hasMap[0] = true; }
-                    else if (tex.type == "texture_normal") { srvIdx[1] = m_resourceManager.GetTextureSrvIdx(tex.Resource.Get()); hasMap[1] = true; }
-                    else if (tex.type == "texture_metallicRoughness" || tex.type == "texture_ao") { srvIdx[2] = m_resourceManager.GetTextureSrvIdx(tex.Resource.Get()); hasMap[2] = true; }
-                    else if (tex.type == "texture_emissive") { srvIdx[3] = m_resourceManager.GetTextureSrvIdx(tex.Resource.Get()); hasMap[3] = true; } // 新增
-                }
-
-                // Pass a 'hasTexture' boolean flag to the shader to dictate whether to sample the texture or fallback to the default material properties
-                UINT32 flags[4] = { (UINT32)hasMap[0], (UINT32)hasMap[1], (UINT32)hasMap[2], (UINT32)hasMap[3] };
-                m_deviceContext.GetCommandList()->SetGraphicsRoot32BitConstants(7, 4, flags, 0);
-
-                // Bind the final resolved texture
-                m_deviceContext.GetCommandList()->SetGraphicsRootDescriptorTable(1, CD3DX12_GPU_DESCRIPTOR_HANDLE(hStart, srvIdx[0], srvDescSize));
-                m_deviceContext.GetCommandList()->SetGraphicsRootDescriptorTable(2, CD3DX12_GPU_DESCRIPTOR_HANDLE(hStart, srvIdx[1], srvDescSize));
-                m_deviceContext.GetCommandList()->SetGraphicsRootDescriptorTable(3, CD3DX12_GPU_DESCRIPTOR_HANDLE(hStart, srvIdx[2], srvDescSize));
-                m_deviceContext.GetCommandList()->SetGraphicsRootDescriptorTable(4, CD3DX12_GPU_DESCRIPTOR_HANDLE(hStart, srvIdx[3], srvDescSize));
-
-                mesh.Draw(m_deviceContext.GetCommandList(), currentInstanceCount);
-            }
-        }
-
-        if (!isEnd)
-        {
-            if (thisModel != currentModel)
-            {
-                currentModel = thisModel;
-                instanceStartOffset = i;
-                currentInstanceCount = 1;
-            }
-            else
-            {
-                currentInstanceCount++;
-            }
+            transparentStartIndex = i;
+            break;
         }
     }
+
+    auto DrawQueue = [=](size_t startIdx, size_t endIdx, ID3D12PipelineState* pso)
+        {
+            if (startIdx >= endIdx) return;
+
+            m_deviceContext.GetCommandList()->SetPipelineState(pso);
+
+            Model* currentModel = nullptr;
+            UINT instanceStartOffset = 0;
+            UINT currentInstanceCount = 0;
+
+            // Iterate through all model instances that store transformations and model data addresses
+            for (size_t i = startIdx; i <= endIdx; ++i)
+            {
+                bool isEnd = (i == endIdx);
+                Model* thisModel = isEnd ? nullptr : instances[i].pModel;
+
+                if ((isEnd || thisModel != currentModel) && currentInstanceCount > 0 && currentModel != nullptr)
+                {
+                    D3D12_GPU_VIRTUAL_ADDRESS srvAddress = baseGpuAddress + 256 + (instanceStartOffset * sizeof(InstanceData));
+                    m_deviceContext.GetCommandList()->SetGraphicsRootShaderResourceView(9, srvAddress);
+
+                    for (auto& mesh : currentModel->meshes)
+                    {
+                        // Configure fallback textures for the GPU to prevent errors in case of loading failures
+                        UINT srvIdx[4] = { m_resourceManager.GetDummyAlbedoIdx(), m_resourceManager.GetDummyNormalIdx(), m_resourceManager.GetDummyORMIdx(), m_resourceManager.GetDummyEmissiveIdx() };
+                        bool hasMap[4] = { false, false, false, false };
+
+                        // Locate the texture assets and swap the placeholders with the actual model textures if available
+                        for (auto& tex : mesh.textures)
+                        {
+                            if (tex.type == "texture_diffuse") { srvIdx[0] = m_resourceManager.GetTextureSrvIdx(tex.Resource.Get()); hasMap[0] = true; }
+                            else if (tex.type == "texture_normal") { srvIdx[1] = m_resourceManager.GetTextureSrvIdx(tex.Resource.Get()); hasMap[1] = true; }
+                            else if (tex.type == "texture_metallicRoughness" || tex.type == "texture_ao") { srvIdx[2] = m_resourceManager.GetTextureSrvIdx(tex.Resource.Get()); hasMap[2] = true; }
+                            else if (tex.type == "texture_emissive") { srvIdx[3] = m_resourceManager.GetTextureSrvIdx(tex.Resource.Get()); hasMap[3] = true; }
+                        }
+
+                        // Pass a 'hasTexture' boolean flag to the shader to dictate whether to sample the texture or fallback to the default material properties
+                        UINT32 flags[4] = { (UINT32)hasMap[0], (UINT32)hasMap[1], (UINT32)hasMap[2], (UINT32)hasMap[3] };
+                        m_deviceContext.GetCommandList()->SetGraphicsRoot32BitConstants(7, 4, flags, 0);
+
+                        // Bind the final resolved texture
+                        m_deviceContext.GetCommandList()->SetGraphicsRootDescriptorTable(1, CD3DX12_GPU_DESCRIPTOR_HANDLE(hStart, srvIdx[0], srvDescSize));
+                        m_deviceContext.GetCommandList()->SetGraphicsRootDescriptorTable(2, CD3DX12_GPU_DESCRIPTOR_HANDLE(hStart, srvIdx[1], srvDescSize));
+                        m_deviceContext.GetCommandList()->SetGraphicsRootDescriptorTable(3, CD3DX12_GPU_DESCRIPTOR_HANDLE(hStart, srvIdx[2], srvDescSize));
+                        m_deviceContext.GetCommandList()->SetGraphicsRootDescriptorTable(4, CD3DX12_GPU_DESCRIPTOR_HANDLE(hStart, srvIdx[3], srvDescSize));
+
+                        mesh.Draw(m_deviceContext.GetCommandList(), currentInstanceCount);
+                    }
+                }
+
+                if (!isEnd)
+                {
+                    if (thisModel != currentModel)
+                    {
+                        currentModel = thisModel;
+                        instanceStartOffset = i;
+                        currentInstanceCount = 1;
+                    }
+                    else
+                    {
+                        currentInstanceCount++;
+                    }
+                }
+            }
+        };
+
+    DrawQueue(0, transparentStartIndex, m_pipelineManager.GetPBR_PSO());
+    DrawSkybox();
+    DrawQueue(transparentStartIndex, instances.size(), m_pipelineManager.GetTransparentPSO_DepthOnly());
+    DrawQueue(transparentStartIndex, instances.size(), m_pipelineManager.GetTransparentPSO_Color());
 }
 
 void D3D12App::DrawSkybox()
@@ -489,7 +526,6 @@ void D3D12App::Render()
     BeginFrame();
     DrawShadowMap();
     DrawPBRModel();
-    DrawSkybox();
     EndFrame();
 
     ID3D12CommandList* lists[] = { m_deviceContext.GetCommandList() };

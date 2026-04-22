@@ -258,7 +258,10 @@ float CalcShadowFactor(float4 lightSpacePos)
 // PBR pixel Shader
 float4 PSMain(VS_OUTPUT input) : SV_TARGET
 {
-    float3 albedo = pow(tAlbedo.Sample(s1, input.texCoord).rgb, 2.2);
+    float4 albedoSample = tAlbedo.Sample(s1, input.texCoord);
+    float3 albedo = pow(albedoSample.rgb, 2.2);
+    float finalAlpha = albedoSample.a;
+    
     float ao = 1.0;
     float roughness = 0.5;
     float metallic = 0.0;
@@ -325,5 +328,5 @@ float4 PSMain(VS_OUTPUT input) : SV_TARGET
     
     color = pow(color, 1.0 / 2.2);
 
-    return float4(color, 1.0);
+    return float4(color, finalAlpha);
 }

@@ -67,6 +67,15 @@ public:
         return shadowPSO.Get();
     }
 
+    ID3D12PipelineState* GetTransparentPSO_DepthOnly()
+    {
+        return psoTransparent_DepthOnly.Get();
+    }
+    ID3D12PipelineState* GetTransparentPSO_Color()
+    {
+        return psoTransparent_Color.Get();
+    }
+
 private:
 
     // Root Signature: Defines the data binding layout for GPU submissions
@@ -201,6 +210,40 @@ private:
         psoDesc.DSVFormat = DXGI_FORMAT_D32_FLOAT;
 
         dc->GetDevice()->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(&pipelineStateObject));
+
+        // PSO for transparent objects
+        // Depth-Only Pass : Enable depth writing and disable color output
+        D3D12_GRAPHICS_PIPELINE_STATE_DESC depthOnlyDesc = psoDesc;
+        depthOnlyDesc.BlendState.RenderTarget[0].RenderTargetWriteMask = 0;
+        depthOnlyDesc.DepthStencilState.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ALL;
+        depthOnlyDesc.DepthStencilState.DepthEnable = TRUE;
+        depthOnlyDesc.DepthStencilState.DepthFunc = D3D12_COMPARISON_FUNC_LESS;
+        depthOnlyDesc.RasterizerState.CullMode = D3D12_CULL_MODE_BACK;
+
+        dc->GetDevice()->CreateGraphicsPipelineState(&depthOnlyDesc, IID_PPV_ARGS(&psoTransparent_DepthOnly));
+
+        // Color-Blend Pass : Enable color output and alpha blending, while disabling depth writes
+        D3D12_GRAPHICS_PIPELINE_STATE_DESC colorDesc = psoDesc;
+
+        D3D12_RENDER_TARGET_BLEND_DESC transparencyBlendDesc = {};
+        transparencyBlendDesc.BlendEnable = TRUE;
+        transparencyBlendDesc.LogicOpEnable = FALSE;
+        transparencyBlendDesc.SrcBlend = D3D12_BLEND_SRC_ALPHA;
+        transparencyBlendDesc.DestBlend = D3D12_BLEND_INV_SRC_ALPHA;
+        transparencyBlendDesc.BlendOp = D3D12_BLEND_OP_ADD;
+        transparencyBlendDesc.SrcBlendAlpha = D3D12_BLEND_ONE;
+        transparencyBlendDesc.DestBlendAlpha = D3D12_BLEND_ZERO;
+        transparencyBlendDesc.BlendOpAlpha = D3D12_BLEND_OP_ADD;
+        transparencyBlendDesc.LogicOp = D3D12_LOGIC_OP_NOOP;
+        transparencyBlendDesc.RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
+
+        colorDesc.BlendState.RenderTarget[0] = transparencyBlendDesc;
+
+        colorDesc.DepthStencilState.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ZERO;
+        colorDesc.DepthStencilState.DepthFunc = D3D12_COMPARISON_FUNC_LESS_EQUAL;
+        colorDesc.RasterizerState.CullMode = D3D12_CULL_MODE_BACK;
+
+        dc->GetDevice()->CreateGraphicsPipelineState(&colorDesc, IID_PPV_ARGS(&psoTransparent_Color));
 
         // PSO for sky box
         auto vsSky = ShaderCompiler::CompileFromFile(L"Shaders/Shaders_For_Sky_Box.hlsl", "VSMain", "vs_5_0");
@@ -352,6 +395,9 @@ private:
 
     ComPtr<ID3D12RootSignature> shadowRootSignature;
     ComPtr<ID3D12PipelineState> shadowPSO;
+
+    ComPtr<ID3D12PipelineState> psoTransparent_DepthOnly;
+    ComPtr<ID3D12PipelineState> psoTransparent_Color;
 };
 
 #endif
