@@ -28,8 +28,8 @@ public:
         return
         {
             {
-                "Receiver_AMX",
-                "Models/cyberpunk_car.glb",
+                "Model_0",
+                "Models/MP5.glb",
                 { 0.0f, 0.0f, 0.0f },
                 { 0.0f, 0.0f, 0.0f },
                 { 1.0f, 1.0f, 1.0f },
@@ -37,7 +37,7 @@ public:
             },
 
             {
-                "Receiver_Plane",
+                "Model_1",
                 "Models/Plain.glb",
                 { 0.0f,-5.0f, 0.0f },
                 { 0.0f, 0.0f, 0.0f },

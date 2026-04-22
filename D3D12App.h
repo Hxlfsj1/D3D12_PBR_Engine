@@ -45,6 +45,7 @@ private:
     void DrawShadowMap();
     void DrawPBRModel();
     void DrawSkybox();
+    void DrawPostProcess();
     void EndFrame();
 
     void Render();

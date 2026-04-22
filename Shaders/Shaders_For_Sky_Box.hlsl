@@ -30,6 +30,6 @@ float4 PSMain(VS_OUTPUT input) : SV_TARGET
 {
     float3 envColor = envMap.Sample(s1, input.localPos).rgb;
     envColor = envColor / (envColor + 1.0);
-    envColor = pow(envColor, 1.0 / 2.2);
+    
     return float4(envColor, 1.0);
 }

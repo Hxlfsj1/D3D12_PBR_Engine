@@ -345,9 +345,54 @@ public:
         return true;
     }
 
-    D3D12_GPU_VIRTUAL_ADDRESS GetSHBufferGPUAddress()
+    bool InitPostProcess(RenderDevice* dc, int width, int height)
     {
-        return shBuffer->GetGPUVirtualAddress();
+        D3D12_DESCRIPTOR_HEAP_DESC rtvHeapDesc = {};
+        rtvHeapDesc.NumDescriptors = 1;
+        rtvHeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
+        rtvHeapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
+        if (FAILED(dc->GetDevice()->CreateDescriptorHeap(&rtvHeapDesc, IID_PPV_ARGS(&m_postRtvHeap))))
+        {
+            return false;
+        }
+
+        D3D12_RESOURCE_DESC texDesc = CD3DX12_RESOURCE_DESC::Tex2D(
+            DXGI_FORMAT_R16G16B16A16_FLOAT,
+            (UINT64)width, (UINT)height,
+            1, 1, 1, 0,
+            D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET
+        );
+
+        D3D12_CLEAR_VALUE clearVal = {};
+        clearVal.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
+        clearVal.Color[0] = 0.2f; clearVal.Color[1] = 0.3f;
+        clearVal.Color[2] = 0.4f; clearVal.Color[3] = 1.0f;
+
+        auto defHeapProps = CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_DEFAULT);
+
+        if (FAILED(dc->GetDevice()->CreateCommittedResource(
+            &defHeapProps,
+            D3D12_HEAP_FLAG_NONE,
+            &texDesc,
+            D3D12_RESOURCE_STATE_RENDER_TARGET,
+            &clearVal,
+            IID_PPV_ARGS(&m_offscreenRT)))) {
+            return false;
+        }
+
+        dc->GetDevice()->CreateRenderTargetView(m_offscreenRT.Get(), nullptr, m_postRtvHeap->GetCPUDescriptorHandleForHeapStart());
+
+        m_offscreenSrvIdx = srvIdx++;
+        D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
+        srvDesc.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
+        srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+        srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+        srvDesc.Texture2D.MipLevels = 1;
+
+        CD3DX12_CPU_DESCRIPTOR_HANDLE hSrv(mainDescriptorHeap->GetCPUDescriptorHandleForHeapStart(), m_offscreenSrvIdx, srvDescriptorSize);
+        dc->GetDevice()->CreateShaderResourceView(m_offscreenRT.Get(), &srvDesc, hSrv);
+
+        return true;
     }
 
     void FreeUploadHeaps()
@@ -359,6 +404,11 @@ public:
                 pair.second->FreeUploadHeaps();
             }
         }
+    }
+
+    D3D12_GPU_VIRTUAL_ADDRESS GetSHBufferGPUAddress()
+    {
+        return shBuffer->GetGPUVirtualAddress();
     }
 
     ID3D12DescriptorHeap* GetMainDescriptorHeap()
@@ -446,6 +496,21 @@ public:
         return m_shadowSrvIdx;
     }
 
+    ID3D12Resource* GetPostProcessRT()
+    {
+        return m_offscreenRT.Get();
+    }
+
+    CD3DX12_CPU_DESCRIPTOR_HANDLE GetPostProcessRtvHandle()
+    {
+        return CD3DX12_CPU_DESCRIPTOR_HANDLE(m_postRtvHeap->GetCPUDescriptorHandleForHeapStart());
+    }
+
+    UINT GetPostProcessSrvIdx()
+    {
+        return m_offscreenSrvIdx;
+    }
+
 private:
     UINT srvIdx;
     UINT srvDescriptorSize;
@@ -490,6 +555,10 @@ private:
     Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> m_shadowDsvHeap;
     UINT m_shadowSrvIdx;
     const UINT m_shadowMapSize = 2048;
+
+    Microsoft::WRL::ComPtr<ID3D12Resource> m_offscreenRT;
+    Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> m_postRtvHeap;
+    UINT m_offscreenSrvIdx;
 };
 
 #endif

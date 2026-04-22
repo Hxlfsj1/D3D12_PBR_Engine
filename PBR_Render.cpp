@@ -165,6 +165,8 @@ bool D3D12App::InitD3D()
 
     if (!m_resourceManager.InitShadowResources(&m_deviceContext)) return false;
     
+    if (!m_resourceManager.InitPostProcess(&m_deviceContext, Width, Height)) return false;
+
     viewport = CD3DX12_VIEWPORT(0.0f, 0.0f, (float)Width, (float)Height);
     scissorRect = CD3DX12_RECT(0, 0, Width, Height);
 
@@ -280,7 +282,7 @@ void D3D12App::BeginFrame()
     m_deviceContext.GetCommandList()->ResourceBarrier(1, &b);
 
     // Bind the Render Target View (RTV) and Depth Stencil View (DSV) for the current frame
-    CD3DX12_CPU_DESCRIPTOR_HANDLE rtv = m_deviceContext.GetRTVHandle(frameIndex);
+    CD3DX12_CPU_DESCRIPTOR_HANDLE rtv = m_resourceManager.GetPostProcessRtvHandle();
     CD3DX12_CPU_DESCRIPTOR_HANDLE dsv = m_deviceContext.GetDSVHandle();
     m_deviceContext.GetCommandList()->OMSetRenderTargets(1, &rtv, FALSE, &dsv);
 
@@ -299,7 +301,7 @@ void D3D12App::DrawPBRModel()
     m_deviceContext.GetCommandList()->RSSetViewports(1, &viewport);
     m_deviceContext.GetCommandList()->RSSetScissorRects(1, &scissorRect);
 
-    CD3DX12_CPU_DESCRIPTOR_HANDLE rtv = m_deviceContext.GetRTVHandle(frameIndex);
+    CD3DX12_CPU_DESCRIPTOR_HANDLE rtv = m_resourceManager.GetPostProcessRtvHandle();
     CD3DX12_CPU_DESCRIPTOR_HANDLE dsv = m_deviceContext.GetDSVHandle();
     m_deviceContext.GetCommandList()->OMSetRenderTargets(1, &rtv, FALSE, &dsv);
 
@@ -409,8 +411,55 @@ void D3D12App::DrawPBRModel()
 
     DrawQueue(0, transparentStartIndex, m_pipelineManager.GetPBR_PSO());
     DrawSkybox();
-    DrawQueue(transparentStartIndex, instances.size(), m_pipelineManager.GetTransparentPSO_DepthOnly());
-    DrawQueue(transparentStartIndex, instances.size(), m_pipelineManager.GetTransparentPSO_Color());
+    
+    if (transparentStartIndex < instances.size())
+    {
+        D3D12_GPU_VIRTUAL_ADDRESS baseGpuAddress = m_resourceManager.GetCBVGPUAddress(frameIndex);
+        CD3DX12_GPU_DESCRIPTOR_HANDLE hStart(m_resourceManager.GetMainDescriptorHeap()->GetGPUDescriptorHandleForHeapStart());
+        UINT srvDescSize = m_resourceManager.GetSrvDescriptorSize();
+
+        for (size_t i = transparentStartIndex; i < instances.size(); ++i)
+        {
+            ModelInstance& instance = instances[i];
+            if (!instance.pModel) continue;
+
+            D3D12_GPU_VIRTUAL_ADDRESS srvAddress = baseGpuAddress + 256 + (i * sizeof(InstanceData));
+
+            auto BindAndDrawSingleInstance = [&](ID3D12PipelineState* pso)
+                {
+                    m_deviceContext.GetCommandList()->SetPipelineState(pso);
+                    m_deviceContext.GetCommandList()->SetGraphicsRootShaderResourceView(9, srvAddress);
+
+                    for (auto& mesh : instance.pModel->meshes)
+                    {
+                        UINT srvIdx[4] = { m_resourceManager.GetDummyAlbedoIdx(), m_resourceManager.GetDummyNormalIdx(), m_resourceManager.GetDummyORMIdx(), m_resourceManager.GetDummyEmissiveIdx() };
+                        bool hasMap[4] = { false, false, false, false };
+
+                        for (auto& tex : mesh.textures)
+                        {
+                            if (tex.type == "texture_diffuse") { srvIdx[0] = m_resourceManager.GetTextureSrvIdx(tex.Resource.Get()); hasMap[0] = true; }
+                            else if (tex.type == "texture_normal") { srvIdx[1] = m_resourceManager.GetTextureSrvIdx(tex.Resource.Get()); hasMap[1] = true; }
+                            else if (tex.type == "texture_metallicRoughness" || tex.type == "texture_ao") { srvIdx[2] = m_resourceManager.GetTextureSrvIdx(tex.Resource.Get()); hasMap[2] = true; }
+                            else if (tex.type == "texture_emissive") { srvIdx[3] = m_resourceManager.GetTextureSrvIdx(tex.Resource.Get()); hasMap[3] = true; }
+                        }
+
+                        UINT32 flags[4] = { (UINT32)hasMap[0], (UINT32)hasMap[1], (UINT32)hasMap[2], (UINT32)hasMap[3] };
+                        m_deviceContext.GetCommandList()->SetGraphicsRoot32BitConstants(7, 4, flags, 0);
+
+                        m_deviceContext.GetCommandList()->SetGraphicsRootDescriptorTable(1, CD3DX12_GPU_DESCRIPTOR_HANDLE(hStart, srvIdx[0], srvDescSize));
+                        m_deviceContext.GetCommandList()->SetGraphicsRootDescriptorTable(2, CD3DX12_GPU_DESCRIPTOR_HANDLE(hStart, srvIdx[1], srvDescSize));
+                        m_deviceContext.GetCommandList()->SetGraphicsRootDescriptorTable(3, CD3DX12_GPU_DESCRIPTOR_HANDLE(hStart, srvIdx[2], srvDescSize));
+                        m_deviceContext.GetCommandList()->SetGraphicsRootDescriptorTable(4, CD3DX12_GPU_DESCRIPTOR_HANDLE(hStart, srvIdx[3], srvDescSize));
+
+                        mesh.Draw(m_deviceContext.GetCommandList(), 1);
+                    }
+                };
+
+            BindAndDrawSingleInstance(m_pipelineManager.GetTransparentPSO_DepthOnly());
+
+            BindAndDrawSingleInstance(m_pipelineManager.GetTransparentPSO_Color());
+        }
+    }
 }
 
 void D3D12App::DrawSkybox()
@@ -508,6 +557,45 @@ void D3D12App::DrawShadowMap()
     cmdList->ResourceBarrier(1, &toSrv);
 }
 
+void D3D12App::DrawPostProcess()
+{
+    auto cmdList = m_deviceContext.GetCommandList();
+
+    CD3DX12_RESOURCE_BARRIER toSrv = CD3DX12_RESOURCE_BARRIER::Transition(
+        m_resourceManager.GetPostProcessRT(),
+        D3D12_RESOURCE_STATE_RENDER_TARGET,
+        D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+    cmdList->ResourceBarrier(1, &toSrv);
+
+    CD3DX12_CPU_DESCRIPTOR_HANDLE rtv = m_deviceContext.GetRTVHandle(frameIndex);
+    cmdList->OMSetRenderTargets(1, &rtv, FALSE, nullptr);
+
+    cmdList->SetGraphicsRootSignature(m_pipelineManager.GetPostProcessRootSignature());
+    cmdList->SetPipelineState(m_pipelineManager.GetPostProcessPSO());
+
+    cmdList->RSSetViewports(1, &viewport);
+    cmdList->RSSetScissorRects(1, &scissorRect);
+    cmdList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+
+    ID3D12DescriptorHeap* heaps[] = { m_resourceManager.GetMainDescriptorHeap() };
+    cmdList->SetDescriptorHeaps(1, heaps);
+
+    CD3DX12_GPU_DESCRIPTOR_HANDLE hSrv(
+        m_resourceManager.GetMainDescriptorHeap()->GetGPUDescriptorHandleForHeapStart(),
+        m_resourceManager.GetPostProcessSrvIdx(),
+        m_resourceManager.GetSrvDescriptorSize()
+    );
+    cmdList->SetGraphicsRootDescriptorTable(0, hSrv);
+
+    cmdList->DrawInstanced(3, 1, 0, 0);
+
+    CD3DX12_RESOURCE_BARRIER toRtv = CD3DX12_RESOURCE_BARRIER::Transition(
+        m_resourceManager.GetPostProcessRT(),
+        D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+        D3D12_RESOURCE_STATE_RENDER_TARGET);
+    cmdList->ResourceBarrier(1, &toRtv);
+}
+
 void D3D12App::EndFrame()
 {
     // Define the required framebuffers as 'presentation states' rather than 'canvases'
@@ -526,6 +614,7 @@ void D3D12App::Render()
     BeginFrame();
     DrawShadowMap();
     DrawPBRModel();
+    DrawPostProcess();
     EndFrame();
 
     ID3D12CommandList* lists[] = { m_deviceContext.GetCommandList() };

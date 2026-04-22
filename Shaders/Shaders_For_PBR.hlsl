@@ -318,15 +318,5 @@ float4 PSMain(VS_OUTPUT input) : SV_TARGET
     float3 emissive = hasEmissive ? pow(tEmissive.Sample(s1, input.texCoord).rgb, 2.2) : float3(0.0, 0.0, 0.0);
     float3 color = ambient + Lo + emissive;
 
-    // ACES Filmic Tone Mapping
-    const float a = 2.51;
-    const float b = 0.03;
-    const float c = 2.43;
-    const float d = 0.59;
-    const float e = 0.14;
-    color = saturate((color * (a * color + b)) / (color * (c * color + d) + e));
-    
-    color = pow(color, 1.0 / 2.2);
-
     return float4(color, finalAlpha);
 }
