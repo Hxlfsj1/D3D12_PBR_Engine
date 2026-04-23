@@ -210,10 +210,13 @@ void D3D12App::Update()
     XMFLOAT3 camPos = camera.Position;
     std::sort(instances.begin(), instances.end(), [&camPos](const ModelInstance& a, const ModelInstance& b)
         {
+            // It breaks the batching, but establishes a clear strict boundary between opaque and transparent objects
             if (a.isTransparent != b.isTransparent) return !a.isTransparent;
 
+            // Rebuild the instancing batches for opaque objects
             if (!a.isTransparent) return a.pModel < b.pModel;
 
+            // Sort transparent objects in a back-to-front order (batching is lost here, resulting in a performance hit)
             XMVECTOR posA = XMLoadFloat3(&a.translation);
             XMVECTOR posB = XMLoadFloat3(&b.translation);
             XMVECTOR cam = XMLoadFloat3(&camPos);

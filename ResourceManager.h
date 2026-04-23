@@ -200,6 +200,7 @@ public:
             WaitForSingleObject(dc->GetFenceEvent(), INFINITE);
         }
 
+        // Group identical meshes together to facilitate hardware instancing
         std::sort(m_sceneInstances.begin(), m_sceneInstances.end(), [](const ModelInstance& a, const ModelInstance& b)
         {
             return a.pModel < b.pModel;
