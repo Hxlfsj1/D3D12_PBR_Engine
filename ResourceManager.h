@@ -15,6 +15,7 @@
 #include <ResourceUploadBatch.h>
 #include <WICTextureLoader.h>
 #include <algorithm>
+#include <memory>
 
 using Microsoft::WRL::ComPtr;
 
@@ -33,18 +34,7 @@ public:
         dummyORMIdx = 0;
     }
 
-    ~ResourceManager()
-    {
-        for (auto& pair : myModels)
-        {
-            if (pair.second != nullptr)
-            {
-                delete pair.second;
-                pair.second = nullptr;
-            }
-        }
-        myModels.clear();
-    }
+    ~ResourceManager() {}
 
     // What is loaded :
     // 1. Dummy textures
@@ -110,12 +100,12 @@ public:
             // This ensures a single copy of the model data while allowing for multiple unique transformations, which is the essence of instancing
             if (myModels.find(desc.modelPath) == myModels.end())
             {
-                myModels[desc.modelPath] = new Model(dc->GetDevice(), dc->GetCommandList(), resourceUpload, desc.modelPath);
+                myModels[desc.modelPath] = std::make_unique<Model>(dc->GetDevice(), dc->GetCommandList(), resourceUpload, desc.modelPath);
             }
 
             ModelInstance instance;
             instance.name = desc.name;
-            instance.pModel = myModels[desc.modelPath];
+            instance.pModel = myModels[desc.modelPath].get();
             instance.translation = desc.pos;
             instance.rotation = desc.rot;
             instance.scale = desc.scale;
@@ -520,7 +510,7 @@ private:
 
     // Rendering assets and repository
     // A map for storing model data
-    std::unordered_map<std::string, Model*> myModels;
+    std::unordered_map<std::string, std::unique_ptr<Model>> myModels;
     std::vector<ModelInstance> m_sceneInstances;
     std::map<ID3D12Resource*, UINT> textureSrvIndices;
 
