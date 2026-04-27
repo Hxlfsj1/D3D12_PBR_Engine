@@ -69,7 +69,8 @@ public:
                         "Models/MP5.glb",
                         { (x * spacing) - offset, (y * spacing) - offset, (z * spacing) - offset },
                         { 0.0f, 0.0f, 0.0f },
-                        { 1.0f, 1.0f, 1.0f }
+                        { 1.0f, 1.0f, 1.0f },
+                        false
                         });
                 }
             }

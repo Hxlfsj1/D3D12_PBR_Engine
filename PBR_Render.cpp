@@ -159,7 +159,7 @@ bool D3D12App::InitD3D()
     if (!m_pipelineManager.Initialize(&m_deviceContext)) return false;
 
     // Stream Assets & Build IBL: Load 3D models and HDR textures into VRAM and bake IBL components
-    auto sceneData = Assets::GetSniperAlleyScene();
+    auto sceneData = Assets::GetPerformanceTestScene();
     if (!m_resourceManager.LoadAssets(&m_deviceContext, sceneData, frameBufferCount)) return false;
     m_resourceManager.InitIBL(&m_deviceContext, currentHDRPath.c_str());
 
@@ -301,6 +301,10 @@ void D3D12App::BeginFrame()
 
 void D3D12App::DrawPBRModel()
 {
+    // ====================================================================================================
+    // Viewport and scissor setup
+    // ====================================================================================================
+
     m_deviceContext.GetCommandList()->RSSetViewports(1, &viewport);
     m_deviceContext.GetCommandList()->RSSetScissorRects(1, &scissorRect);
 
@@ -335,6 +339,10 @@ void D3D12App::DrawPBRModel()
 
     m_deviceContext.GetCommandList()->SetGraphicsRootDescriptorTable(10, CD3DX12_GPU_DESCRIPTOR_HANDLE(hStart, m_resourceManager.GetShadowSrvIdx(), srvDescSize));
 
+    // ====================================================================================================
+    // Finding the boundary between opaque and transparent objects
+    // ====================================================================================================
+
     size_t transparentStartIndex = instances.size();
     for (size_t i = 0; i < instances.size(); ++i)
     {
@@ -344,6 +352,10 @@ void D3D12App::DrawPBRModel()
             break;
         }
     }
+
+    // ====================================================================================================
+    // Core function for setting up and submitting opaque draw calls, shared between Z-Prepass and PBR Base Pass
+    // ====================================================================================================
 
     auto DrawQueue = [=](size_t startIdx, size_t endIdx, ID3D12PipelineState* pso)
         {
@@ -411,6 +423,10 @@ void D3D12App::DrawPBRModel()
             }
         };
 
+    // ====================================================================================================
+    // Z-Prepass -> PBR Base Pass For Opaque Objects -> Sky Box Pass
+    // ====================================================================================================
+
     m_deviceContext.GetCommandList()->OMSetRenderTargets(0, nullptr, FALSE, &dsv);
     DrawQueue(0, transparentStartIndex, m_pipelineManager.GetZPrepass_PSO());
 
@@ -418,6 +434,10 @@ void D3D12App::DrawPBRModel()
     DrawQueue(0, transparentStartIndex, m_pipelineManager.GetPBR_PSO());
 
     DrawSkybox();
+
+    // ====================================================================================================
+    // Transparent Object Pass
+    // ====================================================================================================
 
     if (transparentStartIndex < instances.size())
     {
