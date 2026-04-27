@@ -38,6 +38,11 @@ public:
         return rootSignature.Get();
     }
 
+    ID3D12PipelineState* GetZPrepass_PSO()
+    {
+        return psoZPrepass.Get();
+    }
+
     ID3D12PipelineState* GetPBR_PSO()
     {
         return pipelineStateObject.Get();
@@ -189,9 +194,9 @@ private:
     // PSO : A pre-baked, immutable snapshot of the entire graphics pipeline state
     bool BuildPipelineStates(RenderDevice* dc)
     {
-        // PSO for PBR object
         auto vs = ShaderCompiler::CompileFromFile(L"Shaders/Shaders_For_PBR.hlsl", "VSMain", "vs_5_0");
         auto ps = ShaderCompiler::CompileFromFile(L"Shaders/Shaders_For_PBR.hlsl", "PSMain", "ps_5_0");
+        auto vsZPrepass = ShaderCompiler::CompileFromFile(L"Shaders/Shaders_For_ZPrepass.hlsl", "VSMain", "vs_5_0");
 
         D3D12_INPUT_ELEMENT_DESC layout[] =
         {
@@ -204,6 +209,38 @@ private:
             { "BLENDWEIGHT", 0, DXGI_FORMAT_R32G32B32A32_FLOAT, 0, 72, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 }
         };
 
+        /*
+        PSO for Z-Prepass
+        1. Pixel shader is not required, and no output to the color buffer is needed
+        2. Use standard 'LESS' depth testing to retain only the foremost layer
+        */
+        D3D12_GRAPHICS_PIPELINE_STATE_DESC zPrepassPsoDesc = {};
+        zPrepassPsoDesc.InputLayout = { layout, _countof(layout) };
+        zPrepassPsoDesc.pRootSignature = rootSignature.Get();
+        zPrepassPsoDesc.VS = CD3DX12_SHADER_BYTECODE(vsZPrepass.Get());
+        zPrepassPsoDesc.PS = { nullptr, 0 };
+        zPrepassPsoDesc.RasterizerState = CD3DX12_RASTERIZER_DESC(D3D12_DEFAULT);
+        zPrepassPsoDesc.RasterizerState.CullMode = D3D12_CULL_MODE_BACK;
+        zPrepassPsoDesc.BlendState = CD3DX12_BLEND_DESC(D3D12_DEFAULT);
+        zPrepassPsoDesc.DepthStencilState = CD3DX12_DEPTH_STENCIL_DESC(D3D12_DEFAULT);
+        zPrepassPsoDesc.DepthStencilState.DepthEnable = TRUE;
+        zPrepassPsoDesc.DepthStencilState.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ALL;
+        zPrepassPsoDesc.DepthStencilState.DepthFunc = D3D12_COMPARISON_FUNC_LESS;
+        zPrepassPsoDesc.SampleMask = UINT_MAX;
+        zPrepassPsoDesc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+        zPrepassPsoDesc.NumRenderTargets = 0;
+        zPrepassPsoDesc.RTVFormats[0] = DXGI_FORMAT_UNKNOWN;
+        zPrepassPsoDesc.DSVFormat = DXGI_FORMAT_D32_FLOAT;
+        zPrepassPsoDesc.SampleDesc.Count = 1;
+
+        dc->GetDevice()->CreateGraphicsPipelineState(&zPrepassPsoDesc, IID_PPV_ARGS(&psoZPrepass));
+
+        /*
+        PSO for PBR object
+        1. Only render when the depth strictly matches the depth map from the Z-Prepass
+        2. Completely disable depth writes
+        3. A pure opaque pass (disable alpha blending, enable backface culling)
+        */
         D3D12_GRAPHICS_PIPELINE_STATE_DESC psoDesc = {};
         psoDesc.InputLayout = { layout, _countof(layout) };
         psoDesc.pRootSignature = rootSignature.Get();
@@ -214,6 +251,8 @@ private:
         psoDesc.RasterizerState.CullMode = D3D12_CULL_MODE_BACK;
         psoDesc.BlendState = CD3DX12_BLEND_DESC(D3D12_DEFAULT);
         psoDesc.DepthStencilState = CD3DX12_DEPTH_STENCIL_DESC(D3D12_DEFAULT);
+        psoDesc.DepthStencilState.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ZERO;
+        psoDesc.DepthStencilState.DepthFunc = D3D12_COMPARISON_FUNC_EQUAL;
         psoDesc.SampleMask = UINT_MAX;
         psoDesc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
         psoDesc.NumRenderTargets = 1;
@@ -223,9 +262,13 @@ private:
 
         dc->GetDevice()->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(&pipelineStateObject));
 
-        // PSO for transparent objects
-        // Depth-Only Pass : Enable depth writing and disable color output
+        /*
+        PSO for Transparent objects (Pass 1: Depth-Only)
+        1. "Invisible Shield": Strip away the Pixel Shader and disable color writes completely
+        2. Force depth writes with 'LESS' test to record only the outermost surface, preventing ugly self-occlusion
+        */
         D3D12_GRAPHICS_PIPELINE_STATE_DESC depthOnlyDesc = psoDesc;
+        depthOnlyDesc.PS = { nullptr, 0 };
         depthOnlyDesc.BlendState.RenderTarget[0].RenderTargetWriteMask = 0;
         depthOnlyDesc.DepthStencilState.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ALL;
         depthOnlyDesc.DepthStencilState.DepthEnable = TRUE;
@@ -234,7 +277,11 @@ private:
 
         dc->GetDevice()->CreateGraphicsPipelineState(&depthOnlyDesc, IID_PPV_ARGS(&psoTransparent_DepthOnly));
 
-        // Color-Blend Pass : Enable color output and alpha blending, while disabling depth writes
+        /*
+        PSO for Transparent objects (Pass 2: Color-Blend)
+        1. "Paint the Shield": Re-enable the PBR Pixel Shader and activate Alpha Blending (SrcAlpha + InvSrcAlpha)
+        2. Disable depth writes, but use 'EQUAL' depth testing to render ONLY onto the exact depth mask created in Pass 1
+        */
         D3D12_GRAPHICS_PIPELINE_STATE_DESC colorDesc = psoDesc;
 
         D3D12_RENDER_TARGET_BLEND_DESC transparencyBlendDesc = {};
@@ -252,16 +299,19 @@ private:
         colorDesc.BlendState.RenderTarget[0] = transparencyBlendDesc;
 
         colorDesc.DepthStencilState.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ZERO;
-        colorDesc.DepthStencilState.DepthFunc = D3D12_COMPARISON_FUNC_LESS_EQUAL;
+        colorDesc.DepthStencilState.DepthFunc = D3D12_COMPARISON_FUNC_EQUAL;
         colorDesc.RasterizerState.CullMode = D3D12_CULL_MODE_BACK;
 
         dc->GetDevice()->CreateGraphicsPipelineState(&colorDesc, IID_PPV_ARGS(&psoTransparent_Color));
 
-        // PSO for sky box
+        /*
+        PSO for sky box
+        1. Since the camera is inside the skybox, enable front-face culling to retain the interior back-faces
+        2. Use a 'LESS_EQUAL' depth test to ensure the skybox, which is rendered last and positioned at maximum depth, can be successfully drawn
+        */
         auto vsSky = ShaderCompiler::CompileFromFile(L"Shaders/Shaders_For_Sky_Box.hlsl", "VSMain", "vs_5_0");
         auto psSky = ShaderCompiler::CompileFromFile(L"Shaders/Shaders_For_Sky_Box.hlsl", "PSMain", "ps_5_0");
 
-        // Derive a new PSO from the existing template
         D3D12_GRAPHICS_PIPELINE_STATE_DESC skyPsoDesc = psoDesc;
         D3D12_INPUT_ELEMENT_DESC layoutSky[] = { { "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 0, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 } };
 
@@ -450,6 +500,7 @@ private:
 
 private:
 
+    ComPtr<ID3D12PipelineState> psoZPrepass;
     ComPtr<ID3D12PipelineState> pipelineStateObject;
     ComPtr<ID3D12PipelineState> psoSkybox;
     ComPtr<ID3D12RootSignature> rootSignature;

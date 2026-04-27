@@ -61,6 +61,9 @@
     <None Include="Shaders\Shaders_For_PostProcess.hlsl">
       <Filter>源文件\Shaders</Filter>
     </None>
+    <None Include="Shaders\Shaders_For_ZPrepass.hlsl">
+      <Filter>源文件\Shaders</Filter>
+    </None>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="Assets.h">

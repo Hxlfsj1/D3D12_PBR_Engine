@@ -164,7 +164,7 @@ bool D3D12App::InitD3D()
     m_resourceManager.InitIBL(&m_deviceContext, currentHDRPath.c_str());
 
     if (!m_resourceManager.InitShadowResources(&m_deviceContext)) return false;
-    
+
     if (!m_resourceManager.InitPostProcess(&m_deviceContext, Width, Height)) return false;
 
     viewport = CD3DX12_VIEWPORT(0.0f, 0.0f, (float)Width, (float)Height);
@@ -306,7 +306,6 @@ void D3D12App::DrawPBRModel()
 
     CD3DX12_CPU_DESCRIPTOR_HANDLE rtv = m_resourceManager.GetPostProcessRtvHandle();
     CD3DX12_CPU_DESCRIPTOR_HANDLE dsv = m_deviceContext.GetDSVHandle();
-    m_deviceContext.GetCommandList()->OMSetRenderTargets(1, &rtv, FALSE, &dsv);
 
     auto& instances = m_resourceManager.GetSceneInstances();
     if (instances.empty()) return;
@@ -412,9 +411,14 @@ void D3D12App::DrawPBRModel()
             }
         };
 
+    m_deviceContext.GetCommandList()->OMSetRenderTargets(0, nullptr, FALSE, &dsv);
+    DrawQueue(0, transparentStartIndex, m_pipelineManager.GetZPrepass_PSO());
+
+    m_deviceContext.GetCommandList()->OMSetRenderTargets(1, &rtv, FALSE, &dsv);
     DrawQueue(0, transparentStartIndex, m_pipelineManager.GetPBR_PSO());
+
     DrawSkybox();
-    
+
     if (transparentStartIndex < instances.size())
     {
         D3D12_GPU_VIRTUAL_ADDRESS baseGpuAddress = m_resourceManager.GetCBVGPUAddress(frameIndex);
