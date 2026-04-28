@@ -34,10 +34,19 @@ struct Vertex
     float m_Weights[MAX_BONE_INFLUENCE];
 };
 
+enum class TextureType
+{
+    Albedo,
+    Normal,
+    ORM,
+    Emissive,
+    Unknown
+};
+
 struct Texture
 {
     ComPtr<ID3D12Resource> Resource;
-    std::string type;
+    TextureType type;
     std::string path;
 };
 
@@ -240,17 +249,17 @@ private:
         {
             aiMaterial* material = scene->mMaterials[mesh->mMaterialIndex];
 
-            if (material->GetTextureCount(aiTextureType_BASE_COLOR) > 0) LoadAssimpTexture(device, upload, material, aiTextureType_BASE_COLOR, "texture_diffuse", textures, scene);
-            else if (material->GetTextureCount(aiTextureType_DIFFUSE) > 0) LoadAssimpTexture(device, upload, material, aiTextureType_DIFFUSE, "texture_diffuse", textures, scene);
+            if (material->GetTextureCount(aiTextureType_BASE_COLOR) > 0) LoadAssimpTexture(device, upload, material, aiTextureType_BASE_COLOR, TextureType::Albedo, textures, scene);
+            else if (material->GetTextureCount(aiTextureType_DIFFUSE) > 0) LoadAssimpTexture(device, upload, material, aiTextureType_DIFFUSE, TextureType::Albedo, textures, scene);
 
-            if (material->GetTextureCount(aiTextureType_NORMALS) > 0) LoadAssimpTexture(device, upload, material, aiTextureType_NORMALS, "texture_normal", textures, scene);
-            else if (material->GetTextureCount(aiTextureType_NORMAL_CAMERA) > 0) LoadAssimpTexture(device, upload, material, aiTextureType_NORMAL_CAMERA, "texture_normal", textures, scene);
+            if (material->GetTextureCount(aiTextureType_NORMALS) > 0) LoadAssimpTexture(device, upload, material, aiTextureType_NORMALS, TextureType::Normal, textures, scene);
+            else if (material->GetTextureCount(aiTextureType_NORMAL_CAMERA) > 0) LoadAssimpTexture(device, upload, material, aiTextureType_NORMAL_CAMERA, TextureType::Normal, textures, scene);
 
-            if (material->GetTextureCount(aiTextureType_UNKNOWN) > 0) LoadAssimpTexture(device, upload, material, aiTextureType_UNKNOWN, "texture_metallicRoughness", textures, scene);
-            else if (material->GetTextureCount(aiTextureType_METALNESS) > 0) LoadAssimpTexture(device, upload, material, aiTextureType_METALNESS, "texture_metallicRoughness", textures, scene);
+            if (material->GetTextureCount(aiTextureType_UNKNOWN) > 0) LoadAssimpTexture(device, upload, material, aiTextureType_UNKNOWN, TextureType::ORM, textures, scene);
+            else if (material->GetTextureCount(aiTextureType_METALNESS) > 0) LoadAssimpTexture(device, upload, material, aiTextureType_METALNESS, TextureType::ORM, textures, scene);
 
-            if (material->GetTextureCount(aiTextureType_AMBIENT_OCCLUSION) > 0) LoadAssimpTexture(device, upload, material, aiTextureType_AMBIENT_OCCLUSION, "texture_ao", textures, scene);
-            else if (material->GetTextureCount(aiTextureType_LIGHTMAP) > 0) LoadAssimpTexture(device, upload, material, aiTextureType_LIGHTMAP, "texture_ao", textures, scene);
+            if (material->GetTextureCount(aiTextureType_AMBIENT_OCCLUSION) > 0) LoadAssimpTexture(device, upload, material, aiTextureType_AMBIENT_OCCLUSION, TextureType::ORM, textures, scene);
+            else if (material->GetTextureCount(aiTextureType_LIGHTMAP) > 0) LoadAssimpTexture(device, upload, material, aiTextureType_LIGHTMAP, TextureType::ORM, textures, scene);
 
             aiString matName;
             material->Get(AI_MATKEY_NAME, matName);
@@ -264,19 +273,19 @@ private:
                 }
             }
 
-            if (material->GetTextureCount(aiTextureType_EMISSION_COLOR) > 0) LoadAssimpTexture(device, upload, material, aiTextureType_EMISSION_COLOR, "texture_emissive", textures, scene);
-            else if (material->GetTextureCount(aiTextureType_EMISSIVE) > 0) LoadAssimpTexture(device, upload, material, aiTextureType_EMISSIVE, "texture_emissive", textures, scene);
+            if (material->GetTextureCount(aiTextureType_EMISSION_COLOR) > 0) LoadAssimpTexture(device, upload, material, aiTextureType_EMISSION_COLOR, TextureType::Emissive, textures, scene);
+            else if (material->GetTextureCount(aiTextureType_EMISSIVE) > 0) LoadAssimpTexture(device, upload, material, aiTextureType_EMISSIVE, TextureType::Emissive, textures, scene);
             else if (isUnlit)
             {
-                if (material->GetTextureCount(aiTextureType_BASE_COLOR) > 0) LoadAssimpTexture(device, upload, material, aiTextureType_BASE_COLOR, "texture_emissive", textures, scene);
-                else if (material->GetTextureCount(aiTextureType_DIFFUSE) > 0) LoadAssimpTexture(device, upload, material, aiTextureType_DIFFUSE, "texture_emissive", textures, scene);
+                if (material->GetTextureCount(aiTextureType_BASE_COLOR) > 0) LoadAssimpTexture(device, upload, material, aiTextureType_BASE_COLOR, TextureType::Emissive, textures, scene);
+                else if (material->GetTextureCount(aiTextureType_DIFFUSE) > 0) LoadAssimpTexture(device, upload, material, aiTextureType_DIFFUSE, TextureType::Emissive, textures, scene);
             }
         }
 
         return Mesh(device, cmdList, vertices, indices, textures);
     }
 
-    void LoadAssimpTexture(ID3D12Device* device, DirectX::ResourceUploadBatch& upload, aiMaterial* mat, aiTextureType type, std::string typeName, std::vector<Texture>& textures, const aiScene* scene)
+    void LoadAssimpTexture(ID3D12Device* device, DirectX::ResourceUploadBatch& upload, aiMaterial* mat, aiTextureType type, TextureType typeEnum, std::vector<Texture>& textures, const aiScene* scene)
     {
         if (mat->GetTextureCount(type) > 0)
         {
@@ -290,7 +299,7 @@ private:
                 if (textures_loaded[j].path == path)
                 {
                     Texture cachedTexture = textures_loaded[j];
-                    cachedTexture.type = typeName;
+                    cachedTexture.type = typeEnum;
                     textures.push_back(cachedTexture);
                     skip = true;
                     break;
@@ -312,7 +321,7 @@ private:
 
                 if (texture.Resource != nullptr)
                 {
-                    texture.type = typeName;
+                    texture.type = typeEnum;
                     texture.path = path;
                     textures.push_back(texture);
                     textures_loaded.push_back(texture);

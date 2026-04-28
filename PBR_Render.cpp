@@ -387,10 +387,27 @@ void D3D12App::DrawPBRModel()
                         // Locate the texture assets and swap the placeholders with the actual model textures if available
                         for (auto& tex : mesh.textures)
                         {
-                            if (tex.type == "texture_diffuse") { srvIdx[0] = m_resourceManager.GetTextureSrvIdx(tex.Resource.Get()); hasMap[0] = true; }
-                            else if (tex.type == "texture_normal") { srvIdx[1] = m_resourceManager.GetTextureSrvIdx(tex.Resource.Get()); hasMap[1] = true; }
-                            else if (tex.type == "texture_metallicRoughness" || tex.type == "texture_ao") { srvIdx[2] = m_resourceManager.GetTextureSrvIdx(tex.Resource.Get()); hasMap[2] = true; }
-                            else if (tex.type == "texture_emissive") { srvIdx[3] = m_resourceManager.GetTextureSrvIdx(tex.Resource.Get()); hasMap[3] = true; }
+                            switch (tex.type)
+                            {
+                            case TextureType::Albedo:
+                                srvIdx[0] = m_resourceManager.GetTextureSrvIdx(tex.Resource.Get());
+                                hasMap[0] = true;
+                                break;
+                            case TextureType::Normal:
+                                srvIdx[1] = m_resourceManager.GetTextureSrvIdx(tex.Resource.Get());
+                                hasMap[1] = true;
+                                break;
+                            case TextureType::ORM:
+                                srvIdx[2] = m_resourceManager.GetTextureSrvIdx(tex.Resource.Get());
+                                hasMap[2] = true;
+                                break;
+                            case TextureType::Emissive:
+                                srvIdx[3] = m_resourceManager.GetTextureSrvIdx(tex.Resource.Get());
+                                hasMap[3] = true;
+                                break;
+                            default:
+                                break;
+                            }
                         }
 
                         // Pass a 'hasTexture' boolean flag to the shader to dictate whether to sample the texture or fallback to the default material properties
@@ -464,10 +481,27 @@ void D3D12App::DrawPBRModel()
 
                         for (auto& tex : mesh.textures)
                         {
-                            if (tex.type == "texture_diffuse") { srvIdx[0] = m_resourceManager.GetTextureSrvIdx(tex.Resource.Get()); hasMap[0] = true; }
-                            else if (tex.type == "texture_normal") { srvIdx[1] = m_resourceManager.GetTextureSrvIdx(tex.Resource.Get()); hasMap[1] = true; }
-                            else if (tex.type == "texture_metallicRoughness" || tex.type == "texture_ao") { srvIdx[2] = m_resourceManager.GetTextureSrvIdx(tex.Resource.Get()); hasMap[2] = true; }
-                            else if (tex.type == "texture_emissive") { srvIdx[3] = m_resourceManager.GetTextureSrvIdx(tex.Resource.Get()); hasMap[3] = true; }
+                            switch (tex.type)
+                            {
+                            case TextureType::Albedo:
+                                srvIdx[0] = m_resourceManager.GetTextureSrvIdx(tex.Resource.Get());
+                                hasMap[0] = true;
+                                break;
+                            case TextureType::Normal:
+                                srvIdx[1] = m_resourceManager.GetTextureSrvIdx(tex.Resource.Get());
+                                hasMap[1] = true;
+                                break;
+                            case TextureType::ORM:
+                                srvIdx[2] = m_resourceManager.GetTextureSrvIdx(tex.Resource.Get());
+                                hasMap[2] = true;
+                                break;
+                            case TextureType::Emissive:
+                                srvIdx[3] = m_resourceManager.GetTextureSrvIdx(tex.Resource.Get());
+                                hasMap[3] = true;
+                                break;
+                            default:
+                                break;
+                            }
                         }
 
                         UINT32 flags[4] = { (UINT32)hasMap[0], (UINT32)hasMap[1], (UINT32)hasMap[2], (UINT32)hasMap[3] };
