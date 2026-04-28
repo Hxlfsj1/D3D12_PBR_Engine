@@ -103,6 +103,8 @@ private:
     // FPS
     int frameCount = 0;
     float timeElapsed = 0.0f;
+
+    int m_visibleInstanceCount = 0;
 };
 
 #endif

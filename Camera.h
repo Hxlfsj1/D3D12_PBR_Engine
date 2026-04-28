@@ -2,6 +2,7 @@
 #define CAMERA_H
 
 #include <DirectXMath.h>
+#include <DirectXCollision.h>
 
 using namespace DirectX;
 
@@ -22,7 +23,6 @@ const float ZOOM = 45.0f;
 class Camera
 {
 public:
-
     XMFLOAT3 Position;
     XMFLOAT3 Front;
     XMFLOAT3 Up;
@@ -65,6 +65,17 @@ public:
         XMVECTOR up = XMLoadFloat3(&Up);
 
         return XMMatrixLookAtLH(pos, XMVectorAdd(pos, front), up);
+    }
+
+    BoundingFrustum GetWorldSpaceFrustum(float aspectRatio, float nearZ, float farZ)
+    {
+        XMMATRIX projectionMatrix = XMMatrixPerspectiveFovLH(XMConvertToRadians(Zoom), aspectRatio, nearZ, farZ);
+        BoundingFrustum frustum;
+        BoundingFrustum::CreateFromMatrix(frustum, projectionMatrix);
+        XMVECTOR det;
+        XMMATRIX invView = XMMatrixInverse(&det, GetViewMatrix());
+        frustum.Transform(frustum, invView);
+        return frustum;
     }
 
     void ProcessKeyboard(Camera_Movement direction, float deltaTime)
@@ -132,7 +143,6 @@ public:
     }
 
 private:
-
     void updateCameraVectors()
     {
         XMVECTOR quat = XMQuaternionRotationRollPitchYaw(

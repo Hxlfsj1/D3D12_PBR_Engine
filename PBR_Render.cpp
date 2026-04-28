@@ -17,6 +17,9 @@ using namespace DirectX;
 // std::shared_ptr allocates an external reference counter, whereas ComPtr uses the internal counter of the COM object itself.
 using Microsoft::WRL::ComPtr;
 
+static std::vector<ModelInstance*> g_visibleInstances;
+static std::vector<ModelInstance*> g_shadowVisibleInstances;
+
 // Global hook for Win32 message routing
 D3D12App* g_App = nullptr;
 
@@ -207,24 +210,7 @@ void D3D12App::Update()
 
     auto& instances = m_resourceManager.GetSceneInstances();
 
-    XMFLOAT3 camPos = camera.Position;
-    std::sort(instances.begin(), instances.end(), [&camPos](const ModelInstance& a, const ModelInstance& b)
-        {
-            // It breaks the batching, but establishes a clear strict boundary between opaque and transparent objects
-            if (a.isTransparent != b.isTransparent) return !a.isTransparent;
-
-            // Rebuild the instancing batches for opaque objects
-            if (!a.isTransparent) return a.pModel < b.pModel;
-
-            // Sort transparent objects in a back-to-front order (batching is lost here, resulting in a performance hit)
-            XMVECTOR posA = XMLoadFloat3(&a.translation);
-            XMVECTOR posB = XMLoadFloat3(&b.translation);
-            XMVECTOR cam = XMLoadFloat3(&camPos);
-
-            float distA = XMVectorGetX(XMVector3LengthSq(XMVectorSubtract(posA, cam)));
-            float distB = XMVectorGetX(XMVector3LengthSq(XMVectorSubtract(posB, cam)));
-            return distA > distB;
-        });
+    BoundingFrustum frustum = camera.GetWorldSpaceFrustum((float)Width / Height, 0.1f, 1000.0f);
 
     UINT8* cbvAddress = m_resourceManager.GetCBVAddress(frameIndex);
 
@@ -238,16 +224,94 @@ void D3D12App::Update()
 
     passCb.lightColor = XMFLOAT3(5.0f, 5.0f, 5.0f);
 
-    XMVECTOR lightTarget = XMVectorSet(0.0f, 0.0f, 0.0f, 1.0f);
+    XMVECTOR lightTarget = XMLoadFloat3(&camera.Position);
     XMVECTOR lightPosVec = lightTarget - (dirVec * 50.0f);
     XMVECTOR lightUp = XMVectorSet(0.0f, 1.0f, 0.0f, 0.0f);
     XMMATRIX lightView = XMMatrixLookAtLH(lightPosVec, lightTarget, lightUp);
+
+    float shadowMapSize = 2048.0f;
+    float orthoSize = 50.0f;
+    float texelSize = orthoSize / shadowMapSize;
+
+    XMVECTOR shadowOrigin = XMVector4Transform(XMVectorSet(0.0f, 0.0f, 0.0f, 1.0f), lightView);
+    float offsetX = XMVectorGetX(shadowOrigin);
+    float offsetY = XMVectorGetY(shadowOrigin);
+
+    float snappedX = round(offsetX / texelSize) * texelSize;
+    float snappedY = round(offsetY / texelSize) * texelSize;
+
+    XMMATRIX roundingMatrix = XMMatrixTranslation(snappedX - offsetX, snappedY - offsetY, 0.0f);
+
     XMMATRIX lightProj = XMMatrixOrthographicLH(50.0f, 50.0f, 1.0f, 100.0f);
 
-    XMMATRIX lightViewProj = lightView * lightProj;
+    XMMATRIX alignedLightView = lightView * roundingMatrix;
+    XMMATRIX lightViewProj = alignedLightView * lightProj;
     XMStoreFloat4x4(&passCb.lightViewProj, XMMatrixTranspose(lightViewProj));
 
     memcpy(cbvAddress, &passCb, sizeof(PassConstants));
+
+    BoundingOrientedBox lightOBB;
+    BoundingOrientedBox::CreateFromBoundingBox(lightOBB, BoundingBox(XMFLOAT3(0.0f, 0.0f, 50.5f), XMFLOAT3(25.0f, 25.0f, 49.5f)));
+
+    XMVECTOR det;
+    XMMATRIX invLightView = XMMatrixInverse(&det, alignedLightView);
+    lightOBB.Transform(lightOBB, invLightView);
+
+    g_visibleInstances.clear();
+    g_shadowVisibleInstances.clear();
+
+    for (size_t i = 0; i < instances.size(); ++i)
+    {
+        if (instances[i].pModel == nullptr || instances[i].pModel->meshes.empty())
+        {
+            instances[i].isVisible = false;
+            continue;
+        }
+
+        instances[i].UpdateTransform();
+
+        BoundingBox worldBox;
+        instances[i].pModel->boundingBox.Transform(worldBox, instances[i].cachedWorldMat);
+
+        if (frustum.Intersects(worldBox))
+        {
+            instances[i].isVisible = true;
+            g_visibleInstances.push_back(&instances[i]);
+        }
+        else
+        {
+            instances[i].isVisible = false;
+        }
+
+        if (lightOBB.Intersects(worldBox))
+        {
+            g_shadowVisibleInstances.push_back(&instances[i]);
+        }
+    }
+
+    XMFLOAT3 camPos = camera.Position;
+    std::sort(g_visibleInstances.begin(), g_visibleInstances.end(), [&camPos](ModelInstance* a, ModelInstance* b)
+        {
+            // It breaks the batching, but establishes a clear strict boundary between opaque and transparent objects
+            if (a->isTransparent != b->isTransparent) return !a->isTransparent;
+
+            // Rebuild the instancing batches for opaque objects
+            if (!a->isTransparent) return a->pModel < b->pModel;
+
+            // Sort transparent objects in a back-to-front order (batching is lost here, resulting in a performance hit)
+            XMVECTOR posA = XMLoadFloat3(&a->translation);
+            XMVECTOR posB = XMLoadFloat3(&b->translation);
+            XMVECTOR cam = XMLoadFloat3(&camPos);
+
+            float distA = XMVectorGetX(XMVector3LengthSq(XMVectorSubtract(posA, cam)));
+            float distB = XMVectorGetX(XMVector3LengthSq(XMVectorSubtract(posB, cam)));
+            return distA > distB;
+        });
+
+    std::sort(g_shadowVisibleInstances.begin(), g_shadowVisibleInstances.end(), [](ModelInstance* a, ModelInstance* b)
+        {
+            return a->pModel < b->pModel;
+        });
 
     InstanceData* mappedInstanceData = reinterpret_cast<InstanceData*>(cbvAddress + 256);
 
@@ -256,19 +320,25 @@ void D3D12App::Update()
     XMMATRIX viewProj = view * proj;
 
     // Pack all instance matrices sequentially into the StructuredBuffer for hardware instancing
-    for (size_t i = 0; i < instances.size(); ++i)
+    for (size_t i = 0; i < g_visibleInstances.size(); ++i)
     {
         // Update math only if dirty (CPU optimization)
-        instances[i].UpdateTransform();
 
-        XMMATRIX world = instances[i].cachedWorldMat;
-        XMMATRIX normalMat = instances[i].cachedNormalMat;
+        XMMATRIX world = g_visibleInstances[i]->cachedWorldMat;
+        XMMATRIX normalMat = g_visibleInstances[i]->cachedNormalMat;
 
         // Always flush to the current frame's CBV to prevent multi-frame ghosting
         // Do not use memcpy: It ignores SIMD 16-byte alignment and causes fatal crashes, XMStore safely offloads hardware registers
         XMStoreFloat4x4(&mappedInstanceData[i].wvpMat, XMMatrixTranspose(world * viewProj));
         XMStoreFloat4x4(&mappedInstanceData[i].worldMat, XMMatrixTranspose(world));
         XMStoreFloat4x4(&mappedInstanceData[i].normalMat, XMMatrixTranspose(normalMat));
+    }
+
+    size_t shadowOffset = g_visibleInstances.size();
+    for (size_t i = 0; i < g_shadowVisibleInstances.size(); ++i)
+    {
+        XMMATRIX world = g_shadowVisibleInstances[i]->cachedWorldMat;
+        XMStoreFloat4x4(&mappedInstanceData[shadowOffset + i].worldMat, XMMatrixTranspose(world));
     }
 }
 
@@ -311,8 +381,9 @@ void D3D12App::DrawPBRModel()
     CD3DX12_CPU_DESCRIPTOR_HANDLE rtv = m_resourceManager.GetPostProcessRtvHandle();
     CD3DX12_CPU_DESCRIPTOR_HANDLE dsv = m_deviceContext.GetDSVHandle();
 
-    auto& instances = m_resourceManager.GetSceneInstances();
-    if (instances.empty()) return;
+    // ====================================================================================================
+    // Global State Setup (Needed for both Models and Skybox)
+    // ====================================================================================================
 
     // Set the Root Signature for data binding
     m_deviceContext.GetCommandList()->SetGraphicsRootSignature(m_pipelineManager.GetRootSignature());
@@ -340,132 +411,128 @@ void D3D12App::DrawPBRModel()
     m_deviceContext.GetCommandList()->SetGraphicsRootDescriptorTable(10, CD3DX12_GPU_DESCRIPTOR_HANDLE(hStart, m_resourceManager.GetShadowSrvIdx(), srvDescSize));
 
     // ====================================================================================================
-    // Finding the boundary between opaque and transparent objects
+    // Opaque Objects Rendering (Only if visible)
     // ====================================================================================================
 
-    size_t transparentStartIndex = instances.size();
-    for (size_t i = 0; i < instances.size(); ++i)
+    size_t transparentStartIndex = g_visibleInstances.size();
+
+    if (!g_visibleInstances.empty())
     {
-        if (instances[i].isTransparent)
+        for (size_t i = 0; i < g_visibleInstances.size(); ++i)
         {
-            transparentStartIndex = i;
-            break;
+            if (g_visibleInstances[i]->isTransparent)
+            {
+                transparentStartIndex = i;
+                break;
+            }
         }
+
+        auto DrawQueue = [=](size_t startIdx, size_t endIdx, ID3D12PipelineState* pso)
+            {
+                if (startIdx >= endIdx) return;
+
+                m_deviceContext.GetCommandList()->SetPipelineState(pso);
+
+                Model* currentModel = nullptr;
+                UINT instanceStartOffset = 0;
+                UINT currentInstanceCount = 0;
+
+                for (size_t i = startIdx; i <= endIdx; ++i)
+                {
+                    bool isEnd = (i == endIdx);
+                    Model* thisModel = isEnd ? nullptr : g_visibleInstances[i]->pModel;
+
+                    if ((isEnd || thisModel != currentModel) && currentInstanceCount > 0 && currentModel != nullptr)
+                    {
+                        D3D12_GPU_VIRTUAL_ADDRESS srvAddress = baseGpuAddress + 256 + (instanceStartOffset * sizeof(InstanceData));
+                        m_deviceContext.GetCommandList()->SetGraphicsRootShaderResourceView(9, srvAddress);
+
+                        for (auto& mesh : currentModel->meshes)
+                        {
+                            UINT srvIdx[4] = { m_resourceManager.GetDummyAlbedoIdx(), m_resourceManager.GetDummyNormalIdx(), m_resourceManager.GetDummyORMIdx(), m_resourceManager.GetDummyEmissiveIdx() };
+                            bool hasMap[4] = { false, false, false, false };
+
+                            for (auto& tex : mesh.textures)
+                            {
+                                switch (tex.type)
+                                {
+                                case TextureType::Albedo:
+                                    srvIdx[0] = m_resourceManager.GetTextureSrvIdx(tex.Resource.Get());
+                                    hasMap[0] = true;
+                                    break;
+                                case TextureType::Normal:
+                                    srvIdx[1] = m_resourceManager.GetTextureSrvIdx(tex.Resource.Get());
+                                    hasMap[1] = true;
+                                    break;
+                                case TextureType::ORM:
+                                    srvIdx[2] = m_resourceManager.GetTextureSrvIdx(tex.Resource.Get());
+                                    hasMap[2] = true;
+                                    break;
+                                case TextureType::Emissive:
+                                    srvIdx[3] = m_resourceManager.GetTextureSrvIdx(tex.Resource.Get());
+                                    hasMap[3] = true;
+                                    break;
+                                default:
+                                    break;
+                                }
+                            }
+
+                            UINT32 flags[4] = { (UINT32)hasMap[0], (UINT32)hasMap[1], (UINT32)hasMap[2], (UINT32)hasMap[3] };
+                            m_deviceContext.GetCommandList()->SetGraphicsRoot32BitConstants(7, 4, flags, 0);
+
+                            m_deviceContext.GetCommandList()->SetGraphicsRootDescriptorTable(1, CD3DX12_GPU_DESCRIPTOR_HANDLE(hStart, srvIdx[0], srvDescSize));
+                            m_deviceContext.GetCommandList()->SetGraphicsRootDescriptorTable(2, CD3DX12_GPU_DESCRIPTOR_HANDLE(hStart, srvIdx[1], srvDescSize));
+                            m_deviceContext.GetCommandList()->SetGraphicsRootDescriptorTable(3, CD3DX12_GPU_DESCRIPTOR_HANDLE(hStart, srvIdx[2], srvDescSize));
+                            m_deviceContext.GetCommandList()->SetGraphicsRootDescriptorTable(4, CD3DX12_GPU_DESCRIPTOR_HANDLE(hStart, srvIdx[3], srvDescSize));
+
+                            mesh.Draw(m_deviceContext.GetCommandList(), currentInstanceCount);
+                        }
+                    }
+
+                    if (!isEnd)
+                    {
+                        if (thisModel != currentModel)
+                        {
+                            currentModel = thisModel;
+                            instanceStartOffset = i;
+                            currentInstanceCount = 1;
+                        }
+                        else
+                        {
+                            currentInstanceCount++;
+                        }
+                    }
+                }
+            };
+
+        m_deviceContext.GetCommandList()->OMSetRenderTargets(0, nullptr, FALSE, &dsv);
+        DrawQueue(0, transparentStartIndex, m_pipelineManager.GetZPrepass_PSO());
+
+        m_deviceContext.GetCommandList()->OMSetRenderTargets(1, &rtv, FALSE, &dsv);
+        DrawQueue(0, transparentStartIndex, m_pipelineManager.GetPBR_PSO());
+    }
+    else
+    {
+        // If no models, still need to set RTV for Skybox
+        m_deviceContext.GetCommandList()->OMSetRenderTargets(1, &rtv, FALSE, &dsv);
     }
 
     // ====================================================================================================
-    // Core function for setting up and submitting opaque draw calls, shared between Z-Prepass and PBR Base Pass
+    // Sky Box Pass (Always rendered)
     // ====================================================================================================
-
-    auto DrawQueue = [=](size_t startIdx, size_t endIdx, ID3D12PipelineState* pso)
-        {
-            if (startIdx >= endIdx) return;
-
-            m_deviceContext.GetCommandList()->SetPipelineState(pso);
-
-            Model* currentModel = nullptr;
-            UINT instanceStartOffset = 0;
-            UINT currentInstanceCount = 0;
-
-            // Iterate through all model instances that store transformations and model data addresses
-            for (size_t i = startIdx; i <= endIdx; ++i)
-            {
-                bool isEnd = (i == endIdx);
-                Model* thisModel = isEnd ? nullptr : instances[i].pModel;
-
-                if ((isEnd || thisModel != currentModel) && currentInstanceCount > 0 && currentModel != nullptr)
-                {
-                    D3D12_GPU_VIRTUAL_ADDRESS srvAddress = baseGpuAddress + 256 + (instanceStartOffset * sizeof(InstanceData));
-                    m_deviceContext.GetCommandList()->SetGraphicsRootShaderResourceView(9, srvAddress);
-
-                    for (auto& mesh : currentModel->meshes)
-                    {
-                        // Configure fallback textures for the GPU to prevent errors in case of loading failures
-                        UINT srvIdx[4] = { m_resourceManager.GetDummyAlbedoIdx(), m_resourceManager.GetDummyNormalIdx(), m_resourceManager.GetDummyORMIdx(), m_resourceManager.GetDummyEmissiveIdx() };
-                        bool hasMap[4] = { false, false, false, false };
-
-                        // Locate the texture assets and swap the placeholders with the actual model textures if available
-                        for (auto& tex : mesh.textures)
-                        {
-                            switch (tex.type)
-                            {
-                            case TextureType::Albedo:
-                                srvIdx[0] = m_resourceManager.GetTextureSrvIdx(tex.Resource.Get());
-                                hasMap[0] = true;
-                                break;
-                            case TextureType::Normal:
-                                srvIdx[1] = m_resourceManager.GetTextureSrvIdx(tex.Resource.Get());
-                                hasMap[1] = true;
-                                break;
-                            case TextureType::ORM:
-                                srvIdx[2] = m_resourceManager.GetTextureSrvIdx(tex.Resource.Get());
-                                hasMap[2] = true;
-                                break;
-                            case TextureType::Emissive:
-                                srvIdx[3] = m_resourceManager.GetTextureSrvIdx(tex.Resource.Get());
-                                hasMap[3] = true;
-                                break;
-                            default:
-                                break;
-                            }
-                        }
-
-                        // Pass a 'hasTexture' boolean flag to the shader to dictate whether to sample the texture or fallback to the default material properties
-                        UINT32 flags[4] = { (UINT32)hasMap[0], (UINT32)hasMap[1], (UINT32)hasMap[2], (UINT32)hasMap[3] };
-                        m_deviceContext.GetCommandList()->SetGraphicsRoot32BitConstants(7, 4, flags, 0);
-
-                        // Bind the final resolved texture
-                        m_deviceContext.GetCommandList()->SetGraphicsRootDescriptorTable(1, CD3DX12_GPU_DESCRIPTOR_HANDLE(hStart, srvIdx[0], srvDescSize));
-                        m_deviceContext.GetCommandList()->SetGraphicsRootDescriptorTable(2, CD3DX12_GPU_DESCRIPTOR_HANDLE(hStart, srvIdx[1], srvDescSize));
-                        m_deviceContext.GetCommandList()->SetGraphicsRootDescriptorTable(3, CD3DX12_GPU_DESCRIPTOR_HANDLE(hStart, srvIdx[2], srvDescSize));
-                        m_deviceContext.GetCommandList()->SetGraphicsRootDescriptorTable(4, CD3DX12_GPU_DESCRIPTOR_HANDLE(hStart, srvIdx[3], srvDescSize));
-
-                        mesh.Draw(m_deviceContext.GetCommandList(), currentInstanceCount);
-                    }
-                }
-
-                if (!isEnd)
-                {
-                    if (thisModel != currentModel)
-                    {
-                        currentModel = thisModel;
-                        instanceStartOffset = i;
-                        currentInstanceCount = 1;
-                    }
-                    else
-                    {
-                        currentInstanceCount++;
-                    }
-                }
-            }
-        };
-
-    // ====================================================================================================
-    // Z-Prepass -> PBR Base Pass For Opaque Objects -> Sky Box Pass
-    // ====================================================================================================
-
-    m_deviceContext.GetCommandList()->OMSetRenderTargets(0, nullptr, FALSE, &dsv);
-    DrawQueue(0, transparentStartIndex, m_pipelineManager.GetZPrepass_PSO());
-
-    m_deviceContext.GetCommandList()->OMSetRenderTargets(1, &rtv, FALSE, &dsv);
-    DrawQueue(0, transparentStartIndex, m_pipelineManager.GetPBR_PSO());
 
     DrawSkybox();
 
     // ====================================================================================================
-    // Transparent Object Pass
+    // Transparent Object Pass (Only if visible)
     // ====================================================================================================
 
-    if (transparentStartIndex < instances.size())
+    if (!g_visibleInstances.empty() && transparentStartIndex < g_visibleInstances.size())
     {
-        D3D12_GPU_VIRTUAL_ADDRESS baseGpuAddress = m_resourceManager.GetCBVGPUAddress(frameIndex);
-        CD3DX12_GPU_DESCRIPTOR_HANDLE hStart(m_resourceManager.GetMainDescriptorHeap()->GetGPUDescriptorHandleForHeapStart());
-        UINT srvDescSize = m_resourceManager.GetSrvDescriptorSize();
-
-        for (size_t i = transparentStartIndex; i < instances.size(); ++i)
+        for (size_t i = transparentStartIndex; i < g_visibleInstances.size(); ++i)
         {
-            ModelInstance& instance = instances[i];
-            if (!instance.pModel) continue;
+            ModelInstance* instance = g_visibleInstances[i];
+            if (!instance->pModel) continue;
 
             D3D12_GPU_VIRTUAL_ADDRESS srvAddress = baseGpuAddress + 256 + (i * sizeof(InstanceData));
 
@@ -474,7 +541,7 @@ void D3D12App::DrawPBRModel()
                     m_deviceContext.GetCommandList()->SetPipelineState(pso);
                     m_deviceContext.GetCommandList()->SetGraphicsRootShaderResourceView(9, srvAddress);
 
-                    for (auto& mesh : instance.pModel->meshes)
+                    for (auto& mesh : instance->pModel->meshes)
                     {
                         UINT srvIdx[4] = { m_resourceManager.GetDummyAlbedoIdx(), m_resourceManager.GetDummyNormalIdx(), m_resourceManager.GetDummyORMIdx(), m_resourceManager.GetDummyEmissiveIdx() };
                         bool hasMap[4] = { false, false, false, false };
@@ -517,7 +584,6 @@ void D3D12App::DrawPBRModel()
                 };
 
             BindAndDrawSingleInstance(m_pipelineManager.GetTransparentPSO_DepthOnly());
-
             BindAndDrawSingleInstance(m_pipelineManager.GetTransparentPSO_Color());
         }
     }
@@ -578,19 +644,18 @@ void D3D12App::DrawShadowMap()
 
     cmdList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
 
-    auto& instances = m_resourceManager.GetSceneInstances();
     Model* currentModel = nullptr;
     UINT instanceStartOffset = 0;
     UINT currentInstanceCount = 0;
 
-    for (size_t i = 0; i <= instances.size(); ++i)
+    for (size_t i = 0; i <= g_shadowVisibleInstances.size(); ++i)
     {
-        bool isEnd = (i == instances.size());
-        Model* thisModel = isEnd ? nullptr : instances[i].pModel;
+        bool isEnd = (i == g_shadowVisibleInstances.size());
+        Model* thisModel = isEnd ? nullptr : g_shadowVisibleInstances[i]->pModel;
 
         if ((isEnd || thisModel != currentModel) && currentInstanceCount > 0 && currentModel != nullptr)
         {
-            D3D12_GPU_VIRTUAL_ADDRESS srvAddress = baseGpuAddress + 256 + (instanceStartOffset * sizeof(InstanceData));
+            D3D12_GPU_VIRTUAL_ADDRESS srvAddress = baseGpuAddress + 256 + ((g_visibleInstances.size() + instanceStartOffset) * sizeof(InstanceData));
             cmdList->SetGraphicsRootShaderResourceView(1, srvAddress);
 
             for (auto& mesh : currentModel->meshes)

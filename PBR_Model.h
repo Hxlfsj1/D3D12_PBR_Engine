@@ -17,6 +17,9 @@
 #include <string>
 #include <vector>
 #include <fstream>
+#include <DirectXCollision.h>
+#include <algorithm>
+#include <cfloat>
 
 #define MAX_BONE_INFLUENCE 4
 
@@ -138,6 +141,7 @@ class Model
 public:
     std::vector<Texture> textures_loaded;
     std::vector<Mesh> meshes;
+    DirectX::BoundingBox boundingBox;
 
     Model(ID3D12Device* device, ID3D12GraphicsCommandList* cmdList, DirectX::ResourceUploadBatch& upload, std::string const& path)
     {
@@ -167,11 +171,19 @@ public:
 
 private:
     tinygltf::Model gltfModel;
+    XMFLOAT3 minBoundary;
+    XMFLOAT3 maxBoundary;
 
     void loadModel(ID3D12Device* device, ID3D12GraphicsCommandList* cmdList, DirectX::ResourceUploadBatch& upload, std::string const& path)
     {
         std::vector<unsigned char> modelData = ReadFileToBuffer(path);
-        if (modelData.empty()) return;
+        if (modelData.empty())
+        {
+            return;
+        }
+
+        minBoundary = { FLT_MAX, FLT_MAX, FLT_MAX };
+        maxBoundary = { -FLT_MAX, -FLT_MAX, -FLT_MAX };
 
         tinygltf::TinyGLTF loader;
         std::string err, warn;
@@ -183,9 +195,21 @@ private:
             aiProcess_MakeLeftHanded | aiProcess_FlipWindingOrder | aiProcess_FlipUVs;
 
         const aiScene* scene = importer.ReadFileFromMemory(modelData.data(), modelData.size(), flags, path.c_str());
-        if (!scene || scene->mFlags & AI_SCENE_FLAGS_INCOMPLETE || !scene->mRootNode) return;
+        if (!scene || scene->mFlags & AI_SCENE_FLAGS_INCOMPLETE || !scene->mRootNode)
+        {
+            return;
+        }
 
         processNode(device, cmdList, upload, scene->mRootNode, scene, XMMatrixIdentity());
+
+        XMVECTOR vMin = XMLoadFloat3(&minBoundary);
+        XMVECTOR vMax = XMLoadFloat3(&maxBoundary);
+
+        XMVECTOR vCenter = XMVectorScale(XMVectorAdd(vMin, vMax), 0.5f);
+        XMVECTOR vExtents = XMVectorScale(XMVectorSubtract(vMax, vMin), 0.5f);
+
+        XMStoreFloat3(&boundingBox.Center, vCenter);
+        XMStoreFloat3(&boundingBox.Extents, vExtents);
     }
 
     void processNode(ID3D12Device* device, ID3D12GraphicsCommandList* cmdList, DirectX::ResourceUploadBatch& upload, aiNode* node, const aiScene* scene, XMMATRIX parentTransform)
@@ -216,6 +240,14 @@ private:
             XMVECTOR pos = XMVectorSet(mesh->mVertices[i].x, mesh->mVertices[i].y, mesh->mVertices[i].z, 1.0f);
             pos = XMVector4Transform(pos, nodeTransform);
             XMStoreFloat3(&vertex.Position, pos);
+
+            minBoundary.x = (std::min)(minBoundary.x, vertex.Position.x);
+            minBoundary.y = (std::min)(minBoundary.y, vertex.Position.y);
+            minBoundary.z = (std::min)(minBoundary.z, vertex.Position.z);
+
+            maxBoundary.x = (std::max)(maxBoundary.x, vertex.Position.x);
+            maxBoundary.y = (std::max)(maxBoundary.y, vertex.Position.y);
+            maxBoundary.z = (std::max)(maxBoundary.z, vertex.Position.z);
 
             if (mesh->HasNormals())
             {
@@ -339,7 +371,10 @@ private:
     std::vector<unsigned char> ReadFileToBuffer(const std::string& path)
     {
         std::ifstream file(path, std::ios::binary | std::ios::ate);
-        if (!file.is_open()) return {};
+        if (!file.is_open())
+        {
+            return {};
+        }
         std::streamsize size = file.tellg();
         file.seekg(0, std::ios::beg);
         std::vector<unsigned char> buffer(size);

@@ -19,6 +19,8 @@ struct ModelInstance
 
     bool isTransparent = false;
 
+    bool isVisible = true;
+
     // Dirty Flag Mechanism
     XMMATRIX cachedWorldMat;
     XMMATRIX cachedNormalMat;
