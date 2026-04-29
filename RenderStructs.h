@@ -3,6 +3,7 @@
 
 #include "stdafx.h"
 
+// Dynamic CPU-to-GPU data payloads updated per frame (Constant Buffers)
 struct alignas(256) PassConstants
 {
     DirectX::XMFLOAT3 camPos;

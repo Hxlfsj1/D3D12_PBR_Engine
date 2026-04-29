@@ -5,7 +5,14 @@
 #include "ResourceManager.h"
 #include "InputManager.h"
 #include "PipelineManager.h"
+
 #include "Assets.h"
+
+#include "RenderStructs.h"
+#include "ShadowPass.h"
+#include "SkyboxPass.h"
+#include "PostProcessPass.h"
+#include "PBRPass.h"
 
 #define STB_IMAGE_IMPLEMENTATION
 #include <stb_image.h>
@@ -372,359 +379,6 @@ void D3D12App::BeginFrame()
     m_deviceContext.GetCommandList()->RSSetScissorRects(1, &scissorRect);
 }
 
-void D3D12App::DrawPBRModel()
-{
-    // ====================================================================================================
-    // Viewport and scissor setup
-    // ====================================================================================================
-
-    m_deviceContext.GetCommandList()->RSSetViewports(1, &viewport);
-    m_deviceContext.GetCommandList()->RSSetScissorRects(1, &scissorRect);
-
-    CD3DX12_CPU_DESCRIPTOR_HANDLE rtv = m_resourceManager.GetPostProcessRtvHandle();
-    CD3DX12_CPU_DESCRIPTOR_HANDLE dsv = m_deviceContext.GetDSVHandle();
-
-    // ====================================================================================================
-    // Global State Setup (Needed for both Models and Skybox)
-    // ====================================================================================================
-
-    // Set the Root Signature for data binding
-    m_deviceContext.GetCommandList()->SetGraphicsRootSignature(m_pipelineManager.GetRootSignature());
-
-    // Bind the Constant Buffer View (CBV) to the GPU to provide the resource locations
-    ID3D12DescriptorHeap* heaps[] = { m_resourceManager.GetMainDescriptorHeap() };
-    m_deviceContext.GetCommandList()->SetDescriptorHeaps(1, heaps);
-
-    D3D12_GPU_VIRTUAL_ADDRESS baseGpuAddress = m_resourceManager.GetCBVGPUAddress(frameIndex);
-    m_deviceContext.GetCommandList()->SetGraphicsRootConstantBufferView(0, baseGpuAddress);
-
-    // Bind the per-object Constant Buffer (CBV) containing the MVP matrices and environment data
-    m_deviceContext.GetCommandList()->SetGraphicsRootConstantBufferView(8, m_resourceManager.GetSHBufferGPUAddress());
-
-    // Set the Primitive Topology (e.g., Triangle List) to define how vertices are connected
-    m_deviceContext.GetCommandList()->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-
-    // Bind the IBL (Image-Based Lighting) textures
-    CD3DX12_GPU_DESCRIPTOR_HANDLE hStart(m_resourceManager.GetMainDescriptorHeap()->GetGPUDescriptorHandleForHeapStart());
-    UINT srvDescSize = m_resourceManager.GetSrvDescriptorSize();
-
-    m_deviceContext.GetCommandList()->SetGraphicsRootDescriptorTable(5, CD3DX12_GPU_DESCRIPTOR_HANDLE(hStart, m_resourceManager.GetIblPrefilterIdx(), srvDescSize));
-    m_deviceContext.GetCommandList()->SetGraphicsRootDescriptorTable(6, CD3DX12_GPU_DESCRIPTOR_HANDLE(hStart, m_resourceManager.GetIblBRDFIdx(), srvDescSize));
-
-    m_deviceContext.GetCommandList()->SetGraphicsRootDescriptorTable(10, CD3DX12_GPU_DESCRIPTOR_HANDLE(hStart, m_resourceManager.GetShadowSrvIdx(), srvDescSize));
-
-    // ====================================================================================================
-    // Opaque Objects Rendering (Only if visible)
-    // ====================================================================================================
-
-    size_t transparentStartIndex = g_visibleInstances.size();
-
-    if (!g_visibleInstances.empty())
-    {
-        for (size_t i = 0; i < g_visibleInstances.size(); ++i)
-        {
-            if (g_visibleInstances[i]->isTransparent)
-            {
-                transparentStartIndex = i;
-                break;
-            }
-        }
-
-        auto DrawQueue = [=](size_t startIdx, size_t endIdx, ID3D12PipelineState* pso)
-            {
-                if (startIdx >= endIdx) return;
-
-                m_deviceContext.GetCommandList()->SetPipelineState(pso);
-
-                Model* currentModel = nullptr;
-                UINT instanceStartOffset = 0;
-                UINT currentInstanceCount = 0;
-
-                for (size_t i = startIdx; i <= endIdx; ++i)
-                {
-                    bool isEnd = (i == endIdx);
-                    Model* thisModel = isEnd ? nullptr : g_visibleInstances[i]->pModel;
-
-                    if ((isEnd || thisModel != currentModel) && currentInstanceCount > 0 && currentModel != nullptr)
-                    {
-                        D3D12_GPU_VIRTUAL_ADDRESS srvAddress = baseGpuAddress + 256 + (instanceStartOffset * sizeof(InstanceData));
-                        m_deviceContext.GetCommandList()->SetGraphicsRootShaderResourceView(9, srvAddress);
-
-                        for (auto& mesh : currentModel->meshes)
-                        {
-                            UINT srvIdx[4] = { m_resourceManager.GetDummyAlbedoIdx(), m_resourceManager.GetDummyNormalIdx(), m_resourceManager.GetDummyORMIdx(), m_resourceManager.GetDummyEmissiveIdx() };
-                            bool hasMap[4] = { false, false, false, false };
-
-                            for (auto& tex : mesh.textures)
-                            {
-                                switch (tex.type)
-                                {
-                                case TextureType::Albedo:
-                                    srvIdx[0] = m_resourceManager.GetTextureSrvIdx(tex.Resource.Get());
-                                    hasMap[0] = true;
-                                    break;
-                                case TextureType::Normal:
-                                    srvIdx[1] = m_resourceManager.GetTextureSrvIdx(tex.Resource.Get());
-                                    hasMap[1] = true;
-                                    break;
-                                case TextureType::ORM:
-                                    srvIdx[2] = m_resourceManager.GetTextureSrvIdx(tex.Resource.Get());
-                                    hasMap[2] = true;
-                                    break;
-                                case TextureType::Emissive:
-                                    srvIdx[3] = m_resourceManager.GetTextureSrvIdx(tex.Resource.Get());
-                                    hasMap[3] = true;
-                                    break;
-                                default:
-                                    break;
-                                }
-                            }
-
-                            UINT32 flags[4] = { (UINT32)hasMap[0], (UINT32)hasMap[1], (UINT32)hasMap[2], (UINT32)hasMap[3] };
-                            m_deviceContext.GetCommandList()->SetGraphicsRoot32BitConstants(7, 4, flags, 0);
-
-                            m_deviceContext.GetCommandList()->SetGraphicsRootDescriptorTable(1, CD3DX12_GPU_DESCRIPTOR_HANDLE(hStart, srvIdx[0], srvDescSize));
-                            m_deviceContext.GetCommandList()->SetGraphicsRootDescriptorTable(2, CD3DX12_GPU_DESCRIPTOR_HANDLE(hStart, srvIdx[1], srvDescSize));
-                            m_deviceContext.GetCommandList()->SetGraphicsRootDescriptorTable(3, CD3DX12_GPU_DESCRIPTOR_HANDLE(hStart, srvIdx[2], srvDescSize));
-                            m_deviceContext.GetCommandList()->SetGraphicsRootDescriptorTable(4, CD3DX12_GPU_DESCRIPTOR_HANDLE(hStart, srvIdx[3], srvDescSize));
-
-                            mesh.Draw(m_deviceContext.GetCommandList(), currentInstanceCount);
-                        }
-                    }
-
-                    if (!isEnd)
-                    {
-                        if (thisModel != currentModel)
-                        {
-                            currentModel = thisModel;
-                            instanceStartOffset = i;
-                            currentInstanceCount = 1;
-                        }
-                        else
-                        {
-                            currentInstanceCount++;
-                        }
-                    }
-                }
-            };
-
-        m_deviceContext.GetCommandList()->OMSetRenderTargets(0, nullptr, FALSE, &dsv);
-        DrawQueue(0, transparentStartIndex, m_pipelineManager.GetZPrepass_PSO());
-
-        m_deviceContext.GetCommandList()->OMSetRenderTargets(1, &rtv, FALSE, &dsv);
-        DrawQueue(0, transparentStartIndex, m_pipelineManager.GetPBR_PSO());
-    }
-    else
-    {
-        // If no models, still need to set RTV for Skybox
-        m_deviceContext.GetCommandList()->OMSetRenderTargets(1, &rtv, FALSE, &dsv);
-    }
-
-    // ====================================================================================================
-    // Sky Box Pass (Always rendered)
-    // ====================================================================================================
-
-    DrawSkybox();
-
-    // ====================================================================================================
-    // Transparent Object Pass (Only if visible)
-    // ====================================================================================================
-
-    if (!g_visibleInstances.empty() && transparentStartIndex < g_visibleInstances.size())
-    {
-        for (size_t i = transparentStartIndex; i < g_visibleInstances.size(); ++i)
-        {
-            ModelInstance* instance = g_visibleInstances[i];
-            if (!instance->pModel) continue;
-
-            D3D12_GPU_VIRTUAL_ADDRESS srvAddress = baseGpuAddress + 256 + (i * sizeof(InstanceData));
-
-            auto BindAndDrawSingleInstance = [&](ID3D12PipelineState* pso)
-                {
-                    m_deviceContext.GetCommandList()->SetPipelineState(pso);
-                    m_deviceContext.GetCommandList()->SetGraphicsRootShaderResourceView(9, srvAddress);
-
-                    for (auto& mesh : instance->pModel->meshes)
-                    {
-                        UINT srvIdx[4] = { m_resourceManager.GetDummyAlbedoIdx(), m_resourceManager.GetDummyNormalIdx(), m_resourceManager.GetDummyORMIdx(), m_resourceManager.GetDummyEmissiveIdx() };
-                        bool hasMap[4] = { false, false, false, false };
-
-                        for (auto& tex : mesh.textures)
-                        {
-                            switch (tex.type)
-                            {
-                            case TextureType::Albedo:
-                                srvIdx[0] = m_resourceManager.GetTextureSrvIdx(tex.Resource.Get());
-                                hasMap[0] = true;
-                                break;
-                            case TextureType::Normal:
-                                srvIdx[1] = m_resourceManager.GetTextureSrvIdx(tex.Resource.Get());
-                                hasMap[1] = true;
-                                break;
-                            case TextureType::ORM:
-                                srvIdx[2] = m_resourceManager.GetTextureSrvIdx(tex.Resource.Get());
-                                hasMap[2] = true;
-                                break;
-                            case TextureType::Emissive:
-                                srvIdx[3] = m_resourceManager.GetTextureSrvIdx(tex.Resource.Get());
-                                hasMap[3] = true;
-                                break;
-                            default:
-                                break;
-                            }
-                        }
-
-                        UINT32 flags[4] = { (UINT32)hasMap[0], (UINT32)hasMap[1], (UINT32)hasMap[2], (UINT32)hasMap[3] };
-                        m_deviceContext.GetCommandList()->SetGraphicsRoot32BitConstants(7, 4, flags, 0);
-
-                        m_deviceContext.GetCommandList()->SetGraphicsRootDescriptorTable(1, CD3DX12_GPU_DESCRIPTOR_HANDLE(hStart, srvIdx[0], srvDescSize));
-                        m_deviceContext.GetCommandList()->SetGraphicsRootDescriptorTable(2, CD3DX12_GPU_DESCRIPTOR_HANDLE(hStart, srvIdx[1], srvDescSize));
-                        m_deviceContext.GetCommandList()->SetGraphicsRootDescriptorTable(3, CD3DX12_GPU_DESCRIPTOR_HANDLE(hStart, srvIdx[2], srvDescSize));
-                        m_deviceContext.GetCommandList()->SetGraphicsRootDescriptorTable(4, CD3DX12_GPU_DESCRIPTOR_HANDLE(hStart, srvIdx[3], srvDescSize));
-
-                        mesh.Draw(m_deviceContext.GetCommandList(), 1);
-                    }
-                };
-
-            BindAndDrawSingleInstance(m_pipelineManager.GetTransparentPSO_DepthOnly());
-            BindAndDrawSingleInstance(m_pipelineManager.GetTransparentPSO_Color());
-        }
-    }
-}
-
-void D3D12App::DrawSkybox()
-{
-    // Bind the PSO (Pipeline State Object) for Skybox rendering
-    m_deviceContext.GetCommandList()->SetPipelineState(m_pipelineManager.GetSkybox_PSO());
-
-    // Bind the vertex data directly
-    D3D12_VERTEX_BUFFER_VIEW skyboxVBV = m_resourceManager.GetSkyboxVBV();
-    m_deviceContext.GetCommandList()->IASetVertexBuffers(0, 1, &skyboxVBV);
-
-    // Ensure the skybox remains centered relative to the camera
-    XMMATRIX view = camera.GetViewMatrix();
-    view.r[3] = XMVectorSet(0.0f, 0.0f, 0.0f, 1.0f);
-    XMMATRIX proj = XMMatrixPerspectiveFovLH(XMConvertToRadians(camera.Zoom), (float)Width / Height, 0.1f, 1000.0f);
-    XMMATRIX skyVPMat = XMMatrixTranspose(view * proj);
-
-    // Pass the Skybox MVP matrix via registers (Root Constants)
-    m_deviceContext.GetCommandList()->SetGraphicsRoot32BitConstants(7, 16, &skyVPMat, 0);
-
-    // Bind the skybox texture (Cubemap)
-    CD3DX12_GPU_DESCRIPTOR_HANDLE hEnvCube(m_resourceManager.GetMainDescriptorHeap()->GetGPUDescriptorHandleForHeapStart(), m_resourceManager.GetIblEnvCubeIdx(), m_resourceManager.GetSrvDescriptorSize());
-    m_deviceContext.GetCommandList()->SetGraphicsRootDescriptorTable(1, hEnvCube);
-
-    m_deviceContext.GetCommandList()->DrawInstanced(36, 1, 0, 0);
-}
-
-void D3D12App::DrawShadowMap()
-{
-    auto cmdList = m_deviceContext.GetCommandList();
-
-    CD3DX12_RESOURCE_BARRIER toDepthWrite = CD3DX12_RESOURCE_BARRIER::Transition(
-        m_resourceManager.GetShadowMap(),
-        D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
-        D3D12_RESOURCE_STATE_DEPTH_WRITE);
-    cmdList->ResourceBarrier(1, &toDepthWrite);
-
-    cmdList->SetGraphicsRootSignature(m_pipelineManager.GetShadowRootSignature());
-    cmdList->SetPipelineState(m_pipelineManager.GetShadowPSO());
-
-    D3D12_VIEWPORT shadowViewport = { 0.0f, 0.0f, 2048.0f, 2048.0f, 0.0f, 1.0f };
-    D3D12_RECT shadowScissor = { 0, 0, 2048, 2048 };
-    cmdList->RSSetViewports(1, &shadowViewport);
-    cmdList->RSSetScissorRects(1, &shadowScissor);
-
-    CD3DX12_CPU_DESCRIPTOR_HANDLE dsv = m_resourceManager.GetShadowDsvHandle();
-    // Disable color writes, depth-only
-    cmdList->OMSetRenderTargets(0, nullptr, FALSE, &dsv);
-    // Clear the entire canvas to 1 (representing infinity); the depth will be updated whenever closer objects (depth < 1) are encountered
-    cmdList->ClearDepthStencilView(dsv, D3D12_CLEAR_FLAG_DEPTH, 1.0f, 0, 0, nullptr);
-
-    // Bind a light - space camera aligned with the light direction
-    D3D12_GPU_VIRTUAL_ADDRESS baseGpuAddress = m_resourceManager.GetCBVGPUAddress(frameIndex);
-    cmdList->SetGraphicsRootConstantBufferView(0, baseGpuAddress);
-
-    cmdList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-
-    Model* currentModel = nullptr;
-    UINT instanceStartOffset = 0;
-    UINT currentInstanceCount = 0;
-
-    for (size_t i = 0; i <= g_shadowVisibleInstances.size(); ++i)
-    {
-        bool isEnd = (i == g_shadowVisibleInstances.size());
-        Model* thisModel = isEnd ? nullptr : g_shadowVisibleInstances[i]->pModel;
-
-        if ((isEnd || thisModel != currentModel) && currentInstanceCount > 0 && currentModel != nullptr)
-        {
-            D3D12_GPU_VIRTUAL_ADDRESS srvAddress = baseGpuAddress + 256 + ((g_visibleInstances.size() + instanceStartOffset) * sizeof(InstanceData));
-            cmdList->SetGraphicsRootShaderResourceView(1, srvAddress);
-
-            for (auto& mesh : currentModel->meshes)
-            {
-                mesh.Draw(cmdList, currentInstanceCount);
-            }
-        }
-
-        if (!isEnd)
-        {
-            if (thisModel != currentModel)
-            {
-                currentModel = thisModel;
-                instanceStartOffset = i;
-                currentInstanceCount = 1;
-            }
-            else currentInstanceCount++;
-        }
-    }
-
-    CD3DX12_RESOURCE_BARRIER toSrv = CD3DX12_RESOURCE_BARRIER::Transition(
-        m_resourceManager.GetShadowMap(),
-        D3D12_RESOURCE_STATE_DEPTH_WRITE,
-        D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
-    cmdList->ResourceBarrier(1, &toSrv);
-}
-
-void D3D12App::DrawPostProcess()
-{
-    auto cmdList = m_deviceContext.GetCommandList();
-
-    CD3DX12_RESOURCE_BARRIER toSrv = CD3DX12_RESOURCE_BARRIER::Transition(
-        m_resourceManager.GetPostProcessRT(),
-        D3D12_RESOURCE_STATE_RENDER_TARGET,
-        D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
-    cmdList->ResourceBarrier(1, &toSrv);
-
-    CD3DX12_CPU_DESCRIPTOR_HANDLE rtv = m_deviceContext.GetRTVHandle(frameIndex);
-    cmdList->OMSetRenderTargets(1, &rtv, FALSE, nullptr);
-
-    cmdList->SetGraphicsRootSignature(m_pipelineManager.GetPostProcessRootSignature());
-    cmdList->SetPipelineState(m_pipelineManager.GetPostProcessPSO());
-
-    cmdList->RSSetViewports(1, &viewport);
-    cmdList->RSSetScissorRects(1, &scissorRect);
-    cmdList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-
-    ID3D12DescriptorHeap* heaps[] = { m_resourceManager.GetMainDescriptorHeap() };
-    cmdList->SetDescriptorHeaps(1, heaps);
-
-    CD3DX12_GPU_DESCRIPTOR_HANDLE hSrv(
-        m_resourceManager.GetMainDescriptorHeap()->GetGPUDescriptorHandleForHeapStart(),
-        m_resourceManager.GetPostProcessSrvIdx(),
-        m_resourceManager.GetSrvDescriptorSize()
-    );
-    cmdList->SetGraphicsRootDescriptorTable(0, hSrv);
-
-    cmdList->DrawInstanced(3, 1, 0, 0);
-
-    CD3DX12_RESOURCE_BARRIER toRtv = CD3DX12_RESOURCE_BARRIER::Transition(
-        m_resourceManager.GetPostProcessRT(),
-        D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
-        D3D12_RESOURCE_STATE_RENDER_TARGET);
-    cmdList->ResourceBarrier(1, &toRtv);
-}
-
 void D3D12App::EndFrame()
 {
     // Define the required framebuffers as 'presentation states' rather than 'canvases'
@@ -741,9 +395,17 @@ void D3D12App::EndFrame()
 void D3D12App::Render()
 {
     BeginFrame();
-    DrawShadowMap();
-    DrawPBRModel();
-    DrawPostProcess();
+
+    ShadowPass::Execute(&m_deviceContext, &m_resourceManager, &m_pipelineManager, frameIndex, g_shadowVisibleInstances, g_visibleInstances.size());
+
+    size_t transparentIdx = PBRPass::ExecuteOpaque(&m_deviceContext, &m_resourceManager, &m_pipelineManager, frameIndex, viewport, scissorRect, g_visibleInstances);
+
+    SkyboxPass::Execute(&m_deviceContext, &m_resourceManager, &m_pipelineManager, camera, Width, Height);
+
+    PBRPass::ExecuteTransparent(&m_deviceContext, &m_resourceManager, &m_pipelineManager, frameIndex, g_visibleInstances, transparentIdx);
+
+    PostProcessPass::Execute(&m_deviceContext, &m_resourceManager, &m_pipelineManager, frameIndex, viewport, scissorRect);
+
     EndFrame();
 
     ID3D12CommandList* lists[] = { m_deviceContext.GetCommandList() };

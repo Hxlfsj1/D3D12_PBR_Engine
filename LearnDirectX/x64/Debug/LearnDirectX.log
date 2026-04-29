@@ -11,8 +11,12 @@ D:\项目\LearnDirectX\SceneObject.h(8,8): warning C4099: “Model”: 类型名
       D:\项目\LearnDirectX\PBR_Model.h(139,7):
       参见“Model”的声明
   
-D:\项目\LearnDirectX\PBR_Render.cpp(500,51): warning C4267: “=”: 从“size_t”转换到“UINT”，可能丢失数据
-D:\项目\LearnDirectX\PBR_Render.cpp(675,39): warning C4267: “=”: 从“size_t”转换到“UINT”，可能丢失数据
+D:\项目\LearnDirectX\ShadowPass.h(77,43): warning C4267: “=”: 从“size_t”转换到“UINT”，可能丢失数据
+  (编译源文件“PBR_Render.cpp”)
+  
+D:\项目\LearnDirectX\PBRPass.h(145,55): warning C4267: “=”: 从“size_t”转换到“UINT”，可能丢失数据
+  (编译源文件“PBR_Render.cpp”)
+  
   LearnDirectX.vcxproj -> D:\项目\LearnDirectX\x64\Debug\LearnDirectX.exe
   'pwsh.exe' 不是内部或外部命令，也不是可运行的程序
   或批处理文件。

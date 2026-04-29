@@ -140,12 +140,17 @@
     <ClInclude Include="IBLBaker.h" />
     <ClInclude Include="InputManager.h" />
     <ClInclude Include="json.hpp" />
+    <ClInclude Include="PBRPass.h" />
     <ClInclude Include="PBR_Model.h" />
     <ClInclude Include="PBR_Shader.h" />
     <ClInclude Include="PipelineManager.h" />
+    <ClInclude Include="PostProcessPass.h" />
     <ClInclude Include="RenderDevice.h" />
+    <ClInclude Include="RenderStructs.h" />
     <ClInclude Include="ResourceManager.h" />
     <ClInclude Include="SceneObject.h" />
+    <ClInclude Include="ShadowPass.h" />
+    <ClInclude Include="SkyboxPass.h" />
     <ClInclude Include="stb_image.h" />
     <ClInclude Include="stdafx.h" />
     <ClInclude Include="tiny_gltf.h" />
