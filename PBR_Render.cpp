@@ -210,6 +210,7 @@ void D3D12App::Update()
 
     auto& instances = m_resourceManager.GetSceneInstances();
 
+    // Get the world-space view frustum of the current frame's camera
     BoundingFrustum frustum = camera.GetWorldSpaceFrustum((float)Width / Height, 0.1f, 1000.0f);
 
     UINT8* cbvAddress = m_resourceManager.GetCBVAddress(frameIndex);
@@ -260,6 +261,7 @@ void D3D12App::Update()
     g_visibleInstances.clear();
     g_shadowVisibleInstances.clear();
 
+    // Use the existing Intersects library function to determine if an object should be added to the render queue or the shadow queue
     for (size_t i = 0; i < instances.size(); ++i)
     {
         if (instances[i].pModel == nullptr || instances[i].pModel->meshes.empty())
@@ -273,6 +275,7 @@ void D3D12App::Update()
         BoundingBox worldBox;
         instances[i].pModel->boundingBox.Transform(worldBox, instances[i].cachedWorldMat);
 
+        // Introduce an isVisible variable to enhance scalability
         if (frustum.Intersects(worldBox))
         {
             instances[i].isVisible = true;
