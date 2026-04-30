@@ -132,6 +132,9 @@
     <ClInclude Include="PBRPass.h">
       <Filter>头文件\Passes</Filter>
     </ClInclude>
+    <ClInclude Include="meshoptimizer.h">
+      <Filter>头文件\ThirdParty</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="PBR_Render.cpp">

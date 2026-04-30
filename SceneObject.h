@@ -7,11 +7,20 @@ using namespace DirectX;
 
 struct Model;
 
+struct LODGroup
+{
+    Model* lodModels[3] = { nullptr, nullptr, nullptr };
+    float lod1Threshold = 15.0f;
+    float lod2Threshold = 40.0f;
+};
+
 struct ModelInstance
 {
     std::string name;
     // Pointer to the model data
     Model* pModel;
+
+    LODGroup* pLODGroup = nullptr;
 
     XMFLOAT3 translation = { 0.0f, 0.0f, 0.0f };
     XMFLOAT3 rotation = { 0.0f, 0.0f, 0.0f };

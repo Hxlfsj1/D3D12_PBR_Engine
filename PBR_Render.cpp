@@ -312,9 +312,24 @@ void D3D12App::Update()
     g_visibleInstances.clear();
     g_shadowVisibleInstances.clear();
 
-    // Use the existing Intersects library function to determine if an object should be added to the render queue or the shadow queue
     for (size_t i = 0; i < instances.size(); ++i)
     {
+        // LOD
+        if (instances[i].pLODGroup != nullptr)
+        {
+            XMVECTOR camPosVec = XMLoadFloat3(&camera.Position);
+            XMVECTOR objPosVec = XMLoadFloat3(&instances[i].translation);
+            float dist = XMVectorGetX(XMVector3Length(XMVectorSubtract(camPosVec, objPosVec)));
+
+            if (dist < instances[i].pLODGroup->lod1Threshold)
+                instances[i].pModel = instances[i].pLODGroup->lodModels[0];
+            else if (dist < instances[i].pLODGroup->lod2Threshold)
+                instances[i].pModel = instances[i].pLODGroup->lodModels[1];
+            else
+                instances[i].pModel = instances[i].pLODGroup->lodModels[2];
+        }
+
+        // Use the existing Intersects library function to determine if an object should be added to the render queue or the shadow queue
         if (instances[i].pModel == nullptr || instances[i].pModel->meshes.empty())
         {
             instances[i].isVisible = false;
