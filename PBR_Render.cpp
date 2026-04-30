@@ -21,7 +21,7 @@
 #include <WICTextureLoader.h>
 
 using namespace DirectX;
-// std::shared_ptr allocates an external reference counter, whereas ComPtr uses the internal counter of the COM object itself.
+// std::shared_ptr allocates an external reference counter, whereas ComPtr uses the internal counter of the COM object itself
 using Microsoft::WRL::ComPtr;
 
 static std::vector<ModelInstance*> g_visibleInstances;
@@ -32,6 +32,9 @@ D3D12App* g_App = nullptr;
 
 int WINAPI WinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance, _In_ LPSTR lpCmdLine, _In_ int nShowCmd)
 {
+    // Disable system DPI scaling to unlock raw GPU performance
+    SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+
     D3D12App app(hInstance);
     g_App = &app;
 
@@ -52,8 +55,8 @@ D3D12App::D3D12App(HINSTANCE hInstance) : camera(XMFLOAT3(0.0f, 3.0f, -10.0f))
     hwnd = NULL;
     WindowName = L"3D12D_PBR_Render";
     WindowTitle = L"PBR IBL Model Viewer";
-    Width = 1920;
-    Height = 1200;
+    Width = 2240;
+    Height = 1400;
     FullScreen = false;
     Running = true;
 
@@ -232,38 +235,79 @@ void D3D12App::Update()
 
     passCb.lightColor = XMFLOAT3(5.0f, 5.0f, 5.0f);
 
-    XMVECTOR lightTarget = XMLoadFloat3(&camera.Position);
-    XMVECTOR lightPosVec = lightTarget - (dirVec * 50.0f);
+    auto GetCameraFrustumCorners = [](Camera& cam, int w, int h)
+        {
+            XMMATRIX proj = XMMatrixPerspectiveFovLH(XMConvertToRadians(cam.Zoom), (float)w / h, 0.1f, 1000.0f);
+            BoundingFrustum frustum(proj);
+            XMMATRIX view = cam.GetViewMatrix();
+            XMMATRIX invView = XMMatrixInverse(nullptr, view);
+            frustum.Transform(frustum, invView);
+            XMFLOAT3 corners[8];
+            frustum.GetCorners(corners);
+            std::vector<XMFLOAT3> result(8);
+            for (int i = 0; i < 8; ++i)
+            {
+                result[i] = corners[i];
+            }
+            return result;
+        };
+
+    std::vector<XMFLOAT3> frustumCorners = GetCameraFrustumCorners(camera, Width, Height);
+
+    XMFLOAT3 frustumCenter = { 0.0f, 0.0f, 0.0f };
+    for (int i = 0; i < 8; ++i)
+    {
+        frustumCenter.x += frustumCorners[i].x;
+        frustumCenter.y += frustumCorners[i].y;
+        frustumCenter.z += frustumCorners[i].z;
+    }
+    frustumCenter.x /= 8.0f;
+    frustumCenter.y /= 8.0f;
+    frustumCenter.z /= 8.0f;
+
+    XMVECTOR centerVec = XMLoadFloat3(&frustumCenter);
+    XMVECTOR lightPosVec = XMVectorSubtract(centerVec, dirVec);
     XMVECTOR lightUp = XMVectorSet(0.0f, 1.0f, 0.0f, 0.0f);
-    XMMATRIX lightView = XMMatrixLookAtLH(lightPosVec, lightTarget, lightUp);
 
-    float shadowMapSize = 2048.0f;
-    float orthoSize = 50.0f;
-    float texelSize = orthoSize / shadowMapSize;
+    if (abs(XMVectorGetY(dirVec)) > 0.99f)
+    {
+        lightUp = XMVectorSet(0.0f, 0.0f, 1.0f, 0.0f);
+    }
 
-    XMVECTOR shadowOrigin = XMVector4Transform(XMVectorSet(0.0f, 0.0f, 0.0f, 1.0f), lightView);
-    float offsetX = XMVectorGetX(shadowOrigin);
-    float offsetY = XMVectorGetY(shadowOrigin);
+    XMMATRIX lightView = XMMatrixLookAtLH(lightPosVec, centerVec, lightUp);
 
-    float snappedX = round(offsetX / texelSize) * texelSize;
-    float snappedY = round(offsetY / texelSize) * texelSize;
+    float minX = FLT_MAX, maxX = -FLT_MAX;
+    float minY = FLT_MAX, maxY = -FLT_MAX;
+    float minZ = FLT_MAX, maxZ = -FLT_MAX;
 
-    XMMATRIX roundingMatrix = XMMatrixTranslation(snappedX - offsetX, snappedY - offsetY, 0.0f);
+    for (int i = 0; i < 8; ++i)
+    {
+        XMVECTOR cornerVec = XMLoadFloat3(&frustumCorners[i]);
+        XMVECTOR lightSpaceCorner = XMVector3TransformCoord(cornerVec, lightView);
 
-    XMMATRIX lightProj = XMMatrixOrthographicLH(50.0f, 50.0f, 1.0f, 100.0f);
+        XMFLOAT3 pt;
+        XMStoreFloat3(&pt, lightSpaceCorner);
 
-    XMMATRIX alignedLightView = lightView * roundingMatrix;
-    XMMATRIX lightViewProj = alignedLightView * lightProj;
+        minX = (std::min)(minX, pt.x);
+        maxX = (std::max)(maxX, pt.x);
+        minY = (std::min)(minY, pt.y);
+        maxY = (std::max)(maxY, pt.y);
+        minZ = (std::min)(minZ, pt.z);
+        maxZ = (std::max)(maxZ, pt.z);
+    }
+
+    minZ -= 500.0f;
+
+    XMMATRIX lightProj = XMMatrixOrthographicOffCenterLH(minX, maxX, minY, maxY, minZ, maxZ);
+    XMMATRIX lightViewProj = lightView * lightProj;
     XMStoreFloat4x4(&passCb.lightViewProj, XMMatrixTranspose(lightViewProj));
 
     memcpy(cbvAddress, &passCb, sizeof(PassConstants));
 
-    BoundingOrientedBox lightOBB;
-    BoundingOrientedBox::CreateFromBoundingBox(lightOBB, BoundingBox(XMFLOAT3(0.0f, 0.0f, 50.5f), XMFLOAT3(25.0f, 25.0f, 49.5f)));
-
+    BoundingFrustum shadowFrustum(lightProj);
     XMVECTOR det;
-    XMMATRIX invLightView = XMMatrixInverse(&det, alignedLightView);
-    lightOBB.Transform(lightOBB, invLightView);
+    XMMATRIX invLightView = XMMatrixInverse(&det, lightView);
+    shadowFrustum.Transform(shadowFrustum, invLightView);
 
     g_visibleInstances.clear();
     g_shadowVisibleInstances.clear();
@@ -293,7 +337,7 @@ void D3D12App::Update()
             instances[i].isVisible = false;
         }
 
-        if (lightOBB.Intersects(worldBox))
+        if (shadowFrustum.Intersects(worldBox))
         {
             g_shadowVisibleInstances.push_back(&instances[i]);
         }
@@ -303,10 +347,16 @@ void D3D12App::Update()
     std::sort(g_visibleInstances.begin(), g_visibleInstances.end(), [&camPos](ModelInstance* a, ModelInstance* b)
         {
             // It breaks the batching, but establishes a clear strict boundary between opaque and transparent objects
-            if (a->isTransparent != b->isTransparent) return !a->isTransparent;
+            if (a->isTransparent != b->isTransparent)
+            {
+                return !a->isTransparent;
+            }
 
             // Rebuild the instancing batches for opaque objects
-            if (!a->isTransparent) return a->pModel < b->pModel;
+            if (!a->isTransparent)
+            {
+                return a->pModel < b->pModel;
+            }
 
             // Sort transparent objects in a back-to-front order (batching is lost here, resulting in a performance hit)
             XMVECTOR posA = XMLoadFloat3(&a->translation);
@@ -333,7 +383,6 @@ void D3D12App::Update()
     for (size_t i = 0; i < g_visibleInstances.size(); ++i)
     {
         // Update math only if dirty (CPU optimization)
-
         XMMATRIX world = g_visibleInstances[i]->cachedWorldMat;
         XMMATRIX normalMat = g_visibleInstances[i]->cachedNormalMat;
 
