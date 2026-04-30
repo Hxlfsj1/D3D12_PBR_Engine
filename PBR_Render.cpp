@@ -189,7 +189,9 @@ bool D3D12App::InitD3D()
 // Data is streamed directly from the Upload Heap to the GPU, utilizing a Ring Buffer mechanism (with a count of 3 to align with the Triple Buffering scheme)
 void D3D12App::Update()
 {
+    // ====================================================================================================
     // Handle FPS
+    // ====================================================================================================
     frameCount++;
     timeElapsed += deltaTime;
 
@@ -215,17 +217,21 @@ void D3D12App::Update()
         timeElapsed -= 1.0f;
     }
 
-    // Handle continuous input in the Update loop
+    // ====================================================================================================
+    // Input polling and environment setup
+    // ====================================================================================================
     m_inputManager.Update(deltaTime, camera);
 
     auto& instances = m_resourceManager.GetSceneInstances();
-
     // Get the world-space view frustum of the current frame's camera
     BoundingFrustum frustum = camera.GetWorldSpaceFrustum((float)Width / Height, 0.1f, 1000.0f);
-
+    // Bind CBVs to prepare for subsequent data updates to the GPU
     UINT8* cbvAddress = m_resourceManager.GetCBVAddress(frameIndex);
 
-    // Refresh per-frame constants, including the MVP transform
+    // ====================================================================================================
+    // Directional light matrix and shadow stability calculations
+    // ====================================================================================================
+    // Initialize passed data (camera position, light attributes, etc.)
     PassConstants passCb;
     passCb.camPos = camera.Position;
 
@@ -235,12 +241,13 @@ void D3D12App::Update()
 
     passCb.lightColor = XMFLOAT3(5.0f, 5.0f, 5.0f);
 
+    // Initialize shadow volume attributes: a cube located in front of the player's view
     XMVECTOR camPosVec = XMLoadFloat3(&camera.Position);
     XMVECTOR camFrontVec = XMLoadFloat3(&camera.Front);
     XMVECTOR centerVec = XMVectorAdd(camPosVec, XMVectorScale(camFrontVec, 25.0f));
-
     float shadowRadius = 40.0f;
 
+    // Initialize shadow volume attributes: a cube located in front of the player's view
     XMVECTOR lightPosVec = XMVectorSubtract(centerVec, XMVectorScale(dirVec, 500.0f));
     XMVECTOR lightUp = XMVectorSet(0.0f, 1.0f, 0.0f, 0.0f);
 
@@ -251,6 +258,7 @@ void D3D12App::Update()
 
     XMMATRIX lightView = XMMatrixLookAtLH(lightPosVec, centerVec, lightUp);
 
+    // Texel snapping technique to eliminate edge flickering
     float shadowMapSize = 4096.0f;
     float texelSize = (shadowRadius * 2.0f) / shadowMapSize;
 
@@ -263,6 +271,7 @@ void D3D12App::Update()
 
     lightView.r[3] = XMVectorAdd(lightView.r[3], XMVectorSet(snappedCx - cx, snappedCy - cy, 0.0f, 0.0f));
 
+    // Generate orthographic projection matrix and upload all packed data to GPU memory
     float minZ = 0.0f;
     float maxZ = 1000.0f;
 
@@ -275,6 +284,9 @@ void D3D12App::Update()
 
     memcpy(cbvAddress, &passCb, sizeof(PassConstants));
 
+    // ====================================================================================================
+    // Frustum culling and directional light shadow volume culling
+    // ====================================================================================================
     BoundingBox shadowArea;
     shadowArea.Center = XMFLOAT3(0.0f, 0.0f, (minZ + maxZ) * 0.5f);
     shadowArea.Extents = XMFLOAT3(shadowRadius, shadowRadius, (maxZ - minZ) * 0.5f);
@@ -333,6 +345,9 @@ void D3D12App::Update()
         }
     }
 
+    // ====================================================================================================
+    // Render queue sorting and batching optimization
+    // ====================================================================================================
     XMFLOAT3 camPos = camera.Position;
     std::sort(g_visibleInstances.begin(), g_visibleInstances.end(), [&camPos](ModelInstance* a, ModelInstance* b)
         {
@@ -376,6 +391,9 @@ void D3D12App::Update()
             return a->currentLodLevel < b->currentLodLevel;
         });
 
+    // ====================================================================================================
+    // Instance data packing and submission
+    // ====================================================================================================
     InstanceData* mappedInstanceData = reinterpret_cast<InstanceData*>(cbvAddress + 256);
 
     XMMATRIX view = camera.GetViewMatrix();
