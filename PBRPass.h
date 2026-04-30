@@ -82,6 +82,7 @@ public:
                     cmdList->SetPipelineState(pso);
 
                     Model* currentModel = nullptr;
+                    int currentLod = -1;
                     UINT instanceStartOffset = 0;
                     UINT currentInstanceCount = 0;
 
@@ -89,8 +90,9 @@ public:
                     {
                         bool isEnd = (i == endIdx);
                         Model* thisModel = isEnd ? nullptr : visibleInstances[i]->pModel;
+                        int thisLod = isEnd ? -1 : visibleInstances[i]->currentLodLevel;
 
-                        if ((isEnd || thisModel != currentModel) && currentInstanceCount > 0 && currentModel != nullptr)
+                        if ((isEnd || thisModel != currentModel || thisLod != currentLod) && currentInstanceCount > 0 && currentModel != nullptr)
                         {
                             D3D12_GPU_VIRTUAL_ADDRESS srvAddress = baseGpuAddress + 256 + (instanceStartOffset * sizeof(InstanceData));
                             cmdList->SetGraphicsRootShaderResourceView(9, srvAddress);
@@ -133,15 +135,16 @@ public:
                                 cmdList->SetGraphicsRootDescriptorTable(3, CD3DX12_GPU_DESCRIPTOR_HANDLE(hStart, srvIdx[2], srvDescSize));
                                 cmdList->SetGraphicsRootDescriptorTable(4, CD3DX12_GPU_DESCRIPTOR_HANDLE(hStart, srvIdx[3], srvDescSize));
 
-                                mesh.Draw(cmdList, currentInstanceCount);
+                                mesh.Draw(cmdList, currentInstanceCount, currentLod);
                             }
                         }
 
                         if (!isEnd)
                         {
-                            if (thisModel != currentModel)
+                            if (thisModel != currentModel || thisLod != currentLod)
                             {
                                 currentModel = thisModel;
+                                currentLod = thisLod;
                                 instanceStartOffset = i;
                                 currentInstanceCount = 1;
                             }
@@ -239,7 +242,7 @@ public:
                         cmdList->SetGraphicsRootDescriptorTable(3, CD3DX12_GPU_DESCRIPTOR_HANDLE(hStart, srvIdx[2], srvDescSize));
                         cmdList->SetGraphicsRootDescriptorTable(4, CD3DX12_GPU_DESCRIPTOR_HANDLE(hStart, srvIdx[3], srvDescSize));
 
-                        mesh.Draw(cmdList, 1);
+                        mesh.Draw(cmdList, 1, instance->currentLodLevel);
                     }
                 };
 

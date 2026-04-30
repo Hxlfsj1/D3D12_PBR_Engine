@@ -21,6 +21,8 @@
 #include <algorithm>
 #include <cfloat>
 
+#include "meshoptimizer.h"
+
 #define MAX_BONE_INFLUENCE 4
 
 using namespace DirectX;
@@ -66,49 +68,64 @@ inline XMMATRIX AssimpToDXMatrix(const aiMatrix4x4& aiMat)
 class Mesh
 {
 public:
-    std::vector<Vertex>       vertices;
-    std::vector<unsigned int> indices;
-    std::vector<Texture>      textures;
+    std::vector<Vertex> vertices;
+    std::vector<std::vector<unsigned int>> lodIndices;
+    std::vector<Texture> textures;
 
     ComPtr<ID3D12Resource> vertexBufferUploader;
-    ComPtr<ID3D12Resource> indexBufferUploader;
+    std::vector<ComPtr<ID3D12Resource>> indexBufferUploaders;
 
-    Mesh(ID3D12Device* device, ID3D12GraphicsCommandList* cmdList, std::vector<Vertex>& vertices, std::vector<unsigned int>& indices, std::vector<Texture>& textures)
+    Mesh(ID3D12Device* device, ID3D12GraphicsCommandList* cmdList, std::vector<Vertex>& vertices, std::vector<std::vector<unsigned int>>& lodIndices, std::vector<Texture>& textures)
     {
         this->vertices = std::move(vertices);
-        this->indices = std::move(indices);
+        this->lodIndices = std::move(lodIndices);
         this->textures = std::move(textures);
         setupMesh(device, cmdList);
     }
 
-    void Draw(ID3D12GraphicsCommandList* cmdList, UINT instanceCount = 1)
+    void Draw(ID3D12GraphicsCommandList* cmdList, UINT instanceCount = 1, int lodLevel = 0)
     {
+        if (lodLevel >= indexBufferViews.size())
+        {
+            lodLevel = indexBufferViews.size() - 1;
+        }
+
         cmdList->IASetVertexBuffers(0, 1, &vertexBufferView);
-        cmdList->IASetIndexBuffer(&indexBufferView);
+        cmdList->IASetIndexBuffer(&indexBufferViews[lodLevel]);
         cmdList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-        cmdList->DrawIndexedInstanced(static_cast<UINT>(indices.size()), instanceCount, 0, 0, 0);
+        cmdList->DrawIndexedInstanced(static_cast<UINT>(lodIndices[lodLevel].size()), instanceCount, 0, 0, 0);
     }
 
 private:
     ComPtr<ID3D12Resource> vertexBuffer;
     D3D12_VERTEX_BUFFER_VIEW vertexBufferView;
-    ComPtr<ID3D12Resource> indexBuffer;
-    D3D12_INDEX_BUFFER_VIEW indexBufferView;
+    std::vector<ComPtr<ID3D12Resource>> indexBuffers;
+    std::vector<D3D12_INDEX_BUFFER_VIEW> indexBufferViews;
 
     void setupMesh(ID3D12Device* device, ID3D12GraphicsCommandList* cmdList)
     {
         UINT vertexBufferSize = static_cast<UINT>(vertices.size() * sizeof(Vertex));
-        UINT indexBufferSize = static_cast<UINT>(indices.size() * sizeof(unsigned int));
 
         vertexBuffer = CreateDefaultBuffer(device, cmdList, vertices.data(), vertexBufferSize, vertexBufferUploader);
         vertexBufferView.BufferLocation = vertexBuffer->GetGPUVirtualAddress();
         vertexBufferView.StrideInBytes = sizeof(Vertex);
         vertexBufferView.SizeInBytes = vertexBufferSize;
 
-        indexBuffer = CreateDefaultBuffer(device, cmdList, indices.data(), indexBufferSize, indexBufferUploader);
-        indexBufferView.BufferLocation = indexBuffer->GetGPUVirtualAddress();
-        indexBufferView.Format = DXGI_FORMAT_R32_UINT;
-        indexBufferView.SizeInBytes = indexBufferSize;
+        for (size_t i = 0; i < lodIndices.size(); ++i)
+        {
+            UINT indexBufferSize = static_cast<UINT>(lodIndices[i].size() * sizeof(unsigned int));
+            ComPtr<ID3D12Resource> ibUploader;
+            ComPtr<ID3D12Resource> iBuffer = CreateDefaultBuffer(device, cmdList, lodIndices[i].data(), indexBufferSize, ibUploader);
+
+            D3D12_INDEX_BUFFER_VIEW ibView;
+            ibView.BufferLocation = iBuffer->GetGPUVirtualAddress();
+            ibView.Format = DXGI_FORMAT_R32_UINT;
+            ibView.SizeInBytes = indexBufferSize;
+
+            indexBuffers.push_back(iBuffer);
+            indexBufferViews.push_back(ibView);
+            indexBufferUploaders.push_back(ibUploader);
+        }
     }
 
     ComPtr<ID3D12Resource> CreateDefaultBuffer(ID3D12Device* device, ID3D12GraphicsCommandList* cmdList, const void* initData, UINT64 byteSize, ComPtr<ID3D12Resource>& uploadBuffer)
@@ -152,11 +169,11 @@ public:
         loadModel(device, cmdList, upload, path);
     }
 
-    void Draw(ID3D12GraphicsCommandList* cmdList)
+    void Draw(ID3D12GraphicsCommandList* cmdList, int lodLevel = 0)
     {
         for (unsigned int i = 0; i < meshes.size(); i++)
         {
-            meshes[i].Draw(cmdList);
+            meshes[i].Draw(cmdList, 1, lodLevel);
         }
     }
 
@@ -165,7 +182,10 @@ public:
         for (auto& mesh : meshes)
         {
             mesh.vertexBufferUploader.Reset();
-            mesh.indexBufferUploader.Reset();
+            for (auto& uploader : mesh.indexBufferUploaders)
+            {
+                uploader.Reset();
+            }
         }
     }
 
@@ -277,6 +297,21 @@ private:
             }
         }
 
+        std::vector<std::vector<unsigned int>> allLodIndices;
+        allLodIndices.push_back(indices);
+
+        size_t target_count_lod1 = size_t(indices.size() * 0.5f);
+        std::vector<unsigned int> indices_lod1(indices.size());
+        size_t lod1_count = meshopt_simplify(indices_lod1.data(), indices.data(), indices.size(), &vertices[0].Position.x, vertices.size(), sizeof(Vertex), target_count_lod1, 1e-2f);
+        indices_lod1.resize(lod1_count);
+        allLodIndices.push_back(indices_lod1);
+
+        size_t target_count_lod2 = size_t(indices.size() * 0.1f);
+        std::vector<unsigned int> indices_lod2(indices.size());
+        size_t lod2_count = meshopt_simplify(indices_lod2.data(), indices.data(), indices.size(), &vertices[0].Position.x, vertices.size(), sizeof(Vertex), target_count_lod2, 1e-2f);
+        indices_lod2.resize(lod2_count);
+        allLodIndices.push_back(indices_lod2);
+
         if (mesh->mMaterialIndex >= 0)
         {
             aiMaterial* material = scene->mMaterials[mesh->mMaterialIndex];
@@ -314,7 +349,7 @@ private:
             }
         }
 
-        return Mesh(device, cmdList, vertices, indices, textures);
+        return Mesh(device, cmdList, vertices, allLodIndices, textures);
     }
 
     void LoadAssimpTexture(ID3D12Device* device, DirectX::ResourceUploadBatch& upload, aiMaterial* mat, aiTextureType type, TextureType typeEnum, std::vector<Texture>& textures, const aiScene* scene)

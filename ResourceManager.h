@@ -545,7 +545,7 @@ private:
     Microsoft::WRL::ComPtr<ID3D12Resource> m_shadowMap;
     Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> m_shadowDsvHeap;
     UINT m_shadowSrvIdx;
-    const UINT m_shadowMapSize = 2048;
+    const UINT m_shadowMapSize = 4096;
 
     Microsoft::WRL::ComPtr<ID3D12Resource> m_offscreenRT;
     Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> m_postRtvHeap;

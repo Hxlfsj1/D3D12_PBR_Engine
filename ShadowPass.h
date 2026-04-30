@@ -32,8 +32,8 @@ public:
         cmdList->SetGraphicsRootSignature(pipelineManager->GetShadowRootSignature());
         cmdList->SetPipelineState(pipelineManager->GetShadowPSO());
 
-        D3D12_VIEWPORT shadowViewport = { 0.0f, 0.0f, 2048.0f, 2048.0f, 0.0f, 1.0f };
-        D3D12_RECT shadowScissor = { 0, 0, 2048, 2048 };
+        D3D12_VIEWPORT shadowViewport = { 0.0f, 0.0f, 4096.0f, 4096.0f, 0.0f, 1.0f };
+        D3D12_RECT shadowScissor = { 0, 0, 4096, 4096 };
         cmdList->RSSetViewports(1, &shadowViewport);
         cmdList->RSSetScissorRects(1, &shadowScissor);
 
@@ -50,6 +50,7 @@ public:
         cmdList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
 
         Model* currentModel = nullptr;
+        int currentLod = -1;
         UINT instanceStartOffset = 0;
         UINT currentInstanceCount = 0;
 
@@ -57,23 +58,25 @@ public:
         {
             bool isEnd = (i == shadowVisibleInstances.size());
             Model* thisModel = isEnd ? nullptr : shadowVisibleInstances[i]->pModel;
+            int thisLod = isEnd ? -1 : shadowVisibleInstances[i]->currentLodLevel;
 
-            if ((isEnd || thisModel != currentModel) && currentInstanceCount > 0 && currentModel != nullptr)
+            if ((isEnd || thisModel != currentModel || thisLod != currentLod) && currentInstanceCount > 0 && currentModel != nullptr)
             {
                 D3D12_GPU_VIRTUAL_ADDRESS srvAddress = baseGpuAddress + 256 + ((visibleInstancesSize + instanceStartOffset) * sizeof(InstanceData));
                 cmdList->SetGraphicsRootShaderResourceView(1, srvAddress);
 
                 for (auto& mesh : currentModel->meshes)
                 {
-                    mesh.Draw(cmdList, currentInstanceCount);
+                    mesh.Draw(cmdList, currentInstanceCount, currentLod);
                 }
             }
 
             if (!isEnd)
             {
-                if (thisModel != currentModel)
+                if (thisModel != currentModel || thisLod != currentLod)
                 {
                     currentModel = thisModel;
+                    currentLod = thisLod;
                     instanceStartOffset = i;
                     currentInstanceCount = 1;
                 }

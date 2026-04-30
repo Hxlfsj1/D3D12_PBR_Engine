@@ -235,38 +235,13 @@ void D3D12App::Update()
 
     passCb.lightColor = XMFLOAT3(5.0f, 5.0f, 5.0f);
 
-    auto GetCameraFrustumCorners = [](Camera& cam, int w, int h)
-        {
-            XMMATRIX proj = XMMatrixPerspectiveFovLH(XMConvertToRadians(cam.Zoom), (float)w / h, 0.1f, 1000.0f);
-            BoundingFrustum frustum(proj);
-            XMMATRIX view = cam.GetViewMatrix();
-            XMMATRIX invView = XMMatrixInverse(nullptr, view);
-            frustum.Transform(frustum, invView);
-            XMFLOAT3 corners[8];
-            frustum.GetCorners(corners);
-            std::vector<XMFLOAT3> result(8);
-            for (int i = 0; i < 8; ++i)
-            {
-                result[i] = corners[i];
-            }
-            return result;
-        };
+    XMVECTOR camPosVec = XMLoadFloat3(&camera.Position);
+    XMVECTOR camFrontVec = XMLoadFloat3(&camera.Front);
+    XMVECTOR centerVec = XMVectorAdd(camPosVec, XMVectorScale(camFrontVec, 25.0f));
 
-    std::vector<XMFLOAT3> frustumCorners = GetCameraFrustumCorners(camera, Width, Height);
+    float shadowRadius = 40.0f;
 
-    XMFLOAT3 frustumCenter = { 0.0f, 0.0f, 0.0f };
-    for (int i = 0; i < 8; ++i)
-    {
-        frustumCenter.x += frustumCorners[i].x;
-        frustumCenter.y += frustumCorners[i].y;
-        frustumCenter.z += frustumCorners[i].z;
-    }
-    frustumCenter.x /= 8.0f;
-    frustumCenter.y /= 8.0f;
-    frustumCenter.z /= 8.0f;
-
-    XMVECTOR centerVec = XMLoadFloat3(&frustumCenter);
-    XMVECTOR lightPosVec = XMVectorSubtract(centerVec, dirVec);
+    XMVECTOR lightPosVec = XMVectorSubtract(centerVec, XMVectorScale(dirVec, 500.0f));
     XMVECTOR lightUp = XMVectorSet(0.0f, 1.0f, 0.0f, 0.0f);
 
     if (abs(XMVectorGetY(dirVec)) > 0.99f)
@@ -276,38 +251,33 @@ void D3D12App::Update()
 
     XMMATRIX lightView = XMMatrixLookAtLH(lightPosVec, centerVec, lightUp);
 
-    float minX = FLT_MAX, maxX = -FLT_MAX;
-    float minY = FLT_MAX, maxY = -FLT_MAX;
-    float minZ = FLT_MAX, maxZ = -FLT_MAX;
+    float shadowMapSize = 4096.0f;
+    float texelSize = (shadowRadius * 2.0f) / shadowMapSize;
 
-    for (int i = 0; i < 8; ++i)
-    {
-        XMVECTOR cornerVec = XMLoadFloat3(&frustumCorners[i]);
-        XMVECTOR lightSpaceCorner = XMVector3TransformCoord(cornerVec, lightView);
+    XMVECTOR centerLS = XMVector3TransformCoord(centerVec, lightView);
+    float cx = XMVectorGetX(centerLS);
+    float cy = XMVectorGetY(centerLS);
 
-        XMFLOAT3 pt;
-        XMStoreFloat3(&pt, lightSpaceCorner);
+    float snappedCx = floor(cx / texelSize) * texelSize;
+    float snappedCy = floor(cy / texelSize) * texelSize;
 
-        minX = (std::min)(minX, pt.x);
-        maxX = (std::max)(maxX, pt.x);
-        minY = (std::min)(minY, pt.y);
-        maxY = (std::max)(maxY, pt.y);
-        minZ = (std::min)(minZ, pt.z);
-        maxZ = (std::max)(maxZ, pt.z);
-    }
+    lightView.r[3] = XMVectorAdd(lightView.r[3], XMVectorSet(snappedCx - cx, snappedCy - cy, 0.0f, 0.0f));
 
-    minZ -= 500.0f;
+    float minZ = 0.0f;
+    float maxZ = 1000.0f;
 
-    XMMATRIX lightProj = XMMatrixOrthographicOffCenterLH(minX, maxX, minY, maxY, minZ, maxZ);
+    XMMATRIX lightProj = XMMatrixOrthographicLH(shadowRadius * 2.0f, shadowRadius * 2.0f, minZ, maxZ);
     XMMATRIX lightViewProj = lightView * lightProj;
+
+    passCb.padding3 = shadowRadius * 2.0f;
+
     XMStoreFloat4x4(&passCb.lightViewProj, XMMatrixTranspose(lightViewProj));
 
     memcpy(cbvAddress, &passCb, sizeof(PassConstants));
 
-    BoundingFrustum shadowFrustum(lightProj);
-    XMVECTOR det;
-    XMMATRIX invLightView = XMMatrixInverse(&det, lightView);
-    shadowFrustum.Transform(shadowFrustum, invLightView);
+    BoundingBox shadowArea;
+    shadowArea.Center = XMFLOAT3(0.0f, 0.0f, (minZ + maxZ) * 0.5f);
+    shadowArea.Extents = XMFLOAT3(shadowRadius, shadowRadius, (maxZ - minZ) * 0.5f);
 
     g_visibleInstances.clear();
     g_shadowVisibleInstances.clear();
@@ -315,18 +285,20 @@ void D3D12App::Update()
     for (size_t i = 0; i < instances.size(); ++i)
     {
         // LOD
-        if (instances[i].pLODGroup != nullptr)
-        {
-            XMVECTOR camPosVec = XMLoadFloat3(&camera.Position);
-            XMVECTOR objPosVec = XMLoadFloat3(&instances[i].translation);
-            float dist = XMVectorGetX(XMVector3Length(XMVectorSubtract(camPosVec, objPosVec)));
+        XMVECTOR objPosVec = XMLoadFloat3(&instances[i].translation);
+        float dist = XMVectorGetX(XMVector3Length(XMVectorSubtract(camPosVec, objPosVec)));
 
-            if (dist < instances[i].pLODGroup->lod1Threshold)
-                instances[i].pModel = instances[i].pLODGroup->lodModels[0];
-            else if (dist < instances[i].pLODGroup->lod2Threshold)
-                instances[i].pModel = instances[i].pLODGroup->lodModels[1];
-            else
-                instances[i].pModel = instances[i].pLODGroup->lodModels[2];
+        if (dist < instances[i].lod1Threshold)
+        {
+            instances[i].currentLodLevel = 0;
+        }
+        else if (dist < instances[i].lod2Threshold)
+        {
+            instances[i].currentLodLevel = 1;
+        }
+        else
+        {
+            instances[i].currentLodLevel = 2;
         }
 
         // Use the existing Intersects library function to determine if an object should be added to the render queue or the shadow queue
@@ -352,7 +324,10 @@ void D3D12App::Update()
             instances[i].isVisible = false;
         }
 
-        if (shadowFrustum.Intersects(worldBox))
+        BoundingBox lightSpaceBox;
+        worldBox.Transform(lightSpaceBox, lightView);
+
+        if (shadowArea.Intersects(lightSpaceBox))
         {
             g_shadowVisibleInstances.push_back(&instances[i]);
         }
@@ -365,6 +340,15 @@ void D3D12App::Update()
             if (a->isTransparent != b->isTransparent)
             {
                 return !a->isTransparent;
+            }
+
+            if (!a->isTransparent)
+            {
+                if (a->pModel != b->pModel)
+                {
+                    return a->pModel < b->pModel;
+                }
+                return a->currentLodLevel < b->currentLodLevel;
             }
 
             // Rebuild the instancing batches for opaque objects
@@ -385,7 +369,11 @@ void D3D12App::Update()
 
     std::sort(g_shadowVisibleInstances.begin(), g_shadowVisibleInstances.end(), [](ModelInstance* a, ModelInstance* b)
         {
-            return a->pModel < b->pModel;
+            if (a->pModel != b->pModel)
+            {
+                return a->pModel < b->pModel;
+            }
+            return a->currentLodLevel < b->currentLodLevel;
         });
 
     InstanceData* mappedInstanceData = reinterpret_cast<InstanceData*>(cbvAddress + 256);
