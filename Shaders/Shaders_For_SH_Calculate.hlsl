@@ -1,3 +1,9 @@
+/*
+1. Unlike standard shaders that operate per-pixel, this program's minimum computational unit is a group of 256 stream processors
+2. Utilize parallel reduction to avoid read-write conflicts and ensure high-speed accumulation
+3. Rather than a conventional shader, this is a GPU-based compute program written in HLSL
+*/
+
 cbuffer ImageInfo : register(b0)
 {
     uint width;
@@ -10,10 +16,10 @@ RWStructuredBuffer<float4> finalSHOutput : register(u0);
 
 #define THREAD_COUNT 256
 
-// Allocate a high-speed shared workspace in the GPU's local memory (L1 speed).
-// Each thread gets its own slot [THREAD_COUNT] to safely store local sums without data races.
+// Allocate a high-speed shared workspace in the GPU's local memory (L1 speed)
+// Each thread gets its own slot [THREAD_COUNT] to safely store local sums without data races
 groupshared float3 sharedSH[9][THREAD_COUNT];
-// Store the sum of weights. This corrects the mapping distortion where pole pixels in the HDR map take up less physical area on a sphere.
+// Store the sum of weights. This corrects the mapping distortion where pole pixels in the HDR map take up less physical area on a sphere
 groupshared float sharedWeight[THREAD_COUNT];
 
 static const float PI = 3.14159265f;
@@ -89,6 +95,7 @@ void CSMain(uint3 GTid : SV_GroupThreadID)
     // Use parallel reduction to accumulate the values calculated by all threads (s >>= 1 equals s /= 2) 
     for (uint s = THREAD_COUNT / 2; s > 0; s >>= 1)
     {
+        // Notice: there is "if" not "for" because here is GPU
         if (threadIndex < s)
         {
             for (int k = 0; k < 9; ++k)
