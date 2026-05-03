@@ -21,9 +21,9 @@ D:\项目\LearnDirectX\PBRPass.h(148,55): warning C4267: “=”: 从“size_t�
   (编译源文件“PBR_Render.cpp”)
   
   正在生成代码
-  53 of 5764 functions ( 0.9%) were compiled, the rest were copied from previous compilation.
-    32 functions were new in current compilation
-    137 functions had inline decision re-evaluated but remain unchanged
+  1 of 5764 functions (<0.1%) were compiled, the rest were copied from previous compilation.
+    0 functions were new in current compilation
+    23 functions had inline decision re-evaluated but remain unchanged
   已完成代码的生成
   LearnDirectX.vcxproj -> D:\项目\LearnDirectX\x64\Release\LearnDirectX.exe
   'pwsh.exe' 不是内部或外部命令，也不是可运行的程序

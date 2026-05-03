@@ -104,7 +104,7 @@ float3 getNormalFromMap(VS_OUTPUT input)
     return normalize(mul(tangentNormal, TBN));
 }
 
-// SH
+// Evaluate spherical harmonics using normal vector (9-coefficient reconstruction to final color)
 float3 EvaluateSH9(float3 N)
 {
     float x = N.x;
@@ -299,7 +299,7 @@ float4 PSMain(VS_OUTPUT input) : SV_TARGET
     float NdotL = max(dot(N, L), 0.0);
     float3 Lo = (kD * albedo / PI + specular) * radiance * NdotL * shadow;
     
-    // Diffuse IBL
+    // Diffuse IBL (SH)
     float3 F_IBL = fresnelSchlickRoughness(max(dot(N, V), 0.0), F0, roughness);
     float3 kS_IBL = F_IBL;
     float3 kD_IBL = 1.0 - kS_IBL;
@@ -313,6 +313,8 @@ float4 PSMain(VS_OUTPUT input) : SV_TARGET
     float2 brdf = tBRDF.Sample(s1, float2(max(dot(N, V), 0.0), roughness)).rg;
     float3 specular_IBL = prefilteredColor * (F0 * brdf.x + brdf.y);
     
+    // The kD_IBL term is decoupled from the split-sum specular BRDF
+    // It serves as a visual constraint to mimic energy conservation rather than achieving strict physical correctness
     float3 ambient = (kD_IBL * diffuse_IBL + specular_IBL) * ao;
     // Add emissive (if applicable)
     float3 emissive = hasEmissive ? pow(tEmissive.Sample(s1, input.texCoord).rgb, 2.2) : float3(0.0, 0.0, 0.0);
