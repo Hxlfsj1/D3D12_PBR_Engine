@@ -13,8 +13,8 @@ class ShaderCompiler
 {
 public:
 
-    static Microsoft::WRL::ComPtr<ID3DBlob> CompileFromFile(std::wstring fileName, std::string entryPoint, std::string target)
-    {   
+    static Microsoft::WRL::ComPtr<ID3DBlob> CompileFromFile(std::wstring fileName, std::string entryPoint, std::string target, const D3D_SHADER_MACRO* defines = nullptr)
+    {
         // A container for the compiled shader bytecode
         Microsoft::WRL::ComPtr<ID3DBlob> shaderBlob;
         // A container for shader compilation error messages
@@ -22,7 +22,7 @@ public:
 
         UINT compileFlags = 0;
 
-// Toggle between Debug and Release modes
+        // Toggle between Debug and Release modes
 #if defined(DEBUG) || defined(_DEBUG)
         compileFlags = D3DCOMPILE_DEBUG | D3DCOMPILE_SKIP_OPTIMIZATION;
 #endif
@@ -31,7 +31,7 @@ public:
         HRESULT hr = D3DCompileFromFile
         (
             fileName.c_str(),
-            nullptr,
+            defines,
             D3D_COMPILE_STANDARD_FILE_INCLUDE,
             entryPoint.c_str(),
             target.c_str(),

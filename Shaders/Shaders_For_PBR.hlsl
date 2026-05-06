@@ -1,3 +1,7 @@
+#ifndef LOD_LEVEL
+#define LOD_LEVEL 0
+#endif
+
 cbuffer PassConstants : register(b0)
 {
     float3 camPos;
@@ -59,9 +63,15 @@ struct VS_OUTPUT
     float3 worldPos : POSITION;
     float3 normal : NORMAL;
     float2 texCoord : TEXCOORD;
+
+#if LOD_LEVEL == 0
     float3 tangent : TANGENT;
     float3 bitangent : BITANGENT;
+#endif
+
+#if LOD_LEVEL < 2
     float4 lightSpacePos : LIGHTSPACE;
+#endif
 };
 
 static const float PI = 3.14159265359;
@@ -79,17 +89,22 @@ VS_OUTPUT VSMain(VS_INPUT input)
     output.pos = mul(float4(input.pos, 1.0f), wvpMat);
     output.worldPos = mul(float4(input.pos, 1.0f), worldMat).xyz;
     
-    // Completely fix the non-uniform scaling issue for normals by implementing a dedicated Normal Matrix
     output.normal = normalize(mul(input.normal, (float3x3) normalMat));
-    output.tangent = normalize(mul(input.tangent, (float3x3) normalMat));
-    output.bitangent = normalize(mul(input.bitangent, (float3x3) normalMat));
     output.texCoord = input.texCoord;
     
+#if LOD_LEVEL == 0
+    // Completely fix the non-uniform scaling issue for normals by implementing a dedicated Normal Matrix
+    output.tangent = normalize(mul(input.tangent, (float3x3) normalMat));
+    output.bitangent = normalize(mul(input.bitangent, (float3x3) normalMat));
+#endif
+
+#if LOD_LEVEL < 2
     output.lightSpacePos = mul(float4(output.worldPos, 1.0f), lightViewProj);
-    
+#endif
     return output;
 }
 
+#if LOD_LEVEL == 0
 float3 getNormalFromMap(VS_OUTPUT input)
 {
     float3 tangentNormal = tNormal.Sample(s1, input.texCoord).xyz * 2.0 - 1.0;
@@ -103,6 +118,7 @@ float3 getNormalFromMap(VS_OUTPUT input)
     
     return normalize(mul(tangentNormal, TBN));
 }
+#endif
 
 // Evaluate spherical harmonics using normal vector (9-coefficient reconstruction to final color)
 float3 EvaluateSH9(float3 N)
@@ -127,7 +143,7 @@ float3 EvaluateSH9(float3 N)
 
 // NDF
 float DistributionGGX(float3 N, float3 H, float roughness)
-{   
+{
     // Perceptual Remapping: Linearizing parameter control for intuitive artist adjustment.
     float a = roughness * roughness;
     float a2 = a * a;
@@ -261,7 +277,18 @@ float4 PSMain(VS_OUTPUT input) : SV_TARGET
     float4 albedoSample = tAlbedo.Sample(s1, input.texCoord);
     float3 albedo = pow(albedoSample.rgb, 2.2);
     float finalAlpha = albedoSample.a;
+
+#if LOD_LEVEL == 2
+    float3 N = normalize(input.normal);
+    float3 L = normalize(-lightDir);
+    float NdotL = max(dot(N, L), 0.0);
     
+    float3 irradiance = EvaluateSH9(N);
+    float3 diffuse_IBL = irradiance * albedo;
+    float3 directDiffuse = albedo * lightColor * NdotL;
+    
+    return float4(diffuse_IBL + directDiffuse, finalAlpha);
+#else
     float ao = 1.0;
     float roughness = 0.5;
     float metallic = 0.0;
@@ -271,7 +298,14 @@ float4 PSMain(VS_OUTPUT input) : SV_TARGET
     roughness = mrSample.g;
     metallic = mrSample.b;
     
-    float3 N = getNormalFromMap(input);
+    float3 N;
+    
+#if LOD_LEVEL == 1
+    N = normalize(input.normal);
+#else
+    N = getNormalFromMap(input);
+#endif
+
     float3 V = normalize(camPos - input.worldPos);
     float3 R = reflect(-V, N);
     float3 F0 = float3(0.04, 0.04, 0.04);
@@ -283,6 +317,7 @@ float4 PSMain(VS_OUTPUT input) : SV_TARGET
     float NDF = DistributionGGX(N, H, roughness);
     float G = GeometrySmith(N, V, L, roughness);
     float3 F = fresnelSchlick(max(dot(H, V), 0.0), F0);
+    
     // Construct the classic Cook-Torrance reflectance equation
     float3 numerator = NDF * G * F;
     float denominator = 4.0 * max(dot(N, V), 0.0) * max(dot(N, L), 0.0) + 0.0001;
@@ -307,18 +342,28 @@ float4 PSMain(VS_OUTPUT input) : SV_TARGET
     float3 irradiance = EvaluateSH9(N);
     float3 diffuse_IBL = irradiance * albedo;
     
+    float3 specular_IBL = float3(0.0, 0.0, 0.0);
+    
+#if LOD_LEVEL == 0
     // Specular IBL (split sum)
     const float MAX_REFLECTION_LOD = 4.0;
     float3 prefilteredColor = tPrefilter.SampleLevel(s1, R, roughness * MAX_REFLECTION_LOD).rgb;
     float2 brdf = tBRDF.Sample(s1, float2(max(dot(N, V), 0.0), roughness)).rg;
-    float3 specular_IBL = prefilteredColor * (F0 * brdf.x + brdf.y);
+    specular_IBL = prefilteredColor * (F0 * brdf.x + brdf.y);
+#elif LOD_LEVEL == 1
+    const float MAX_REFLECTION_LOD = 4.0;
+    float3 prefilteredColor = tPrefilter.SampleLevel(s1, R, roughness * MAX_REFLECTION_LOD).rgb;
+    specular_IBL = prefilteredColor * F_IBL;
+#endif
     
     // The kD_IBL term is decoupled from the split-sum specular BRDF
     // It serves as a visual constraint to mimic energy conservation rather than achieving strict physical correctness
     float3 ambient = (kD_IBL * diffuse_IBL + specular_IBL) * ao;
+    
     // Add emissive (if applicable)
     float3 emissive = hasEmissive ? pow(tEmissive.Sample(s1, input.texCoord).rgb, 2.2) : float3(0.0, 0.0, 0.0);
     float3 color = ambient + Lo + emissive;
 
     return float4(color, finalAlpha);
+#endif
 }

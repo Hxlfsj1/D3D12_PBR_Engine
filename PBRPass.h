@@ -75,11 +75,9 @@ public:
                 }
             }
 
-            auto DrawQueue = [=](size_t startIdx, size_t endIdx, ID3D12PipelineState* pso)
+            auto DrawQueue = [=](size_t startIdx, size_t endIdx, bool isPBR)
                 {
                     if (startIdx >= endIdx) return;
-
-                    cmdList->SetPipelineState(pso);
 
                     Model* currentModel = nullptr;
                     int currentLod = -1;
@@ -143,6 +141,18 @@ public:
                         {
                             if (thisModel != currentModel || thisLod != currentLod)
                             {
+                                if (thisLod != currentLod)
+                                {
+                                    if (isPBR)
+                                    {
+                                        cmdList->SetPipelineState(pipelineManager->GetPBR_PSO(thisLod));
+                                    }
+                                    else
+                                    {
+                                        cmdList->SetPipelineState(pipelineManager->GetZPrepass_PSO());
+                                    }
+                                }
+
                                 currentModel = thisModel;
                                 currentLod = thisLod;
                                 instanceStartOffset = i;
@@ -157,10 +167,10 @@ public:
                 };
 
             cmdList->OMSetRenderTargets(0, nullptr, FALSE, &dsv);
-            DrawQueue(0, transparentStartIndex, pipelineManager->GetZPrepass_PSO());
+            DrawQueue(0, transparentStartIndex, false);
 
             cmdList->OMSetRenderTargets(1, &rtv, FALSE, &dsv);
-            DrawQueue(0, transparentStartIndex, pipelineManager->GetPBR_PSO());
+            DrawQueue(0, transparentStartIndex, true);
         }
         else
         {
