@@ -125,8 +125,8 @@ public:
                                     }
                                 }
 
-                                UINT32 flags[4] = { (UINT32)hasMap[0], (UINT32)hasMap[1], (UINT32)hasMap[2], (UINT32)hasMap[3] };
-                                cmdList->SetGraphicsRoot32BitConstants(7, 4, flags, 0);
+                                UINT32 flags[5] = { (UINT32)hasMap[0], (UINT32)hasMap[1], (UINT32)hasMap[2], (UINT32)hasMap[3], (UINT32)mesh.isUnlit };
+                                cmdList->SetGraphicsRoot32BitConstants(7, 5, flags, 0);
 
                                 cmdList->SetGraphicsRootDescriptorTable(1, CD3DX12_GPU_DESCRIPTOR_HANDLE(hStart, srvIdx[0], srvDescSize));
                                 cmdList->SetGraphicsRootDescriptorTable(2, CD3DX12_GPU_DESCRIPTOR_HANDLE(hStart, srvIdx[1], srvDescSize));
@@ -244,8 +244,8 @@ public:
                             }
                         }
 
-                        UINT32 flags[4] = { (UINT32)hasMap[0], (UINT32)hasMap[1], (UINT32)hasMap[2], (UINT32)hasMap[3] };
-                        cmdList->SetGraphicsRoot32BitConstants(7, 4, flags, 0);
+                        UINT32 flags[5] = { (UINT32)hasMap[0], (UINT32)hasMap[1], (UINT32)hasMap[2], (UINT32)hasMap[3], (UINT32)mesh.isUnlit };
+                        cmdList->SetGraphicsRoot32BitConstants(7, 5, flags, 0);
 
                         cmdList->SetGraphicsRootDescriptorTable(1, CD3DX12_GPU_DESCRIPTOR_HANDLE(hStart, srvIdx[0], srvDescSize));
                         cmdList->SetGraphicsRootDescriptorTable(2, CD3DX12_GPU_DESCRIPTOR_HANDLE(hStart, srvIdx[1], srvDescSize));

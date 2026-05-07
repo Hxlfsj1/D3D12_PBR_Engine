@@ -38,6 +38,10 @@ cbuffer MaterialFlags : register(b1)
     int hasNormal;
     int hasORM;
     int hasEmissive;
+    int isUnlit;
+    int pad1;
+    int pad2;
+    int pad3;
 };
 
 cbuffer SHBuffer : register(b2)
@@ -277,6 +281,12 @@ float4 PSMain(VS_OUTPUT input) : SV_TARGET
     float4 albedoSample = tAlbedo.Sample(s1, input.texCoord);
     float3 albedo = pow(albedoSample.rgb, 2.2);
     float finalAlpha = albedoSample.a;
+    
+    if (isUnlit)
+    {
+        float3 unlitColor = hasEmissive ? pow(tEmissive.Sample(s1, input.texCoord).rgb, 2.2) : albedo;
+        return float4(unlitColor, finalAlpha);
+    }
 
 #if LOD_LEVEL == 2
     float3 N = normalize(input.normal);

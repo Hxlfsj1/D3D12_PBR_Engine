@@ -71,15 +71,17 @@ public:
     std::vector<Vertex> vertices;
     std::vector<std::vector<unsigned int>> lodIndices;
     std::vector<Texture> textures;
+    bool isUnlit;
 
     ComPtr<ID3D12Resource> vertexBufferUploader;
     std::vector<ComPtr<ID3D12Resource>> indexBufferUploaders;
 
-    Mesh(ID3D12Device* device, ID3D12GraphicsCommandList* cmdList, std::vector<Vertex>& vertices, std::vector<std::vector<unsigned int>>& lodIndices, std::vector<Texture>& textures)
+    Mesh(ID3D12Device* device, ID3D12GraphicsCommandList* cmdList, std::vector<Vertex>& vertices, std::vector<std::vector<unsigned int>>& lodIndices, std::vector<Texture>& textures, bool _isUnlit = false)
     {
         this->vertices = std::move(vertices);
         this->lodIndices = std::move(lodIndices);
         this->textures = std::move(textures);
+        this->isUnlit = _isUnlit;
         setupMesh(device, cmdList);
     }
 
@@ -251,6 +253,7 @@ private:
         std::vector<Vertex> vertices;
         std::vector<unsigned int> indices;
         std::vector<Texture> textures;
+        bool isUnlit = false;
 
         DirectX::XMMATRIX invTranspose = DirectX::XMMatrixTranspose(DirectX::XMMatrixInverse(nullptr, nodeTransform));
 
@@ -316,21 +319,45 @@ private:
         {
             aiMaterial* material = scene->mMaterials[mesh->mMaterialIndex];
 
-            if (material->GetTextureCount(aiTextureType_BASE_COLOR) > 0) LoadAssimpTexture(device, upload, material, aiTextureType_BASE_COLOR, TextureType::Albedo, textures, scene);
-            else if (material->GetTextureCount(aiTextureType_DIFFUSE) > 0) LoadAssimpTexture(device, upload, material, aiTextureType_DIFFUSE, TextureType::Albedo, textures, scene);
+            if (material->GetTextureCount(aiTextureType_BASE_COLOR) > 0)
+            {
+                LoadAssimpTexture(device, upload, material, aiTextureType_BASE_COLOR, TextureType::Albedo, textures, scene);
+            }
+            else if (material->GetTextureCount(aiTextureType_DIFFUSE) > 0)
+            {
+                LoadAssimpTexture(device, upload, material, aiTextureType_DIFFUSE, TextureType::Albedo, textures, scene);
+            }
 
-            if (material->GetTextureCount(aiTextureType_NORMALS) > 0) LoadAssimpTexture(device, upload, material, aiTextureType_NORMALS, TextureType::Normal, textures, scene);
-            else if (material->GetTextureCount(aiTextureType_NORMAL_CAMERA) > 0) LoadAssimpTexture(device, upload, material, aiTextureType_NORMAL_CAMERA, TextureType::Normal, textures, scene);
+            if (material->GetTextureCount(aiTextureType_NORMALS) > 0)
+            {
+                LoadAssimpTexture(device, upload, material, aiTextureType_NORMALS, TextureType::Normal, textures, scene);
+            }
+            else if (material->GetTextureCount(aiTextureType_NORMAL_CAMERA) > 0)
+            {
+                LoadAssimpTexture(device, upload, material, aiTextureType_NORMAL_CAMERA, TextureType::Normal, textures, scene);
+            }
 
-            if (material->GetTextureCount(aiTextureType_UNKNOWN) > 0) LoadAssimpTexture(device, upload, material, aiTextureType_UNKNOWN, TextureType::ORM, textures, scene);
-            else if (material->GetTextureCount(aiTextureType_METALNESS) > 0) LoadAssimpTexture(device, upload, material, aiTextureType_METALNESS, TextureType::ORM, textures, scene);
+            if (material->GetTextureCount(aiTextureType_UNKNOWN) > 0)
+            {
+                LoadAssimpTexture(device, upload, material, aiTextureType_UNKNOWN, TextureType::ORM, textures, scene);
+            }
+            else if (material->GetTextureCount(aiTextureType_METALNESS) > 0)
+            {
+                LoadAssimpTexture(device, upload, material, aiTextureType_METALNESS, TextureType::ORM, textures, scene);
+            }
 
-            if (material->GetTextureCount(aiTextureType_AMBIENT_OCCLUSION) > 0) LoadAssimpTexture(device, upload, material, aiTextureType_AMBIENT_OCCLUSION, TextureType::ORM, textures, scene);
-            else if (material->GetTextureCount(aiTextureType_LIGHTMAP) > 0) LoadAssimpTexture(device, upload, material, aiTextureType_LIGHTMAP, TextureType::ORM, textures, scene);
+            if (material->GetTextureCount(aiTextureType_AMBIENT_OCCLUSION) > 0)
+            {
+                LoadAssimpTexture(device, upload, material, aiTextureType_AMBIENT_OCCLUSION, TextureType::ORM, textures, scene);
+            }
+            else if (material->GetTextureCount(aiTextureType_LIGHTMAP) > 0)
+            {
+                LoadAssimpTexture(device, upload, material, aiTextureType_LIGHTMAP, TextureType::ORM, textures, scene);
+            }
 
             aiString matName;
             material->Get(AI_MATKEY_NAME, matName);
-            bool isUnlit = false;
+
             for (size_t k = 0; k < gltfModel.materials.size(); k++)
             {
                 if (gltfModel.materials[k].name == matName.C_Str())
@@ -340,16 +367,28 @@ private:
                 }
             }
 
-            if (material->GetTextureCount(aiTextureType_EMISSION_COLOR) > 0) LoadAssimpTexture(device, upload, material, aiTextureType_EMISSION_COLOR, TextureType::Emissive, textures, scene);
-            else if (material->GetTextureCount(aiTextureType_EMISSIVE) > 0) LoadAssimpTexture(device, upload, material, aiTextureType_EMISSIVE, TextureType::Emissive, textures, scene);
+            if (material->GetTextureCount(aiTextureType_EMISSION_COLOR) > 0)
+            {
+                LoadAssimpTexture(device, upload, material, aiTextureType_EMISSION_COLOR, TextureType::Emissive, textures, scene);
+            }
+            else if (material->GetTextureCount(aiTextureType_EMISSIVE) > 0)
+            {
+                LoadAssimpTexture(device, upload, material, aiTextureType_EMISSIVE, TextureType::Emissive, textures, scene);
+            }
             else if (isUnlit)
             {
-                if (material->GetTextureCount(aiTextureType_BASE_COLOR) > 0) LoadAssimpTexture(device, upload, material, aiTextureType_BASE_COLOR, TextureType::Emissive, textures, scene);
-                else if (material->GetTextureCount(aiTextureType_DIFFUSE) > 0) LoadAssimpTexture(device, upload, material, aiTextureType_DIFFUSE, TextureType::Emissive, textures, scene);
+                if (material->GetTextureCount(aiTextureType_BASE_COLOR) > 0)
+                {
+                    LoadAssimpTexture(device, upload, material, aiTextureType_BASE_COLOR, TextureType::Emissive, textures, scene);
+                }
+                else if (material->GetTextureCount(aiTextureType_DIFFUSE) > 0)
+                {
+                    LoadAssimpTexture(device, upload, material, aiTextureType_DIFFUSE, TextureType::Emissive, textures, scene);
+                }
             }
         }
 
-        return Mesh(device, cmdList, vertices, allLodIndices, textures);
+        return Mesh(device, cmdList, vertices, allLodIndices, textures, isUnlit);
     }
 
     void LoadAssimpTexture(ID3D12Device* device, DirectX::ResourceUploadBatch& upload, aiMaterial* mat, aiTextureType type, TextureType typeEnum, std::vector<Texture>& textures, const aiScene* scene)

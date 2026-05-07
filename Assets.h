@@ -29,11 +29,11 @@ public:
         {
             {
                 "Model_0",
-                "Models/V-22.glb",
+                "Models/Blender_Chan.glb",
                 { 0.0f, 0.0f, 0.0f },
                 { 0.0f, 0.0f, 0.0f },
                 { 1.0f, 1.0f, 1.0f },
-                false            
+                true            
             },
 
             {
