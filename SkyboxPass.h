@@ -34,11 +34,11 @@ public:
         XMMATRIX skyVPMat = XMMatrixTranspose(view * proj);
 
         // Pass the Skybox MVP matrix via registers (Root Constants)
-        cmdList->SetGraphicsRoot32BitConstants(7, 16, &skyVPMat, 0);
+        cmdList->SetGraphicsRoot32BitConstants(3, 16, &skyVPMat, 0);
 
         // Bind the skybox texture (Cubemap)
-        CD3DX12_GPU_DESCRIPTOR_HANDLE hEnvCube(resourceManager->GetMainDescriptorHeap()->GetGPUDescriptorHandleForHeapStart(), resourceManager->GetIblEnvCubeIdx(), resourceManager->GetSrvDescriptorSize());
-        cmdList->SetGraphicsRootDescriptorTable(1, hEnvCube);
+        UINT skyboxTexIdx = resourceManager->GetIblEnvCubeIdx();
+        cmdList->SetGraphicsRoot32BitConstants(3, 1, &skyboxTexIdx, 16);
 
         cmdList->DrawInstanced(36, 1, 0, 0);
     }

@@ -1,7 +1,10 @@
-cbuffer SkyboxConstants : register(b1)
+cbuffer SkyboxData : register(b1)
 {
-    float4x4 viewProj;
+    float4x4 viewProjMat;
+    uint skyboxIdx;
 };
+
+SamplerState s1 : register(s0);
 
 struct VS_INPUT
 {
@@ -11,25 +14,26 @@ struct VS_INPUT
 struct VS_OUTPUT
 {
     float4 pos : SV_POSITION;
-    float3 localPos : POSITION;
+    float3 texCoord : TEXCOORD;
 };
 
 VS_OUTPUT VSMain(VS_INPUT input)
 {
     VS_OUTPUT output;
-    output.localPos = input.pos;
-    float4 clipPos = mul(float4(input.pos, 0.0f), viewProj);
-    output.pos = clipPos.xyww;
+    
+    float4 pos = mul(float4(input.pos, 1.0f), viewProjMat);
+    
+    output.pos = pos.xyww;
+    
+    output.texCoord = input.pos;
+    
     return output;
 }
 
-TextureCube envMap : register(t0);
-SamplerState s1 : register(s0);
-
 float4 PSMain(VS_OUTPUT input) : SV_TARGET
 {
-    float3 envColor = envMap.Sample(s1, input.localPos).rgb;
-    envColor = envColor / (envColor + 1.0);
+    TextureCube tSkybox = ResourceDescriptorHeap[skyboxIdx];
     
-    return float4(envColor, 1.0);
+    float3 color = tSkybox.Sample(s1, input.texCoord).rgb;
+    return float4(color, 1.0f);
 }

@@ -3,6 +3,9 @@
 D:\项目\LearnDirectX\PBR_Model.h(92,48): warning C4267: “=”: 从“size_t”转换到“int”，可能丢失数据
   (编译源文件“PBR_Render.cpp”)
   
+D:\项目\LearnDirectX\PBR_Shader.h(1,1): warning C4819: 该文件包含不能在当前代码页(936)中表示的字符。请将该文件保存为 Unicode 格式以防止数据丢失
+  (编译源文件“PBR_Render.cpp”)
+  
 D:\项目\LearnDirectX\IBLBaker.h(304,28): warning C4244: “初始化”: 从“double”转换到“float”，可能丢失数据
   (编译源文件“PBR_Render.cpp”)
   
@@ -17,13 +20,13 @@ D:\项目\LearnDirectX\SceneObject.h(8,8): warning C4099: “Model”: 类型名
 D:\项目\LearnDirectX\ShadowPass.h(80,43): warning C4267: “=”: 从“size_t”转换到“UINT”，可能丢失数据
   (编译源文件“PBR_Render.cpp”)
   
-D:\项目\LearnDirectX\PBRPass.h(158,55): warning C4267: “=”: 从“size_t”转换到“UINT”，可能丢失数据
+D:\项目\LearnDirectX\PBRPass.h(143,55): warning C4267: “=”: 从“size_t”转换到“UINT”，可能丢失数据
   (编译源文件“PBR_Render.cpp”)
   
   正在生成代码
-  53 of 5935 functions ( 0.9%) were compiled, the rest were copied from previous compilation.
-    32 functions were new in current compilation
-    66 functions had inline decision re-evaluated but remain unchanged
+  10 of 5935 functions ( 0.2%) were compiled, the rest were copied from previous compilation.
+    4 functions were new in current compilation
+    45 functions had inline decision re-evaluated but remain unchanged
   已完成代码的生成
   LearnDirectX.vcxproj -> D:\项目\LearnDirectX\x64\Release\LearnDirectX.exe
   'pwsh.exe' 不是内部或外部命令，也不是可运行的程序

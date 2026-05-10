@@ -13,7 +13,11 @@ struct alignas(256) PassConstants
     DirectX::XMFLOAT3 lightColor;
     float padding3;
     DirectX::XMFLOAT4X4 lightViewProj;
-    float padTo256[36];
+
+    UINT iblPrefilterIdx;
+    UINT iblBRDFIdx;
+    UINT shadowMapIdx;
+    UINT padTo256[33];
 };
 
 struct InstanceData

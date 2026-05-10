@@ -282,6 +282,10 @@ void D3D12App::Update()
 
     XMStoreFloat4x4(&passCb.lightViewProj, XMMatrixTranspose(lightViewProj));
 
+    passCb.iblPrefilterIdx = m_resourceManager.GetIblPrefilterIdx();
+    passCb.iblBRDFIdx = m_resourceManager.GetIblBRDFIdx();
+    passCb.shadowMapIdx = m_resourceManager.GetShadowSrvIdx();
+
     memcpy(cbvAddress, &passCb, sizeof(PassConstants));
 
     // ====================================================================================================

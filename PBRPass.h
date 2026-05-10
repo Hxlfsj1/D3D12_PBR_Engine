@@ -46,17 +46,9 @@ public:
         D3D12_GPU_VIRTUAL_ADDRESS baseGpuAddress = resourceManager->GetCBVGPUAddress(frameIndex);
         cmdList->SetGraphicsRootConstantBufferView(0, baseGpuAddress);
 
-        cmdList->SetGraphicsRootConstantBufferView(8, resourceManager->GetSHBufferGPUAddress());
+        cmdList->SetGraphicsRootConstantBufferView(2, resourceManager->GetSHBufferGPUAddress());
 
         cmdList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-
-        CD3DX12_GPU_DESCRIPTOR_HANDLE hStart(resourceManager->GetMainDescriptorHeap()->GetGPUDescriptorHandleForHeapStart());
-        UINT srvDescSize = resourceManager->GetSrvDescriptorSize();
-
-        cmdList->SetGraphicsRootDescriptorTable(5, CD3DX12_GPU_DESCRIPTOR_HANDLE(hStart, resourceManager->GetIblPrefilterIdx(), srvDescSize));
-        cmdList->SetGraphicsRootDescriptorTable(6, CD3DX12_GPU_DESCRIPTOR_HANDLE(hStart, resourceManager->GetIblBRDFIdx(), srvDescSize));
-
-        cmdList->SetGraphicsRootDescriptorTable(10, CD3DX12_GPU_DESCRIPTOR_HANDLE(hStart, resourceManager->GetShadowSrvIdx(), srvDescSize));
 
         // ====================================================================================================
         // Opaque Objects Rendering (Only if visible)
@@ -93,12 +85,11 @@ public:
                         if ((isEnd || thisModel != currentModel || thisLod != currentLod) && currentInstanceCount > 0 && currentModel != nullptr)
                         {
                             D3D12_GPU_VIRTUAL_ADDRESS srvAddress = baseGpuAddress + 256 + (instanceStartOffset * sizeof(InstanceData));
-                            cmdList->SetGraphicsRootShaderResourceView(9, srvAddress);
+                            cmdList->SetGraphicsRootShaderResourceView(1, srvAddress);
 
                             for (auto& mesh : currentModel->meshes)
                             {
                                 UINT srvIdx[4] = { resourceManager->GetDummyAlbedoIdx(), resourceManager->GetDummyNormalIdx(), resourceManager->GetDummyORMIdx(), resourceManager->GetDummyEmissiveIdx() };
-                                bool hasMap[4] = { false, false, false, false };
 
                                 for (auto& tex : mesh.textures)
                                 {
@@ -106,32 +97,26 @@ public:
                                     {
                                     case TextureType::Albedo:
                                         srvIdx[0] = resourceManager->GetTextureSrvIdx(tex.Resource.Get());
-                                        hasMap[0] = true;
                                         break;
                                     case TextureType::Normal:
                                         srvIdx[1] = resourceManager->GetTextureSrvIdx(tex.Resource.Get());
-                                        hasMap[1] = true;
                                         break;
                                     case TextureType::ORM:
                                         srvIdx[2] = resourceManager->GetTextureSrvIdx(tex.Resource.Get());
-                                        hasMap[2] = true;
                                         break;
                                     case TextureType::Emissive:
                                         srvIdx[3] = resourceManager->GetTextureSrvIdx(tex.Resource.Get());
-                                        hasMap[3] = true;
                                         break;
                                     default:
                                         break;
                                     }
                                 }
 
-                                UINT32 flags[5] = { (UINT32)hasMap[0], (UINT32)hasMap[1], (UINT32)hasMap[2], (UINT32)hasMap[3], (UINT32)mesh.isUnlit };
-                                cmdList->SetGraphicsRoot32BitConstants(7, 5, flags, 0);
-
-                                cmdList->SetGraphicsRootDescriptorTable(1, CD3DX12_GPU_DESCRIPTOR_HANDLE(hStart, srvIdx[0], srvDescSize));
-                                cmdList->SetGraphicsRootDescriptorTable(2, CD3DX12_GPU_DESCRIPTOR_HANDLE(hStart, srvIdx[1], srvDescSize));
-                                cmdList->SetGraphicsRootDescriptorTable(3, CD3DX12_GPU_DESCRIPTOR_HANDLE(hStart, srvIdx[2], srvDescSize));
-                                cmdList->SetGraphicsRootDescriptorTable(4, CD3DX12_GPU_DESCRIPTOR_HANDLE(hStart, srvIdx[3], srvDescSize));
+                                if (isPBR)
+                                {
+                                    UINT32 matIndices[5] = { srvIdx[0], srvIdx[1], srvIdx[2], srvIdx[3], (UINT32)mesh.isUnlit };
+                                    cmdList->SetGraphicsRoot32BitConstants(3, 5, matIndices, 0);
+                                }
 
                                 mesh.Draw(cmdList, currentInstanceCount, currentLod);
                             }
@@ -199,8 +184,6 @@ public:
 
         auto cmdList = deviceContext->GetCommandList();
         D3D12_GPU_VIRTUAL_ADDRESS baseGpuAddress = resourceManager->GetCBVGPUAddress(frameIndex);
-        CD3DX12_GPU_DESCRIPTOR_HANDLE hStart(resourceManager->GetMainDescriptorHeap()->GetGPUDescriptorHandleForHeapStart());
-        UINT srvDescSize = resourceManager->GetSrvDescriptorSize();
 
         for (size_t i = transparentStartIndex; i < visibleInstances.size(); ++i)
         {
@@ -209,15 +192,14 @@ public:
 
             D3D12_GPU_VIRTUAL_ADDRESS srvAddress = baseGpuAddress + 256 + (i * sizeof(InstanceData));
 
-            auto BindAndDrawSingleInstance = [&](ID3D12PipelineState* pso)
+            auto BindAndDrawSingleInstance = [&](ID3D12PipelineState* pso, bool isColorPass)
                 {
                     cmdList->SetPipelineState(pso);
-                    cmdList->SetGraphicsRootShaderResourceView(9, srvAddress);
+                    cmdList->SetGraphicsRootShaderResourceView(1, srvAddress);
 
                     for (auto& mesh : instance->pModel->meshes)
                     {
                         UINT srvIdx[4] = { resourceManager->GetDummyAlbedoIdx(), resourceManager->GetDummyNormalIdx(), resourceManager->GetDummyORMIdx(), resourceManager->GetDummyEmissiveIdx() };
-                        bool hasMap[4] = { false, false, false, false };
 
                         for (auto& tex : mesh.textures)
                         {
@@ -225,39 +207,33 @@ public:
                             {
                             case TextureType::Albedo:
                                 srvIdx[0] = resourceManager->GetTextureSrvIdx(tex.Resource.Get());
-                                hasMap[0] = true;
                                 break;
                             case TextureType::Normal:
                                 srvIdx[1] = resourceManager->GetTextureSrvIdx(tex.Resource.Get());
-                                hasMap[1] = true;
                                 break;
                             case TextureType::ORM:
                                 srvIdx[2] = resourceManager->GetTextureSrvIdx(tex.Resource.Get());
-                                hasMap[2] = true;
                                 break;
                             case TextureType::Emissive:
                                 srvIdx[3] = resourceManager->GetTextureSrvIdx(tex.Resource.Get());
-                                hasMap[3] = true;
                                 break;
                             default:
                                 break;
                             }
                         }
 
-                        UINT32 flags[5] = { (UINT32)hasMap[0], (UINT32)hasMap[1], (UINT32)hasMap[2], (UINT32)hasMap[3], (UINT32)mesh.isUnlit };
-                        cmdList->SetGraphicsRoot32BitConstants(7, 5, flags, 0);
-
-                        cmdList->SetGraphicsRootDescriptorTable(1, CD3DX12_GPU_DESCRIPTOR_HANDLE(hStart, srvIdx[0], srvDescSize));
-                        cmdList->SetGraphicsRootDescriptorTable(2, CD3DX12_GPU_DESCRIPTOR_HANDLE(hStart, srvIdx[1], srvDescSize));
-                        cmdList->SetGraphicsRootDescriptorTable(3, CD3DX12_GPU_DESCRIPTOR_HANDLE(hStart, srvIdx[2], srvDescSize));
-                        cmdList->SetGraphicsRootDescriptorTable(4, CD3DX12_GPU_DESCRIPTOR_HANDLE(hStart, srvIdx[3], srvDescSize));
+                        if (isColorPass)
+                        {
+                            UINT32 matIndices[5] = { srvIdx[0], srvIdx[1], srvIdx[2], srvIdx[3], (UINT32)mesh.isUnlit };
+                            cmdList->SetGraphicsRoot32BitConstants(3, 5, matIndices, 0);
+                        }
 
                         mesh.Draw(cmdList, 1, instance->currentLodLevel);
                     }
                 };
 
-            BindAndDrawSingleInstance(pipelineManager->GetTransparentPSO_DepthOnly());
-            BindAndDrawSingleInstance(pipelineManager->GetTransparentPSO_Color());
+            BindAndDrawSingleInstance(pipelineManager->GetTransparentPSO_DepthOnly(), false);
+            BindAndDrawSingleInstance(pipelineManager->GetTransparentPSO_Color(), true);
         }
     }
 };

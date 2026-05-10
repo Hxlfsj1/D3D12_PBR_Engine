@@ -101,57 +101,28 @@ private:
 
     bool BuildRootSignature(RenderDevice* dc)
     {
-        D3D12_DESCRIPTOR_RANGE ranges[7];
-
-        for (int i = 0; i < 6; i++)
-        {
-            ranges[i].RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
-            ranges[i].NumDescriptors = 1;
-            ranges[i].BaseShaderRegister = i;
-            ranges[i].RegisterSpace = 0;
-            ranges[i].OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
-        }
-
-        ranges[6].RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
-        ranges[6].NumDescriptors = 1;
-        ranges[6].BaseShaderRegister = 7;
-        ranges[6].RegisterSpace = 0;
-        ranges[6].OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
-
-        D3D12_ROOT_PARAMETER rootParameters[11];
+        D3D12_ROOT_PARAMETER rootParameters[4];
 
         rootParameters[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
-        rootParameters[0].Descriptor = { 0, 0 };
+        rootParameters[0].Descriptor.ShaderRegister = 0;
+        rootParameters[0].Descriptor.RegisterSpace = 0;
         rootParameters[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
 
-        for (int i = 1; i <= 6; i++)
-        {
-            rootParameters[i].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
-            rootParameters[i].DescriptorTable.NumDescriptorRanges = 1;
-            rootParameters[i].DescriptorTable.pDescriptorRanges = &ranges[i - 1];
-            rootParameters[i].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
-        }
+        rootParameters[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_SRV;
+        rootParameters[1].Descriptor.ShaderRegister = 6;
+        rootParameters[1].Descriptor.RegisterSpace = 0;
+        rootParameters[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
 
-        rootParameters[7].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
-        rootParameters[7].Constants.ShaderRegister = 1;
-        rootParameters[7].Constants.Num32BitValues = 16;
-        rootParameters[7].Constants.RegisterSpace = 0;
-        rootParameters[7].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+        rootParameters[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
+        rootParameters[2].Descriptor.ShaderRegister = 2;
+        rootParameters[2].Descriptor.RegisterSpace = 0;
+        rootParameters[2].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
 
-        rootParameters[8].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
-        rootParameters[8].Descriptor.ShaderRegister = 2;
-        rootParameters[8].Descriptor.RegisterSpace = 0;
-        rootParameters[8].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
-
-        rootParameters[9].ParameterType = D3D12_ROOT_PARAMETER_TYPE_SRV;
-        rootParameters[9].Descriptor.ShaderRegister = 6;
-        rootParameters[9].Descriptor.RegisterSpace = 0;
-        rootParameters[9].ShaderVisibility = D3D12_SHADER_VISIBILITY_VERTEX;
-
-        rootParameters[10].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
-        rootParameters[10].DescriptorTable.NumDescriptorRanges = 1;
-        rootParameters[10].DescriptorTable.pDescriptorRanges = &ranges[6];
-        rootParameters[10].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+        rootParameters[3].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
+        rootParameters[3].Constants.ShaderRegister = 1;
+        rootParameters[3].Constants.Num32BitValues = 17;
+        rootParameters[3].Constants.RegisterSpace = 0;
+        rootParameters[3].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
 
         D3D12_STATIC_SAMPLER_DESC samplers[2];
         samplers[0] = CD3DX12_STATIC_SAMPLER_DESC(0, D3D12_FILTER_ANISOTROPIC);
@@ -167,22 +138,16 @@ private:
         samplers[1].BorderColor = D3D12_STATIC_BORDER_COLOR_OPAQUE_WHITE;
 
         CD3DX12_ROOT_SIGNATURE_DESC rsDesc;
-        rsDesc.Init(11, rootParameters, 2, samplers, D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT);
+        rsDesc.Init(4, rootParameters, 2, samplers,
+            D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT |
+            D3D12_ROOT_SIGNATURE_FLAG_CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED);
 
         ComPtr<ID3DBlob> rsBlob;
         HRESULT hr = D3D12SerializeRootSignature(&rsDesc, D3D_ROOT_SIGNATURE_VERSION_1, &rsBlob, nullptr);
-
-        if (FAILED(hr))
-        {
-            return false;
-        }
+        if (FAILED(hr)) return false;
 
         hr = dc->GetDevice()->CreateRootSignature(0, rsBlob->GetBufferPointer(), rsBlob->GetBufferSize(), IID_PPV_ARGS(&rootSignature));
-
-        if (FAILED(hr))
-        {
-            return false;
-        }
+        if (FAILED(hr)) return false;
 
         return true;
     }

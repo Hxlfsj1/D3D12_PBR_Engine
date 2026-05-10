@@ -1,10 +1,17 @@
+// The sole purpose of this header and its encapsulated classes is to compile shaders from specified file paths
+
 #ifndef PBR_SHADER_H
 #define PBR_SHADER_H
 
 #include "stdafx.h"
+#include <fstream>
+#include <sstream>
 #include <string>
 #include <vector>
 #include <wrl/client.h>
+
+#include <dxcapi.h>
+#pragma comment(lib, "dxcompiler.lib")
 
 class ShaderCompiler
 {
@@ -41,6 +48,9 @@ public:
         arguments.push_back(L"-T");
         arguments.push_back(target.c_str());
 
+        arguments.push_back(L"-HV");
+        arguments.push_back(L"2021");
+
         for (const auto& define : defines)
         {
             arguments.push_back(L"-D");
@@ -52,6 +62,7 @@ public:
         arguments.push_back(DXC_ARG_SKIP_OPTIMIZATIONS);
 #endif
 
+        // 4. 执行真正的 DXC 编译
         DxcBuffer sourceBuffer;
         sourceBuffer.Ptr = pSource->GetBufferPointer();
         sourceBuffer.Size = pSource->GetBufferSize();

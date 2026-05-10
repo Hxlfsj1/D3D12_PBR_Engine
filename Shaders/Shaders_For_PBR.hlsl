@@ -11,15 +11,11 @@ cbuffer PassConstants : register(b0)
     float3 lightColor;
     float padding3;
     float4x4 lightViewProj;
+    
+    uint iblPrefilterIdx;
+    uint iblBRDFIdx;
+    uint shadowMapIdx;
 };
-
-Texture2D tAlbedo : register(t0);
-Texture2D tNormal : register(t1);
-Texture2D tMR : register(t2);
-Texture2D tEmissive : register(t3);
-TextureCube tPrefilter : register(t4);
-Texture2D tBRDF : register(t5);
-Texture2D tShadowMap : register(t7);
 
 struct InstanceData
 {
@@ -34,19 +30,21 @@ SamplerComparisonState shadowSampler : register(s1);
 
 cbuffer MaterialFlags : register(b1)
 {
-    int hasAlbedo;
-    int hasNormal;
-    int hasORM;
-    int hasEmissive;
-    int isUnlit;
-    int pad1;
-    int pad2;
-    int pad3;
+    uint albedoIdx;
+    uint normalIdx;
+    uint ormIdx;
+    uint emissiveIdx;
+    uint isUnlit;
 };
+
+#define hasAlbedo 1
+#define hasNormal 1
+#define hasORM 1
+#define hasEmissive 1
 
 cbuffer SHBuffer : register(b2)
 {
-    float3 SHCoefficients[9];
+    float4 SHCoefficients[9];
 };
 
 struct VS_INPUT
@@ -111,6 +109,7 @@ VS_OUTPUT VSMain(VS_INPUT input)
 #if LOD_LEVEL == 0
 float3 getNormalFromMap(VS_OUTPUT input)
 {
+    Texture2D tNormal = ResourceDescriptorHeap[normalIdx];
     float3 tangentNormal = tNormal.Sample(s1, input.texCoord).xyz * 2.0 - 1.0;
     tangentNormal.y = -tangentNormal.y;
 
@@ -132,15 +131,15 @@ float3 EvaluateSH9(float3 N)
     float z = N.z;
 
     float3 result =
-        SHCoefficients[0] +
-        SHCoefficients[1] * y +
-        SHCoefficients[2] * z +
-        SHCoefficients[3] * x +
-        SHCoefficients[4] * (x * y) +
-        SHCoefficients[5] * (y * z) +
-        SHCoefficients[6] * (3.0 * z * z - 1.0) +
-        SHCoefficients[7] * (x * z) +
-        SHCoefficients[8] * (x * x - y * y);
+        SHCoefficients[0].xyz +
+        SHCoefficients[1].xyz * y +
+        SHCoefficients[2].xyz * z +
+        SHCoefficients[3].xyz * x +
+        SHCoefficients[4].xyz * (x * y) +
+        SHCoefficients[5].xyz * (y * z) +
+        SHCoefficients[6].xyz * (3.0 * z * z - 1.0) +
+        SHCoefficients[7].xyz * (x * z) +
+        SHCoefficients[8].xyz * (x * x - y * y);
 
     return max(result, float3(0.0, 0.0, 0.0));
 }
@@ -207,6 +206,8 @@ float Rand(float2 co)
 // Blocker search using Poisson Disk sampling
 void FindBlocker(out float avgBlockerDepth, out float numBlockers, float2 uv, float zReceiver, float searchRadius)
 {
+    Texture2D tShadowMap = ResourceDescriptorHeap[shadowMapIdx];
+    
     float blockerSum = 0.0;
     numBlockers = 0.0;
     
@@ -231,6 +232,8 @@ void FindBlocker(out float avgBlockerDepth, out float numBlockers, float2 uv, fl
 
 float CalcShadowFactor(float4 lightSpacePos)
 {
+    Texture2D tShadowMap = ResourceDescriptorHeap[shadowMapIdx];
+    
     float3 projCoords = lightSpacePos.xyz / lightSpacePos.w;
     projCoords.x = projCoords.x * 0.5f + 0.5f;
     projCoords.y = -projCoords.y * 0.5f + 0.5f;
@@ -278,6 +281,9 @@ float CalcShadowFactor(float4 lightSpacePos)
 // PBR pixel Shader
 float4 PSMain(VS_OUTPUT input) : SV_TARGET
 {
+    Texture2D tAlbedo = ResourceDescriptorHeap[albedoIdx];
+    Texture2D tEmissive = ResourceDescriptorHeap[emissiveIdx];
+    
     float4 albedoSample = tAlbedo.Sample(s1, input.texCoord);
     float3 albedo = pow(albedoSample.rgb, 2.2);
     float finalAlpha = albedoSample.a;
@@ -299,6 +305,8 @@ float4 PSMain(VS_OUTPUT input) : SV_TARGET
     
     return float4(diffuse_IBL + directDiffuse, finalAlpha);
 #else
+    Texture2D tMR = ResourceDescriptorHeap[ormIdx];
+    
     float ao = 1.0;
     float roughness = 0.5;
     float metallic = 0.0;
@@ -355,11 +363,16 @@ float4 PSMain(VS_OUTPUT input) : SV_TARGET
     
 #if LOD_LEVEL == 0
     // Specular IBL (split sum)
+    TextureCube tPrefilter = ResourceDescriptorHeap[iblPrefilterIdx];
+    Texture2D tBRDF = ResourceDescriptorHeap[iblBRDFIdx];
+    
     const float MAX_REFLECTION_LOD = 4.0;
     float3 prefilteredColor = tPrefilter.SampleLevel(s1, R, roughness * MAX_REFLECTION_LOD).rgb;
     float2 brdf = tBRDF.Sample(s1, float2(max(dot(N, V), 0.0), roughness)).rg;
     specular_IBL = prefilteredColor * (F0 * brdf.x + brdf.y);
 #elif LOD_LEVEL == 1
+    TextureCube tPrefilter = ResourceDescriptorHeap[iblPrefilterIdx];
+
     const float MAX_REFLECTION_LOD = 4.0;
     float3 prefilteredColor = tPrefilter.SampleLevel(s1, R, roughness * MAX_REFLECTION_LOD).rgb;
     specular_IBL = prefilteredColor * F_IBL;
