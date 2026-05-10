@@ -172,7 +172,7 @@ bool D3D12App::InitD3D()
     if (!m_pipelineManager.Initialize(&m_deviceContext)) return false;
 
     // Stream Assets & Build IBL: Load 3D models and HDR textures into VRAM and bake IBL components
-    auto sceneData = Assets::GetSniperAlleyScene();
+    auto sceneData = Assets::GetPerformanceTestScene();
     if (!m_resourceManager.LoadAssets(&m_deviceContext, sceneData, frameBufferCount)) return false;
     m_resourceManager.InitIBL(&m_deviceContext, currentHDRPath.c_str());
 

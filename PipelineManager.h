@@ -10,6 +10,8 @@
 #include "RenderDevice.h"
 #include "PBR_Shader.h"
 #include <wrl/client.h>
+#include <vector>
+#include <string>
 
 using Microsoft::WRL::ComPtr;
 
@@ -97,10 +99,8 @@ public:
 
 private:
 
-    // Root Signature: Defines the data binding layout for GPU submissions
     bool BuildRootSignature(RenderDevice* dc)
     {
-        // Define texture sampling rules
         D3D12_DESCRIPTOR_RANGE ranges[7];
 
         for (int i = 0; i < 6; i++)
@@ -118,15 +118,12 @@ private:
         ranges[6].RegisterSpace = 0;
         ranges[6].OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
 
-        // Allocate 8 root parameters
         D3D12_ROOT_PARAMETER rootParameters[11];
 
-        // Global Constant Matrix (Root CBV), typically the MVP matrix
         rootParameters[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
         rootParameters[0].Descriptor = { 0, 0 };
         rootParameters[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
 
-        // Bind the descriptor table for the 6 previously defined texture sampling rules
         for (int i = 1; i <= 6; i++)
         {
             rootParameters[i].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
@@ -135,7 +132,6 @@ private:
             rootParameters[i].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
         }
 
-        // High-performance Root Constants
         rootParameters[7].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
         rootParameters[7].Constants.ShaderRegister = 1;
         rootParameters[7].Constants.Num32BitValues = 16;
@@ -157,7 +153,6 @@ private:
         rootParameters[10].DescriptorTable.pDescriptorRanges = &ranges[6];
         rootParameters[10].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
 
-        // Define static samplers for texture filtering and addressing
         D3D12_STATIC_SAMPLER_DESC samplers[2];
         samplers[0] = CD3DX12_STATIC_SAMPLER_DESC(0, D3D12_FILTER_ANISOTROPIC);
         samplers[0].MaxAnisotropy = 16;
@@ -171,7 +166,6 @@ private:
         samplers[1].ComparisonFunc = D3D12_COMPARISON_FUNC_LESS_EQUAL;
         samplers[1].BorderColor = D3D12_STATIC_BORDER_COLOR_OPAQUE_WHITE;
 
-        // Serialize the Root Signature
         CD3DX12_ROOT_SIGNATURE_DESC rsDesc;
         rsDesc.Init(11, rootParameters, 2, samplers, D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT);
 
@@ -193,22 +187,21 @@ private:
         return true;
     }
 
-    // PSO : A pre-baked, immutable snapshot of the entire graphics pipeline state
     bool BuildPipelineStates(RenderDevice* dc)
     {
-        D3D_SHADER_MACRO lod0Macros[] = { "LOD_LEVEL", "0", NULL, NULL };
-        D3D_SHADER_MACRO lod1Macros[] = { "LOD_LEVEL", "1", NULL, NULL };
-        D3D_SHADER_MACRO lod2Macros[] = { "LOD_LEVEL", "2", NULL, NULL };
+        std::vector<std::wstring> lod0Macros = { L"LOD_LEVEL=0" };
+        std::vector<std::wstring> lod1Macros = { L"LOD_LEVEL=1" };
+        std::vector<std::wstring> lod2Macros = { L"LOD_LEVEL=2" };
 
-        auto vs0 = ShaderCompiler::CompileFromFile(L"Shaders/Shaders_For_PBR.hlsl", "VSMain", "vs_5_0", lod0Macros);
-        auto vs1 = ShaderCompiler::CompileFromFile(L"Shaders/Shaders_For_PBR.hlsl", "VSMain", "vs_5_0", lod1Macros);
-        auto vs2 = ShaderCompiler::CompileFromFile(L"Shaders/Shaders_For_PBR.hlsl", "VSMain", "vs_5_0", lod2Macros);
+        auto vs0 = ShaderCompiler::CompileFromFile(L"Shaders/Shaders_For_PBR.hlsl", L"VSMain", L"vs_6_6", lod0Macros);
+        auto vs1 = ShaderCompiler::CompileFromFile(L"Shaders/Shaders_For_PBR.hlsl", L"VSMain", L"vs_6_6", lod1Macros);
+        auto vs2 = ShaderCompiler::CompileFromFile(L"Shaders/Shaders_For_PBR.hlsl", L"VSMain", L"vs_6_6", lod2Macros);
 
-        auto ps0 = ShaderCompiler::CompileFromFile(L"Shaders/Shaders_For_PBR.hlsl", "PSMain", "ps_5_0", lod0Macros);
-        auto ps1 = ShaderCompiler::CompileFromFile(L"Shaders/Shaders_For_PBR.hlsl", "PSMain", "ps_5_0", lod1Macros);
-        auto ps2 = ShaderCompiler::CompileFromFile(L"Shaders/Shaders_For_PBR.hlsl", "PSMain", "ps_5_0", lod2Macros);
+        auto ps0 = ShaderCompiler::CompileFromFile(L"Shaders/Shaders_For_PBR.hlsl", L"PSMain", L"ps_6_6", lod0Macros);
+        auto ps1 = ShaderCompiler::CompileFromFile(L"Shaders/Shaders_For_PBR.hlsl", L"PSMain", L"ps_6_6", lod1Macros);
+        auto ps2 = ShaderCompiler::CompileFromFile(L"Shaders/Shaders_For_PBR.hlsl", L"PSMain", L"ps_6_6", lod2Macros);
 
-        auto vsZPrepass = ShaderCompiler::CompileFromFile(L"Shaders/Shaders_For_ZPrepass.hlsl", "VSMain", "vs_5_0");
+        auto vsZPrepass = ShaderCompiler::CompileFromFile(L"Shaders/Shaders_For_ZPrepass.hlsl", L"VSMain", L"vs_6_6");
 
         D3D12_INPUT_ELEMENT_DESC layout[] =
         {
@@ -221,15 +214,10 @@ private:
             { "BLENDWEIGHT", 0, DXGI_FORMAT_R32G32B32A32_FLOAT, 0, 72, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 }
         };
 
-        /*
-        PSO for Z-Prepass
-        1. Pixel shader is not required, and no output to the color buffer is needed
-        2. Use standard 'LESS' depth testing to retain only the foremost layer
-        */
         D3D12_GRAPHICS_PIPELINE_STATE_DESC zPrepassPsoDesc = {};
         zPrepassPsoDesc.InputLayout = { layout, _countof(layout) };
         zPrepassPsoDesc.pRootSignature = rootSignature.Get();
-        zPrepassPsoDesc.VS = CD3DX12_SHADER_BYTECODE(vsZPrepass.Get());
+        zPrepassPsoDesc.VS = CD3DX12_SHADER_BYTECODE(vsZPrepass->GetBufferPointer(), vsZPrepass->GetBufferSize());
         zPrepassPsoDesc.PS = { nullptr, 0 };
         zPrepassPsoDesc.RasterizerState = CD3DX12_RASTERIZER_DESC(D3D12_DEFAULT);
         zPrepassPsoDesc.RasterizerState.CullMode = D3D12_CULL_MODE_BACK;
@@ -247,12 +235,6 @@ private:
 
         dc->GetDevice()->CreateGraphicsPipelineState(&zPrepassPsoDesc, IID_PPV_ARGS(&psoZPrepass));
 
-        /*
-        PSO for PBR object
-        1. Only render when the depth strictly matches the depth map from the Z-Prepass
-        2. Completely disable depth writes
-        3. A pure opaque pass (disable alpha blending, enable backface culling)
-        */
         D3D12_GRAPHICS_PIPELINE_STATE_DESC psoDesc = {};
         psoDesc.InputLayout = { layout, _countof(layout) };
         psoDesc.pRootSignature = rootSignature.Get();
@@ -270,26 +252,21 @@ private:
         psoDesc.SampleDesc.Count = 1;
         psoDesc.DSVFormat = DXGI_FORMAT_D32_FLOAT;
 
-        psoDesc.VS = CD3DX12_SHADER_BYTECODE(vs0.Get());
-        psoDesc.PS = CD3DX12_SHADER_BYTECODE(ps0.Get());
+        psoDesc.VS = CD3DX12_SHADER_BYTECODE(vs0->GetBufferPointer(), vs0->GetBufferSize());
+        psoDesc.PS = CD3DX12_SHADER_BYTECODE(ps0->GetBufferPointer(), ps0->GetBufferSize());
         dc->GetDevice()->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(&psoPBR[0]));
 
-        psoDesc.VS = CD3DX12_SHADER_BYTECODE(vs1.Get());
-        psoDesc.PS = CD3DX12_SHADER_BYTECODE(ps1.Get());
+        psoDesc.VS = CD3DX12_SHADER_BYTECODE(vs1->GetBufferPointer(), vs1->GetBufferSize());
+        psoDesc.PS = CD3DX12_SHADER_BYTECODE(ps1->GetBufferPointer(), ps1->GetBufferSize());
         dc->GetDevice()->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(&psoPBR[1]));
 
-        psoDesc.VS = CD3DX12_SHADER_BYTECODE(vs2.Get());
-        psoDesc.PS = CD3DX12_SHADER_BYTECODE(ps2.Get());
+        psoDesc.VS = CD3DX12_SHADER_BYTECODE(vs2->GetBufferPointer(), vs2->GetBufferSize());
+        psoDesc.PS = CD3DX12_SHADER_BYTECODE(ps2->GetBufferPointer(), ps2->GetBufferSize());
         dc->GetDevice()->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(&psoPBR[2]));
 
-        psoDesc.VS = CD3DX12_SHADER_BYTECODE(vs0.Get());
-        psoDesc.PS = CD3DX12_SHADER_BYTECODE(ps0.Get());
+        psoDesc.VS = CD3DX12_SHADER_BYTECODE(vs0->GetBufferPointer(), vs0->GetBufferSize());
+        psoDesc.PS = CD3DX12_SHADER_BYTECODE(ps0->GetBufferPointer(), ps0->GetBufferSize());
 
-        /*
-        PSO for Transparent objects (Pass 1: Depth-Only)
-        1. "Invisible Shield": Strip away the Pixel Shader and disable color writes completely
-        2. Force depth writes with 'LESS' test to record only the outermost surface, preventing ugly self-occlusion
-        */
         D3D12_GRAPHICS_PIPELINE_STATE_DESC depthOnlyDesc = psoDesc;
         depthOnlyDesc.PS = { nullptr, 0 };
         depthOnlyDesc.BlendState.RenderTarget[0].RenderTargetWriteMask = 0;
@@ -300,11 +277,6 @@ private:
 
         dc->GetDevice()->CreateGraphicsPipelineState(&depthOnlyDesc, IID_PPV_ARGS(&psoTransparent_DepthOnly));
 
-        /*
-        PSO for Transparent objects (Pass 2: Color-Blend)
-        1. "Paint the Shield": Re-enable the PBR Pixel Shader and activate Alpha Blending (SrcAlpha + InvSrcAlpha)
-        2. Disable depth writes, but use 'EQUAL' depth testing to render ONLY onto the exact depth mask created in Pass 1
-        */
         D3D12_GRAPHICS_PIPELINE_STATE_DESC colorDesc = psoDesc;
 
         D3D12_RENDER_TARGET_BLEND_DESC transparencyBlendDesc = {};
@@ -327,20 +299,15 @@ private:
 
         dc->GetDevice()->CreateGraphicsPipelineState(&colorDesc, IID_PPV_ARGS(&psoTransparent_Color));
 
-        /*
-        PSO for sky box
-        1. Since the camera is inside the skybox, enable front-face culling to retain the interior back-faces
-        2. Use a 'LESS_EQUAL' depth test to ensure the skybox, which is rendered last and positioned at maximum depth, can be successfully drawn
-        */
-        auto vsSky = ShaderCompiler::CompileFromFile(L"Shaders/Shaders_For_Sky_Box.hlsl", "VSMain", "vs_5_0");
-        auto psSky = ShaderCompiler::CompileFromFile(L"Shaders/Shaders_For_Sky_Box.hlsl", "PSMain", "ps_5_0");
+        auto vsSky = ShaderCompiler::CompileFromFile(L"Shaders/Shaders_For_Sky_Box.hlsl", L"VSMain", L"vs_6_6");
+        auto psSky = ShaderCompiler::CompileFromFile(L"Shaders/Shaders_For_Sky_Box.hlsl", L"PSMain", L"ps_6_6");
 
         D3D12_GRAPHICS_PIPELINE_STATE_DESC skyPsoDesc = psoDesc;
         D3D12_INPUT_ELEMENT_DESC layoutSky[] = { { "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 0, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 } };
 
         skyPsoDesc.InputLayout = { layoutSky, 1 };
-        skyPsoDesc.VS = CD3DX12_SHADER_BYTECODE(vsSky.Get());
-        skyPsoDesc.PS = CD3DX12_SHADER_BYTECODE(psSky.Get());
+        skyPsoDesc.VS = CD3DX12_SHADER_BYTECODE(vsSky->GetBufferPointer(), vsSky->GetBufferSize());
+        skyPsoDesc.PS = CD3DX12_SHADER_BYTECODE(psSky->GetBufferPointer(), psSky->GetBufferSize());
         skyPsoDesc.RasterizerState.CullMode = D3D12_CULL_MODE_FRONT;
         skyPsoDesc.DepthStencilState.DepthFunc = D3D12_COMPARISON_FUNC_LESS_EQUAL;
 
@@ -349,8 +316,6 @@ private:
         return true;
     }
 
-    // A data compute pipeline with future-proof extensibility
-    // Provide the Root Signature, Textures, Output UAV Buffer, and PSO for GPU-based Spherical Harmonics (SH) computation
     bool BuildComputePipeline(RenderDevice* dc)
     {
         D3D12_ROOT_PARAMETER computeRootParams[3];
@@ -395,11 +360,11 @@ private:
         hr = dc->GetDevice()->CreateRootSignature(0, rsBlob->GetBufferPointer(), rsBlob->GetBufferSize(), IID_PPV_ARGS(&computeRootSignature));
         if (FAILED(hr)) return false;
 
-        auto cs = ShaderCompiler::CompileFromFile(L"Shaders/Shaders_For_SH_Calculate.hlsl", "CSMain", "cs_5_0");
+        auto cs = ShaderCompiler::CompileFromFile(L"Shaders/Shaders_For_SH_Calculate.hlsl", L"CSMain", L"cs_6_6");
 
         D3D12_COMPUTE_PIPELINE_STATE_DESC computePsoDesc = {};
         computePsoDesc.pRootSignature = computeRootSignature.Get();
-        computePsoDesc.CS = CD3DX12_SHADER_BYTECODE(cs.Get());
+        computePsoDesc.CS = CD3DX12_SHADER_BYTECODE(cs->GetBufferPointer(), cs->GetBufferSize());
         computePsoDesc.Flags = D3D12_PIPELINE_STATE_FLAG_NONE;
 
         hr = dc->GetDevice()->CreateComputePipelineState(&computePsoDesc, IID_PPV_ARGS(&computePSO));
@@ -429,7 +394,7 @@ private:
         if (FAILED(D3D12SerializeRootSignature(&rsDesc, D3D_ROOT_SIGNATURE_VERSION_1, &rsBlob, nullptr))) return false;
         if (FAILED(dc->GetDevice()->CreateRootSignature(0, rsBlob->GetBufferPointer(), rsBlob->GetBufferSize(), IID_PPV_ARGS(&shadowRootSignature)))) return false;
 
-        auto vs = ShaderCompiler::CompileFromFile(L"Shaders/Shaders_For_Shadow.hlsl", "VSMain", "vs_5_0");
+        auto vs = ShaderCompiler::CompileFromFile(L"Shaders/Shaders_For_Shadow.hlsl", L"VSMain", L"vs_6_6");
 
         D3D12_INPUT_ELEMENT_DESC layout[] =
         {
@@ -445,7 +410,7 @@ private:
         D3D12_GRAPHICS_PIPELINE_STATE_DESC psoDesc = {};
         psoDesc.InputLayout = { layout, _countof(layout) };
         psoDesc.pRootSignature = shadowRootSignature.Get();
-        psoDesc.VS = CD3DX12_SHADER_BYTECODE(vs.Get());
+        psoDesc.VS = CD3DX12_SHADER_BYTECODE(vs->GetBufferPointer(), vs->GetBufferSize());
         psoDesc.PS = { nullptr, 0 };
 
         auto rasterizerState = CD3DX12_RASTERIZER_DESC(D3D12_DEFAULT);
@@ -493,14 +458,14 @@ private:
         if (FAILED(D3D12SerializeRootSignature(&rsDesc, D3D_ROOT_SIGNATURE_VERSION_1, &rsBlob, nullptr))) return false;
         if (FAILED(dc->GetDevice()->CreateRootSignature(0, rsBlob->GetBufferPointer(), rsBlob->GetBufferSize(), IID_PPV_ARGS(&postProcessRootSignature)))) return false;
 
-        auto vs = ShaderCompiler::CompileFromFile(L"Shaders/Shaders_For_PostProcess.hlsl", "VSMain", "vs_5_0");
-        auto ps = ShaderCompiler::CompileFromFile(L"Shaders/Shaders_For_PostProcess.hlsl", "PSMain", "ps_5_0");
+        auto vs = ShaderCompiler::CompileFromFile(L"Shaders/Shaders_For_PostProcess.hlsl", L"VSMain", L"vs_6_6");
+        auto ps = ShaderCompiler::CompileFromFile(L"Shaders/Shaders_For_PostProcess.hlsl", L"PSMain", L"ps_6_6");
 
         D3D12_GRAPHICS_PIPELINE_STATE_DESC psoDesc = {};
         psoDesc.InputLayout = { nullptr, 0 };
         psoDesc.pRootSignature = postProcessRootSignature.Get();
-        psoDesc.VS = CD3DX12_SHADER_BYTECODE(vs.Get());
-        psoDesc.PS = CD3DX12_SHADER_BYTECODE(ps.Get());
+        psoDesc.VS = CD3DX12_SHADER_BYTECODE(vs->GetBufferPointer(), vs->GetBufferSize());
+        psoDesc.PS = CD3DX12_SHADER_BYTECODE(ps->GetBufferPointer(), ps->GetBufferSize());
 
         psoDesc.RasterizerState = CD3DX12_RASTERIZER_DESC(D3D12_DEFAULT);
         psoDesc.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;

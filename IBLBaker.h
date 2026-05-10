@@ -169,21 +169,21 @@ public:
         D3D12SerializeRootSignature(&rsDesc, D3D_ROOT_SIGNATURE_VERSION_1, &rsBlob, nullptr);
         device->CreateRootSignature(0, rsBlob->GetBufferPointer(), rsBlob->GetBufferSize(), IID_PPV_ARGS(&rootSig));
 
-        auto vsCube = ShaderCompiler::CompileFromFile(L"Shaders/Shaders_For_Cubemap.hlsl", "VSMain", "vs_5_0");
-        auto psEqui = ShaderCompiler::CompileFromFile(L"Shaders/Shaders_For_Cubemap.hlsl", "PSMain", "ps_5_0");
+        auto vsCube = ShaderCompiler::CompileFromFile(L"Shaders/Shaders_For_Cubemap.hlsl", L"VSMain", L"vs_6_6");
+        auto psEqui = ShaderCompiler::CompileFromFile(L"Shaders/Shaders_For_Cubemap.hlsl", L"PSMain", L"ps_6_6");
 
-        auto vsPre = ShaderCompiler::CompileFromFile(L"Shaders/Shaders_For_Split_Sum.hlsl", "VSMain_Prefilter", "vs_5_0");
-        auto psPre = ShaderCompiler::CompileFromFile(L"Shaders/Shaders_For_Split_Sum.hlsl", "PSMain_Prefilter", "ps_5_0");
-        auto vsBrdf = ShaderCompiler::CompileFromFile(L"Shaders/Shaders_For_Split_Sum.hlsl", "VSMain_BRDF", "vs_5_0");
-        auto psBrdf = ShaderCompiler::CompileFromFile(L"Shaders/Shaders_For_Split_Sum.hlsl", "PSMain_BRDF", "ps_5_0");
+        auto vsPre = ShaderCompiler::CompileFromFile(L"Shaders/Shaders_For_Split_Sum.hlsl", L"VSMain_Prefilter", L"vs_6_6");
+        auto psPre = ShaderCompiler::CompileFromFile(L"Shaders/Shaders_For_Split_Sum.hlsl", L"PSMain_Prefilter", L"ps_6_6");
+        auto vsBrdf = ShaderCompiler::CompileFromFile(L"Shaders/Shaders_For_Split_Sum.hlsl", L"VSMain_BRDF", L"vs_6_6");
+        auto psBrdf = ShaderCompiler::CompileFromFile(L"Shaders/Shaders_For_Split_Sum.hlsl", L"PSMain_BRDF", L"ps_6_6");
 
         D3D12_INPUT_ELEMENT_DESC layoutCube[] = { { "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 0, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 } };
 
         D3D12_GRAPHICS_PIPELINE_STATE_DESC psoDesc = {};
         psoDesc.InputLayout = { layoutCube, 1 };
         psoDesc.pRootSignature = rootSig.Get();
-        psoDesc.VS = CD3DX12_SHADER_BYTECODE(vsCube.Get());
-        psoDesc.PS = CD3DX12_SHADER_BYTECODE(psEqui.Get());
+        psoDesc.VS = CD3DX12_SHADER_BYTECODE(vsCube->GetBufferPointer(), vsCube->GetBufferSize());
+        psoDesc.PS = CD3DX12_SHADER_BYTECODE(psEqui->GetBufferPointer(), psEqui->GetBufferSize());
         psoDesc.RasterizerState = CD3DX12_RASTERIZER_DESC(D3D12_DEFAULT);
         psoDesc.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
         psoDesc.BlendState = CD3DX12_BLEND_DESC(D3D12_DEFAULT);
@@ -197,8 +197,8 @@ public:
         Microsoft::WRL::ComPtr<ID3D12PipelineState> psoEqui;
         device->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(&psoEqui));
 
-        psoDesc.VS = CD3DX12_SHADER_BYTECODE(vsPre.Get());
-        psoDesc.PS = CD3DX12_SHADER_BYTECODE(psPre.Get());
+        psoDesc.VS = CD3DX12_SHADER_BYTECODE(vsPre->GetBufferPointer(), vsPre->GetBufferSize());
+        psoDesc.PS = CD3DX12_SHADER_BYTECODE(psPre->GetBufferPointer(), psPre->GetBufferSize());
         Microsoft::WRL::ComPtr<ID3D12PipelineState> psoPreState;
         device->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(&psoPreState));
 
@@ -208,8 +208,8 @@ public:
             { "TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT, 0, 12, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 }
         };
         psoDesc.InputLayout = { layoutQuad, 2 };
-        psoDesc.VS = CD3DX12_SHADER_BYTECODE(vsBrdf.Get());
-        psoDesc.PS = CD3DX12_SHADER_BYTECODE(psBrdf.Get());
+        psoDesc.VS = CD3DX12_SHADER_BYTECODE(vsBrdf->GetBufferPointer(), vsBrdf->GetBufferSize());
+        psoDesc.PS = CD3DX12_SHADER_BYTECODE(psBrdf->GetBufferPointer(), psBrdf->GetBufferSize());
         psoDesc.RTVFormats[0] = DXGI_FORMAT_R16G16_FLOAT;
         Microsoft::WRL::ComPtr<ID3D12PipelineState> psoBrdfState;
         device->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(&psoBrdfState));
@@ -371,10 +371,10 @@ public:
         D3D12SerializeRootSignature(&computeRSDesc, D3D_ROOT_SIGNATURE_VERSION_1, &cRsBlob, nullptr);
         device->CreateRootSignature(0, cRsBlob->GetBufferPointer(), cRsBlob->GetBufferSize(), IID_PPV_ARGS(&computeRootSig));
 
-        auto csShader = ShaderCompiler::CompileFromFile(L"Shaders/Shaders_For_SH_Calculate.hlsl", "CSMain", "cs_5_0");
+        auto csShader = ShaderCompiler::CompileFromFile(L"Shaders/Shaders_For_SH_Calculate.hlsl", L"CSMain", L"cs_6_6");
         D3D12_COMPUTE_PIPELINE_STATE_DESC computePsoDesc = {};
         computePsoDesc.pRootSignature = computeRootSig.Get();
-        computePsoDesc.CS = CD3DX12_SHADER_BYTECODE(csShader.Get());
+        computePsoDesc.CS = CD3DX12_SHADER_BYTECODE(csShader->GetBufferPointer(), csShader->GetBufferSize());
         Microsoft::WRL::ComPtr<ID3D12PipelineState> computePSO;
         device->CreateComputePipelineState(&computePsoDesc, IID_PPV_ARGS(&computePSO));
 

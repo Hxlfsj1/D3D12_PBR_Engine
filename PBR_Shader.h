@@ -1,64 +1,84 @@
-// The sole purpose of this header and its encapsulated classes is to compile shaders from specified file paths
-
 #ifndef PBR_SHADER_H
 #define PBR_SHADER_H
 
 #include "stdafx.h"
-#include <fstream>
-#include <sstream>
 #include <string>
+#include <vector>
 #include <wrl/client.h>
 
 class ShaderCompiler
 {
 public:
-
-    static Microsoft::WRL::ComPtr<ID3DBlob> CompileFromFile(std::wstring fileName, std::string entryPoint, std::string target, const D3D_SHADER_MACRO* defines = nullptr)
+    static Microsoft::WRL::ComPtr<IDxcBlob> CompileFromFile(
+        std::wstring fileName,
+        std::wstring entryPoint,
+        std::wstring target,
+        const std::vector<std::wstring>& defines = {})
     {
-        // A container for the compiled shader bytecode
-        Microsoft::WRL::ComPtr<ID3DBlob> shaderBlob;
-        // A container for shader compilation error messages
-        Microsoft::WRL::ComPtr<ID3DBlob> errorBlob;
+        Microsoft::WRL::ComPtr<IDxcUtils> pUtils;
+        DxcCreateInstance(CLSID_DxcUtils, IID_PPV_ARGS(&pUtils));
 
-        UINT compileFlags = 0;
+        Microsoft::WRL::ComPtr<IDxcCompiler3> pCompiler;
+        DxcCreateInstance(CLSID_DxcCompiler, IID_PPV_ARGS(&pCompiler));
 
-        // Toggle between Debug and Release modes
-#if defined(DEBUG) || defined(_DEBUG)
-        compileFlags = D3DCOMPILE_DEBUG | D3DCOMPILE_SKIP_OPTIMIZATION;
-#endif
+        Microsoft::WRL::ComPtr<IDxcIncludeHandler> pIncludeHandler;
+        pUtils->CreateDefaultIncludeHandler(&pIncludeHandler);
 
-        // Compile shaders to binary code (Bytecode)
-        HRESULT hr = D3DCompileFromFile
-        (
-            fileName.c_str(),
-            defines,
-            D3D_COMPILE_STANDARD_FILE_INCLUDE,
-            entryPoint.c_str(),
-            target.c_str(),
-            compileFlags,
-            0,
-            &shaderBlob,
-            &errorBlob
-        );
-
-        // Abort execution if an error code is received
+        Microsoft::WRL::ComPtr<IDxcBlobEncoding> pSource;
+        HRESULT hr = pUtils->LoadFile(fileName.c_str(), nullptr, &pSource);
         if (FAILED(hr))
         {
-            if (errorBlob)
-            {
-                OutputDebugStringA((char*)errorBlob->GetBufferPointer());
-                MessageBoxA(NULL, (char*)errorBlob->GetBufferPointer(), "Shader Compilation Error", MB_OK | MB_ICONERROR);
-            }
-
-            else
-            {
-                MessageBoxA(NULL, "Shaders not found!", "Error", MB_OK | MB_ICONERROR);
-            }
-
+            MessageBoxA(NULL, "Shaders not found!", "Error", MB_OK | MB_ICONERROR);
             exit(1);
         }
 
-        return shaderBlob;
+        std::vector<LPCWSTR> arguments;
+        arguments.push_back(fileName.c_str());
+
+        arguments.push_back(L"-E");
+        arguments.push_back(entryPoint.c_str());
+
+        arguments.push_back(L"-T");
+        arguments.push_back(target.c_str());
+
+        for (const auto& define : defines)
+        {
+            arguments.push_back(L"-D");
+            arguments.push_back(define.c_str());
+        }
+
+#if defined(DEBUG) || defined(_DEBUG)
+        arguments.push_back(DXC_ARG_DEBUG);
+        arguments.push_back(DXC_ARG_SKIP_OPTIMIZATIONS);
+#endif
+
+        DxcBuffer sourceBuffer;
+        sourceBuffer.Ptr = pSource->GetBufferPointer();
+        sourceBuffer.Size = pSource->GetBufferSize();
+        sourceBuffer.Encoding = DXC_CP_ACP;
+
+        Microsoft::WRL::ComPtr<IDxcResult> pResults;
+        pCompiler->Compile(
+            &sourceBuffer,
+            arguments.data(),
+            (UINT32)arguments.size(),
+            pIncludeHandler.Get(),
+            IID_PPV_ARGS(&pResults)
+        );
+
+        Microsoft::WRL::ComPtr<IDxcBlobUtf8> pErrors;
+        pResults->GetOutput(DXC_OUT_ERRORS, IID_PPV_ARGS(&pErrors), nullptr);
+        if (pErrors != nullptr && pErrors->GetStringLength() > 0)
+        {
+            OutputDebugStringA(pErrors->GetStringPointer());
+            MessageBoxA(NULL, pErrors->GetStringPointer(), "DXC Compilation Error", MB_OK | MB_ICONERROR);
+            exit(1);
+        }
+
+        Microsoft::WRL::ComPtr<IDxcBlob> pShader;
+        pResults->GetOutput(DXC_OUT_OBJECT, IID_PPV_ARGS(&pShader), nullptr);
+
+        return pShader;
     }
 };
 
