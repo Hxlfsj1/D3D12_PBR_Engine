@@ -17,25 +17,34 @@ cbuffer PassConstants : register(b0)
     uint shadowMapIdx;
 };
 
-struct InstanceData
-{
-    float4x4 wvpMat;
-    float4x4 worldMat;
-    float4x4 normalMat;
-};
-StructuredBuffer<InstanceData> gInstanceData : register(t6);
-
-SamplerState s1 : register(s0);
-SamplerComparisonState shadowSampler : register(s1);
-
-cbuffer MaterialFlags : register(b1)
+struct MaterialData
 {
     uint albedoIdx;
     uint normalIdx;
     uint ormIdx;
     uint emissiveIdx;
     uint isUnlit;
+    uint3 pad;
 };
+
+struct InstanceData
+{
+    float4x4 wvpMat;
+    float4x4 worldMat;
+    float4x4 normalMat;
+};
+
+cbuffer MeshConstants : register(b1)
+{
+    uint materialID;
+};
+
+StructuredBuffer<InstanceData> gInstanceData : register(t6);
+
+SamplerState s1 : register(s0);
+SamplerComparisonState shadowSampler : register(s1);
+
+StructuredBuffer<MaterialData> gMaterialData : register(t7);
 
 #define hasAlbedo 1
 #define hasNormal 1
@@ -103,12 +112,14 @@ VS_OUTPUT VSMain(VS_INPUT input)
 #if LOD_LEVEL < 2
     output.lightSpacePos = mul(float4(output.worldPos, 1.0f), lightViewProj);
 #endif
+    
     return output;
 }
 
 #if LOD_LEVEL == 0
 float3 getNormalFromMap(VS_OUTPUT input)
 {
+    uint normalIdx = gMaterialData[materialID].normalIdx;
     Texture2D tNormal = ResourceDescriptorHeap[normalIdx];
     float3 tangentNormal = tNormal.Sample(s1, input.texCoord).xyz * 2.0 - 1.0;
     tangentNormal.y = -tangentNormal.y;
@@ -245,8 +256,7 @@ float CalcShadowFactor(float4 lightSpacePos)
     
     // Adjustable shadow parameters
     float LIGHT_WORLD_SIZE = 1.0;
-    float LIGHT_FRUSTUM_WIDTH = 50.0;
-    float LIGHT_SIZE_UV = LIGHT_WORLD_SIZE / LIGHT_FRUSTUM_WIDTH;
+    float LIGHT_SIZE_UV = LIGHT_WORLD_SIZE / padding3;
     
     // First, perform a blocker search using Poisson Disk sampling
     float avgBlockerDepth = 1.0;
@@ -281,14 +291,16 @@ float CalcShadowFactor(float4 lightSpacePos)
 // PBR pixel Shader
 float4 PSMain(VS_OUTPUT input) : SV_TARGET
 {
-    Texture2D tAlbedo = ResourceDescriptorHeap[albedoIdx];
-    Texture2D tEmissive = ResourceDescriptorHeap[emissiveIdx];
+    MaterialData mat = gMaterialData[materialID];
+    
+    Texture2D tAlbedo = ResourceDescriptorHeap[mat.albedoIdx];
+    Texture2D tEmissive = ResourceDescriptorHeap[mat.emissiveIdx];
     
     float4 albedoSample = tAlbedo.Sample(s1, input.texCoord);
     float3 albedo = pow(albedoSample.rgb, 2.2);
     float finalAlpha = albedoSample.a;
     
-    if (isUnlit)
+    if (mat.isUnlit)
     {
         float3 unlitColor = hasEmissive ? pow(tEmissive.Sample(s1, input.texCoord).rgb, 2.2) : albedo;
         return float4(unlitColor, finalAlpha);
@@ -305,7 +317,7 @@ float4 PSMain(VS_OUTPUT input) : SV_TARGET
     
     return float4(diffuse_IBL + directDiffuse, finalAlpha);
 #else
-    Texture2D tMR = ResourceDescriptorHeap[ormIdx];
+    Texture2D tMR = ResourceDescriptorHeap[mat.ormIdx];
     
     float ao = 1.0;
     float roughness = 0.5;

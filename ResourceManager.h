@@ -7,6 +7,7 @@
 #include "PBR_Model.h"
 #include "IBLBaker.h"
 #include "Assets.h"
+#include "RenderStructs.h"
 
 #include <map>
 #include <vector>
@@ -197,6 +198,78 @@ public:
         });
 
         return true;
+    }
+
+    void BuildGlobalMaterialPool(RenderDevice* dc)
+    {
+        dc->GetCommandAllocator(0)->Reset();
+        dc->GetCommandList()->Reset(dc->GetCommandAllocator(0), nullptr);
+
+        std::vector<MaterialData> globalMaterials;
+        auto cmdList = dc->GetCommandList();
+
+        for (auto& pair : myModels)
+        {
+            for (auto& mesh : pair.second->meshes)
+            {
+                MaterialData mat = {};
+                mat.albedoIdx = dummyAlbedoIdx;
+                mat.normalIdx = dummyNormalIdx;
+                mat.ormIdx = dummyORMIdx;
+                mat.emissiveIdx = dummyEmissiveIdx;
+                mat.isUnlit = mesh.isUnlit;
+
+                for (auto& tex : mesh.textures)
+                {
+                    switch (tex.type)
+                    {
+                    case TextureType::Albedo: mat.albedoIdx = textureSrvIndices[tex.Resource.Get()]; break;
+                    case TextureType::Normal: mat.normalIdx = textureSrvIndices[tex.Resource.Get()]; break;
+                    case TextureType::ORM: mat.ormIdx = textureSrvIndices[tex.Resource.Get()]; break;
+                    case TextureType::Emissive: mat.emissiveIdx = textureSrvIndices[tex.Resource.Get()]; break;
+                    }
+                }
+
+                mesh.materialID = static_cast<UINT>(globalMaterials.size());
+                globalMaterials.push_back(mat);
+            }
+        }
+
+        UINT bufferSize = static_cast<UINT>(globalMaterials.size() * sizeof(MaterialData));
+
+        auto heapPropsDefault = CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_DEFAULT);
+        auto bufferDesc = CD3DX12_RESOURCE_DESC::Buffer(bufferSize);
+        dc->GetDevice()->CreateCommittedResource(&heapPropsDefault, D3D12_HEAP_FLAG_NONE, &bufferDesc, D3D12_RESOURCE_STATE_COMMON, nullptr, IID_PPV_ARGS(&m_materialBuffer));
+
+        auto heapPropsUpload = CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_UPLOAD);
+        dc->GetDevice()->CreateCommittedResource(&heapPropsUpload, D3D12_HEAP_FLAG_NONE, &bufferDesc, D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&m_materialUploadBuffer));
+
+        D3D12_SUBRESOURCE_DATA subData = {};
+        subData.pData = globalMaterials.data();
+        subData.RowPitch = bufferSize;
+        subData.SlicePitch = subData.RowPitch;
+
+        auto transition1 = CD3DX12_RESOURCE_BARRIER::Transition(m_materialBuffer.Get(), D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_COPY_DEST);
+        cmdList->ResourceBarrier(1, &transition1);
+
+        UpdateSubresources(cmdList, m_materialBuffer.Get(), m_materialUploadBuffer.Get(), 0, 0, 1, &subData);
+
+        auto transition2 = CD3DX12_RESOURCE_BARRIER::Transition(m_materialBuffer.Get(), D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+        cmdList->ResourceBarrier(1, &transition2);
+
+        cmdList->Close();
+        ID3D12CommandList* lists[] = { cmdList };
+        dc->GetCommandQueue()->ExecuteCommandLists(1, lists);
+
+        int frameIndex = dc->GetSwapChain()->GetCurrentBackBufferIndex();
+        dc->GetFenceValue(frameIndex)++;
+        dc->GetCommandQueue()->Signal(dc->GetFence(frameIndex), dc->GetFenceValue(frameIndex));
+
+        if (dc->GetFence(frameIndex)->GetCompletedValue() < dc->GetFenceValue(frameIndex))
+        {
+            dc->GetFence(frameIndex)->SetEventOnCompletion(dc->GetFenceValue(frameIndex), dc->GetFenceEvent());
+            WaitForSingleObject(dc->GetFenceEvent(), INFINITE);
+        }
     }
 
     // What is loaded :
@@ -502,6 +575,11 @@ public:
         return m_offscreenSrvIdx;
     }
 
+    D3D12_GPU_VIRTUAL_ADDRESS GetMaterialBufferGPUAddress()
+    {
+        return m_materialBuffer->GetGPUVirtualAddress();
+    }
+
 private:
     UINT srvIdx;
     UINT srvDescriptorSize;
@@ -550,6 +628,9 @@ private:
     Microsoft::WRL::ComPtr<ID3D12Resource> m_offscreenRT;
     Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> m_postRtvHeap;
     UINT m_offscreenSrvIdx;
+
+    ComPtr<ID3D12Resource> m_materialBuffer;
+    ComPtr<ID3D12Resource> m_materialUploadBuffer;
 };
 
 #endif

@@ -72,6 +72,7 @@ public:
     std::vector<std::vector<unsigned int>> lodIndices;
     std::vector<Texture> textures;
     bool isUnlit;
+    UINT materialID = 0;
 
     ComPtr<ID3D12Resource> vertexBufferUploader;
     std::vector<ComPtr<ID3D12Resource>> indexBufferUploaders;

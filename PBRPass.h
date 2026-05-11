@@ -48,6 +48,8 @@ public:
 
         cmdList->SetGraphicsRootConstantBufferView(2, resourceManager->GetSHBufferGPUAddress());
 
+        cmdList->SetGraphicsRootShaderResourceView(3, resourceManager->GetMaterialBufferGPUAddress());
+
         cmdList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
 
         // ====================================================================================================
@@ -89,33 +91,9 @@ public:
 
                             for (auto& mesh : currentModel->meshes)
                             {
-                                UINT srvIdx[4] = { resourceManager->GetDummyAlbedoIdx(), resourceManager->GetDummyNormalIdx(), resourceManager->GetDummyORMIdx(), resourceManager->GetDummyEmissiveIdx() };
-
-                                for (auto& tex : mesh.textures)
-                                {
-                                    switch (tex.type)
-                                    {
-                                    case TextureType::Albedo:
-                                        srvIdx[0] = resourceManager->GetTextureSrvIdx(tex.Resource.Get());
-                                        break;
-                                    case TextureType::Normal:
-                                        srvIdx[1] = resourceManager->GetTextureSrvIdx(tex.Resource.Get());
-                                        break;
-                                    case TextureType::ORM:
-                                        srvIdx[2] = resourceManager->GetTextureSrvIdx(tex.Resource.Get());
-                                        break;
-                                    case TextureType::Emissive:
-                                        srvIdx[3] = resourceManager->GetTextureSrvIdx(tex.Resource.Get());
-                                        break;
-                                    default:
-                                        break;
-                                    }
-                                }
-
                                 if (isPBR)
                                 {
-                                    UINT32 matIndices[5] = { srvIdx[0], srvIdx[1], srvIdx[2], srvIdx[3], (UINT32)mesh.isUnlit };
-                                    cmdList->SetGraphicsRoot32BitConstants(3, 5, matIndices, 0);
+                                    cmdList->SetGraphicsRoot32BitConstants(4, 1, &mesh.materialID, 0);
                                 }
 
                                 mesh.Draw(cmdList, currentInstanceCount, currentLod);
@@ -185,6 +163,8 @@ public:
         auto cmdList = deviceContext->GetCommandList();
         D3D12_GPU_VIRTUAL_ADDRESS baseGpuAddress = resourceManager->GetCBVGPUAddress(frameIndex);
 
+        cmdList->SetGraphicsRootShaderResourceView(3, resourceManager->GetMaterialBufferGPUAddress());
+
         for (size_t i = transparentStartIndex; i < visibleInstances.size(); ++i)
         {
             ModelInstance* instance = visibleInstances[i];
@@ -199,33 +179,9 @@ public:
 
                     for (auto& mesh : instance->pModel->meshes)
                     {
-                        UINT srvIdx[4] = { resourceManager->GetDummyAlbedoIdx(), resourceManager->GetDummyNormalIdx(), resourceManager->GetDummyORMIdx(), resourceManager->GetDummyEmissiveIdx() };
-
-                        for (auto& tex : mesh.textures)
-                        {
-                            switch (tex.type)
-                            {
-                            case TextureType::Albedo:
-                                srvIdx[0] = resourceManager->GetTextureSrvIdx(tex.Resource.Get());
-                                break;
-                            case TextureType::Normal:
-                                srvIdx[1] = resourceManager->GetTextureSrvIdx(tex.Resource.Get());
-                                break;
-                            case TextureType::ORM:
-                                srvIdx[2] = resourceManager->GetTextureSrvIdx(tex.Resource.Get());
-                                break;
-                            case TextureType::Emissive:
-                                srvIdx[3] = resourceManager->GetTextureSrvIdx(tex.Resource.Get());
-                                break;
-                            default:
-                                break;
-                            }
-                        }
-
                         if (isColorPass)
                         {
-                            UINT32 matIndices[5] = { srvIdx[0], srvIdx[1], srvIdx[2], srvIdx[3], (UINT32)mesh.isUnlit };
-                            cmdList->SetGraphicsRoot32BitConstants(3, 5, matIndices, 0);
+                            cmdList->SetGraphicsRoot32BitConstants(4, 1, &mesh.materialID, 0);
                         }
 
                         mesh.Draw(cmdList, 1, instance->currentLodLevel);

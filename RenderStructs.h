@@ -20,6 +20,17 @@ struct alignas(256) PassConstants
     UINT padTo256[33];
 };
 
+struct MaterialData
+{
+    UINT albedoIdx;
+    UINT normalIdx;
+    UINT ormIdx;
+    UINT emissiveIdx;
+    UINT isUnlit;
+
+    UINT pad[3];
+};
+
 struct InstanceData
 {
     DirectX::XMFLOAT4X4 wvpMat;

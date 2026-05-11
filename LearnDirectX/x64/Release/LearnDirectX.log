@@ -1,6 +1,6 @@
 ﻿  PBR_Render.cpp
   pbrmaterial.h is deprecated. Please update to PBR materials in materials.h and glTF-specific items in GltfMaterial.h
-D:\项目\LearnDirectX\PBR_Model.h(92,48): warning C4267: “=”: 从“size_t”转换到“int”，可能丢失数据
+D:\项目\LearnDirectX\PBR_Model.h(93,48): warning C4267: “=”: 从“size_t”转换到“int”，可能丢失数据
   (编译源文件“PBR_Render.cpp”)
   
 D:\项目\LearnDirectX\PBR_Shader.h(1,1): warning C4819: 该文件包含不能在当前代码页(936)中表示的字符。请将该文件保存为 Unicode 格式以防止数据丢失
@@ -14,19 +14,19 @@ D:\项目\LearnDirectX\IBLBaker.h(305,29): warning C4244: “初始化”: 从�
   
 D:\项目\LearnDirectX\SceneObject.h(8,8): warning C4099: “Model”: 类型名称以前使用“class”现在使用的是“struct”
   (编译源文件“PBR_Render.cpp”)
-      D:\项目\LearnDirectX\PBR_Model.h(158,7):
+      D:\项目\LearnDirectX\PBR_Model.h(159,7):
       参见“Model”的声明
   
 D:\项目\LearnDirectX\ShadowPass.h(80,43): warning C4267: “=”: 从“size_t”转换到“UINT”，可能丢失数据
   (编译源文件“PBR_Render.cpp”)
   
-D:\项目\LearnDirectX\PBRPass.h(143,55): warning C4267: “=”: 从“size_t”转换到“UINT”，可能丢失数据
+D:\项目\LearnDirectX\PBRPass.h(121,55): warning C4267: “=”: 从“size_t”转换到“UINT”，可能丢失数据
   (编译源文件“PBR_Render.cpp”)
   
   正在生成代码
-  15 of 5937 functions ( 0.3%) were compiled, the rest were copied from previous compilation.
-    3 functions were new in current compilation
-    27 functions had inline decision re-evaluated but remain unchanged
+  3 of 5961 functions (<0.1%) were compiled, the rest were copied from previous compilation.
+    0 functions were new in current compilation
+    25 functions had inline decision re-evaluated but remain unchanged
   已完成代码的生成
   LearnDirectX.vcxproj -> D:\项目\LearnDirectX\x64\Release\LearnDirectX.exe
   'pwsh.exe' 不是内部或外部命令，也不是可运行的程序

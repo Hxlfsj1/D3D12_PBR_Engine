@@ -20,6 +20,10 @@ public:
     {
         auto cmdList = deviceContext->GetCommandList();
 
+        cmdList->SetGraphicsRootSignature(pipelineManager->GetRootSignature());
+        ID3D12DescriptorHeap* heaps[] = { resourceManager->GetMainDescriptorHeap() };
+        cmdList->SetDescriptorHeaps(1, heaps);
+
         // Bind the PSO (Pipeline State Object) for Skybox rendering
         cmdList->SetPipelineState(pipelineManager->GetSkybox_PSO());
 
@@ -34,11 +38,11 @@ public:
         XMMATRIX skyVPMat = XMMatrixTranspose(view * proj);
 
         // Pass the Skybox MVP matrix via registers (Root Constants)
-        cmdList->SetGraphicsRoot32BitConstants(3, 16, &skyVPMat, 0);
+        cmdList->SetGraphicsRoot32BitConstants(4, 16, &skyVPMat, 0);
 
         // Bind the skybox texture (Cubemap)
         UINT skyboxTexIdx = resourceManager->GetIblEnvCubeIdx();
-        cmdList->SetGraphicsRoot32BitConstants(3, 1, &skyboxTexIdx, 16);
+        cmdList->SetGraphicsRoot32BitConstants(4, 1, &skyboxTexIdx, 16);
 
         cmdList->DrawInstanced(36, 1, 0, 0);
     }

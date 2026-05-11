@@ -101,7 +101,7 @@ private:
 
     bool BuildRootSignature(RenderDevice* dc)
     {
-        D3D12_ROOT_PARAMETER rootParameters[4];
+        D3D12_ROOT_PARAMETER rootParameters[5];
 
         // Pass the GPU virtual address of the CBV
         rootParameters[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
@@ -122,11 +122,16 @@ private:
         rootParameters[2].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
 
         // Pass indices for bindless textures (PBR), or MVP matrix + texture index (Skybox)
-        rootParameters[3].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
-        rootParameters[3].Constants.ShaderRegister = 1;
-        rootParameters[3].Constants.Num32BitValues = 17;
-        rootParameters[3].Constants.RegisterSpace = 0;
+        rootParameters[3].ParameterType = D3D12_ROOT_PARAMETER_TYPE_SRV;
+        rootParameters[3].Descriptor.ShaderRegister = 7;
+        rootParameters[3].Descriptor.RegisterSpace = 0;
         rootParameters[3].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+
+        rootParameters[4].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
+        rootParameters[4].Constants.ShaderRegister = 1;
+        rootParameters[4].Constants.Num32BitValues = 17;
+        rootParameters[4].Constants.RegisterSpace = 0;
+        rootParameters[4].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
 
         // Two samplers: the former is an anisotropic sampler for high-quality texture sampling;
         // and the latter is a comparison sampler for PCSS shadow calculations
@@ -145,7 +150,7 @@ private:
 
         // Enable instancing and bindless resources
         CD3DX12_ROOT_SIGNATURE_DESC rsDesc;
-        rsDesc.Init(4, rootParameters, 2, samplers,
+        rsDesc.Init(5, rootParameters, 2, samplers,
             D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT |
             D3D12_ROOT_SIGNATURE_FLAG_CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED);
 
