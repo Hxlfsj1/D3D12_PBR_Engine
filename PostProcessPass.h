@@ -23,6 +23,7 @@ public:
             resourceManager->GetPostProcessRT(),
             D3D12_RESOURCE_STATE_RENDER_TARGET,
             D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+
         cmdList->ResourceBarrier(1, &toSrv);
 
         CD3DX12_CPU_DESCRIPTOR_HANDLE rtv = deviceContext->GetRTVHandle(frameIndex);
@@ -38,12 +39,8 @@ public:
         ID3D12DescriptorHeap* heaps[] = { resourceManager->GetMainDescriptorHeap() };
         cmdList->SetDescriptorHeaps(1, heaps);
 
-        CD3DX12_GPU_DESCRIPTOR_HANDLE hSrv(
-            resourceManager->GetMainDescriptorHeap()->GetGPUDescriptorHandleForHeapStart(),
-            resourceManager->GetPostProcessSrvIdx(),
-            resourceManager->GetSrvDescriptorSize()
-        );
-        cmdList->SetGraphicsRootDescriptorTable(0, hSrv);
+        UINT sceneTexIdx = resourceManager->GetPostProcessSrvIdx();
+        cmdList->SetGraphicsRoot32BitConstants(0, 1, &sceneTexIdx, 0);
 
         cmdList->DrawInstanced(3, 1, 0, 0);
 
@@ -51,6 +48,7 @@ public:
             resourceManager->GetPostProcessRT(),
             D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
             D3D12_RESOURCE_STATE_RENDER_TARGET);
+
         cmdList->ResourceBarrier(1, &toRtv);
     }
 };

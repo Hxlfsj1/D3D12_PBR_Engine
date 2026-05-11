@@ -103,27 +103,33 @@ private:
     {
         D3D12_ROOT_PARAMETER rootParameters[4];
 
+        // Pass the GPU virtual address of the CBV
         rootParameters[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
         rootParameters[0].Descriptor.ShaderRegister = 0;
         rootParameters[0].Descriptor.RegisterSpace = 0;
         rootParameters[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
 
+        // Pass the starting address of the instance world matrices
         rootParameters[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_SRV;
         rootParameters[1].Descriptor.ShaderRegister = 6;
         rootParameters[1].Descriptor.RegisterSpace = 0;
         rootParameters[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
 
+        // Pass the Spherical Harmonic (SH) lighting coefficients
         rootParameters[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
         rootParameters[2].Descriptor.ShaderRegister = 2;
         rootParameters[2].Descriptor.RegisterSpace = 0;
         rootParameters[2].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
 
+        // Pass indices for bindless textures (PBR), or MVP matrix + texture index (Skybox)
         rootParameters[3].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
         rootParameters[3].Constants.ShaderRegister = 1;
         rootParameters[3].Constants.Num32BitValues = 17;
         rootParameters[3].Constants.RegisterSpace = 0;
         rootParameters[3].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
 
+        // Two samplers: the former is an anisotropic sampler for high-quality texture sampling;
+        // and the latter is a comparison sampler for PCSS shadow calculations
         D3D12_STATIC_SAMPLER_DESC samplers[2];
         samplers[0] = CD3DX12_STATIC_SAMPLER_DESC(0, D3D12_FILTER_ANISOTROPIC);
         samplers[0].MaxAnisotropy = 16;
@@ -137,6 +143,7 @@ private:
         samplers[1].ComparisonFunc = D3D12_COMPARISON_FUNC_LESS_EQUAL;
         samplers[1].BorderColor = D3D12_STATIC_BORDER_COLOR_OPAQUE_WHITE;
 
+        // Enable instancing and bindless resources
         CD3DX12_ROOT_SIGNATURE_DESC rsDesc;
         rsDesc.Init(4, rootParameters, 2, samplers,
             D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT |
@@ -401,27 +408,31 @@ private:
 
     bool BuildPostProcessPipeline(RenderDevice* dc)
     {
-        D3D12_DESCRIPTOR_RANGE range;
-        range.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
-        range.NumDescriptors = 1;
-        range.BaseShaderRegister = 0;
-        range.RegisterSpace = 0;
-        range.OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
-
-        D3D12_ROOT_PARAMETER rootParam;
-        rootParam.ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
-        rootParam.DescriptorTable.NumDescriptorRanges = 1;
-        rootParam.DescriptorTable.pDescriptorRanges = &range;
-        rootParam.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+        CD3DX12_ROOT_PARAMETER rootParam;
+        rootParam.InitAsConstants(1, 0, 0, D3D12_SHADER_VISIBILITY_ALL);
 
         D3D12_STATIC_SAMPLER_DESC sampler = CD3DX12_STATIC_SAMPLER_DESC(0, D3D12_FILTER_MIN_MAG_MIP_LINEAR);
 
         CD3DX12_ROOT_SIGNATURE_DESC rsDesc;
-        rsDesc.Init(1, &rootParam, 1, &sampler, D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT);
+        rsDesc.Init(
+            1,
+            &rootParam,
+            1,
+            &sampler,
+            D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT | D3D12_ROOT_SIGNATURE_FLAG_CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED
+        );
 
         Microsoft::WRL::ComPtr<ID3DBlob> rsBlob;
-        if (FAILED(D3D12SerializeRootSignature(&rsDesc, D3D_ROOT_SIGNATURE_VERSION_1, &rsBlob, nullptr))) return false;
-        if (FAILED(dc->GetDevice()->CreateRootSignature(0, rsBlob->GetBufferPointer(), rsBlob->GetBufferSize(), IID_PPV_ARGS(&postProcessRootSignature)))) return false;
+
+        if (FAILED(D3D12SerializeRootSignature(&rsDesc, D3D_ROOT_SIGNATURE_VERSION_1, &rsBlob, nullptr)))
+        {
+            return false;
+        }
+
+        if (FAILED(dc->GetDevice()->CreateRootSignature(0, rsBlob->GetBufferPointer(), rsBlob->GetBufferSize(), IID_PPV_ARGS(&postProcessRootSignature))))
+        {
+            return false;
+        }
 
         auto vs = ShaderCompiler::CompileFromFile(L"Shaders/Shaders_For_PostProcess.hlsl", L"VSMain", L"vs_6_6");
         auto ps = ShaderCompiler::CompileFromFile(L"Shaders/Shaders_For_PostProcess.hlsl", L"PSMain", L"ps_6_6");
@@ -446,7 +457,10 @@ private:
         psoDesc.RTVFormats[0] = DXGI_FORMAT_R8G8B8A8_UNORM;
         psoDesc.SampleDesc.Count = 1;
 
-        if (FAILED(dc->GetDevice()->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(&postProcessPSO)))) return false;
+        if (FAILED(dc->GetDevice()->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(&postProcessPSO))))
+        {
+            return false;
+        }
 
         return true;
     }

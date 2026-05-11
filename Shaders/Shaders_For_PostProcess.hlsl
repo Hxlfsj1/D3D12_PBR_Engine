@@ -1,4 +1,7 @@
-Texture2D sceneTexture : register(t0);
+cbuffer PPFlags : register(b0)
+{
+    uint sceneTexIdx;
+};
 SamplerState s0 : register(s0);
 
 struct VS_OUTPUT
@@ -19,6 +22,7 @@ VS_OUTPUT VSMain(uint vertexID : SV_VertexID)
 
 float4 PSMain(VS_OUTPUT input) : SV_TARGET
 {
+    Texture2D sceneTexture = ResourceDescriptorHeap[sceneTexIdx];
     // This HDR doesn't refer to the HDR skybox, but rather the post-processing input awaiting tone mapping
     float4 hdrColor = sceneTexture.Sample(s0, input.uv);
     float3 color = hdrColor.rgb;
