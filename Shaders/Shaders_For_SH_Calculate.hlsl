@@ -42,9 +42,8 @@ void ComputeBasis(float3 dir, out float Y[9])
     Y[8] = 0.546274f * (x * x - y * y);
 }
 
-// The GPU dispatch pattern is set to 256 cores per group, arranged in a 16x16 matrix
+// The implicit parallel outer loop: Spawns 256 concurrent threads (16x16) to execute this single-thread blueprint.
 [numthreads(16, 16, 1)]
-// This shader is different—it operates on a per-GPU-core (per-thread) basis
 void CSMain(uint3 GTid : SV_GroupThreadID)
 {
     uint threadIndex = GTid.y * 16 + GTid.x;
@@ -53,7 +52,8 @@ void CSMain(uint3 GTid : SV_GroupThreadID)
     float3 localSH[9] = { (float3) 0, (float3) 0, (float3) 0, (float3) 0, (float3) 0, (float3) 0, (float3) 0, (float3) 0, (float3) 0 };
     float localWeight = 0.0f;
 
-    // Grid-stepping (in chunks of 256) within the main loop
+    // Grid-Stride Loop: 256 concurrent GPU threads sweep across the entire image in parallel. 
+    // Each thread processes a pixel, then leaps forward by THREAD_COUNT (256) to its next target.
     for (uint i = threadIndex; i < totalPixels; i += THREAD_COUNT)
     {
         uint x = i % width;
@@ -91,8 +91,9 @@ void CSMain(uint3 GTid : SV_GroupThreadID)
     sharedWeight[threadIndex] = localWeight;
 
     // Initiate cross-thread operations
+    // The first barrier ensures a safe "local-to-shared" handoff: it waits for all threads to finish writing their results into the shared array.
     GroupMemoryBarrierWithGroupSync();
-    // Use parallel reduction to accumulate the values calculated by all threads (s >>= 1 equals s /= 2) 
+    // Use parallel reduction to accumulate the values calculated by all threads (s >>= 1 equals s /= 2)
     for (uint s = THREAD_COUNT / 2; s > 0; s >>= 1)
     {
         // Notice: there is "if" not "for" because here is GPU
@@ -105,10 +106,13 @@ void CSMain(uint3 GTid : SV_GroupThreadID)
             sharedWeight[threadIndex] += sharedWeight[threadIndex + s];
         }
         
+        // The second barrier guarantees the safety of each parallel reduction step:
+        // it waits for all halving additions to finish before starting the next layer of computation.
         GroupMemoryBarrierWithGroupSync();
     }
 
     // Process the reduction result (stored in index 0) and commit it to the final output
+    // Normalize the integral and apply the BRDF SH projection coefficients.
     if (threadIndex == 0)
     {
         float totalW = sharedWeight[0];
