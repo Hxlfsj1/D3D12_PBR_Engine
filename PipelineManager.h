@@ -391,7 +391,7 @@ private:
         psoDesc.PS = { nullptr, 0 };
 
         auto rasterizerState = CD3DX12_RASTERIZER_DESC(D3D12_DEFAULT);
-        rasterizerState.DepthBias = 100000;
+        rasterizerState.DepthBias = 500;
         rasterizerState.DepthBiasClamp = 0.0f;
         rasterizerState.SlopeScaledDepthBias = 1.0f;
         psoDesc.RasterizerState = rasterizerState;

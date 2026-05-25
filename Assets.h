@@ -39,7 +39,7 @@ public:
             {
                 "Model_1",
                 "Models/Plain.glb",
-                { 0.0f,-5.0f, 0.0f },
+                { 0.0f, 0.01f, 0.0f },
                 { 0.0f, 0.0f, 0.0f },
                 { 1.0f, 1.0f, 1.0f },
                 false
