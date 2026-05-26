@@ -303,7 +303,7 @@ float4 PSMain(VS_OUTPUT input) : SV_TARGET
     if (mat.isUnlit)
     {
         float3 unlitColor = hasEmissive ? pow(tEmissive.Sample(s1, input.texCoord).rgb, 2.2) : albedo;
-        return float4(unlitColor, finalAlpha);
+        return float4(unlitColor * finalAlpha, finalAlpha);
     }
 
 #if LOD_LEVEL == 2
@@ -315,7 +315,8 @@ float4 PSMain(VS_OUTPUT input) : SV_TARGET
     float3 diffuse_IBL = irradiance * albedo;
     float3 directDiffuse = albedo * lightColor * NdotL;
     
-    return float4(diffuse_IBL + directDiffuse, finalAlpha);
+    float3 totalDiffuse = diffuse_IBL + directDiffuse;
+    return float4(totalDiffuse * finalAlpha, finalAlpha);
 #else
     Texture2D tMR = ResourceDescriptorHeap[mat.ormIdx];
     
@@ -362,7 +363,8 @@ float4 PSMain(VS_OUTPUT input) : SV_TARGET
     
     // Calculate final light
     float NdotL = max(dot(N, L), 0.0);
-    float3 Lo = (kD * albedo / PI + specular) * radiance * NdotL * shadow;
+    float3 directDiffuse = (kD * albedo / PI) * radiance * NdotL * shadow;
+    float3 directSpecular = specular * radiance * NdotL * shadow;
     
     // Diffuse IBL (SH)
     float3 F_IBL = fresnelSchlickRoughness(max(dot(N, V), 0.0), F0, roughness);
@@ -392,12 +394,18 @@ float4 PSMain(VS_OUTPUT input) : SV_TARGET
     
     // The kD_IBL term is decoupled from the split-sum specular BRDF
     // It serves as a visual constraint to mimic energy conservation rather than achieving strict physical correctness
-    float3 ambient = (kD_IBL * diffuse_IBL + specular_IBL) * ao;
+    float3 ambientDiffuse = kD_IBL * diffuse_IBL * ao;
+    float3 ambientSpecular = specular_IBL * ao;
+    // ---------------------------------------------
     
     // Add emissive (if applicable)
     float3 emissive = hasEmissive ? pow(tEmissive.Sample(s1, input.texCoord).rgb, 2.2) : float3(0.0, 0.0, 0.0);
-    float3 color = ambient + Lo + emissive;
+    
+    float3 totalDiffuse = directDiffuse + ambientDiffuse;
+    float3 totalSpecular = directSpecular + ambientSpecular;
+    
+    float3 finalColor = (totalDiffuse * finalAlpha) + totalSpecular + emissive;
 
-    return float4(color, finalAlpha);
+    return float4(finalColor, finalAlpha);
 #endif
 }

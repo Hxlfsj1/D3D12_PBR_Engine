@@ -81,6 +81,7 @@ GBufferOutput PSMain(VS_OUTPUT input)
 #if LOD_LEVEL == 0
     Texture2D tNormal = ResourceDescriptorHeap[gMaterialData[materialID].normalIdx];
     float3 normalMap = tNormal.Sample(s1, input.texCoord).xyz * 2.0 - 1.0;
+    normalMap.y = -normalMap.y;
     float3 N = normalize(input.worldNormal);
     float3 T = normalize(input.worldTangent);
     float3 B = normalize(input.worldBitangent);

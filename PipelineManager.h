@@ -292,7 +292,7 @@ private:
         D3D12_RENDER_TARGET_BLEND_DESC transparencyBlendDesc = {};
         transparencyBlendDesc.BlendEnable = TRUE;
         transparencyBlendDesc.LogicOpEnable = FALSE;
-        transparencyBlendDesc.SrcBlend = D3D12_BLEND_SRC_ALPHA;
+        transparencyBlendDesc.SrcBlend = D3D12_BLEND_ONE;
         transparencyBlendDesc.DestBlend = D3D12_BLEND_INV_SRC_ALPHA;
         transparencyBlendDesc.BlendOp = D3D12_BLEND_OP_ADD;
         transparencyBlendDesc.SrcBlendAlpha = D3D12_BLEND_ONE;
