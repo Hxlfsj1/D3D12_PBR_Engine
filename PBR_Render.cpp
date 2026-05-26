@@ -13,6 +13,7 @@
 #include "SkyboxPass.h"
 #include "PostProcessPass.h"
 #include "PBRPass.h"
+#include "GBufferPass.h"
 
 #define STB_IMAGE_IMPLEMENTATION
 #include <stb_image.h>
@@ -180,6 +181,8 @@ bool D3D12App::InitD3D()
     if (!m_resourceManager.InitShadowResources(&m_deviceContext)) return false;
 
     if (!m_resourceManager.InitPostProcess(&m_deviceContext, Width, Height)) return false;
+
+    if (!m_resourceManager.InitGBuffer(&m_deviceContext, Width, Height)) return false;
 
     viewport = CD3DX12_VIEWPORT(0.0f, 0.0f, (float)Width, (float)Height);
     scissorRect = CD3DX12_RECT(0, 0, Width, Height);
@@ -473,11 +476,22 @@ void D3D12App::Render()
 
     ShadowPass::Execute(&m_deviceContext, &m_resourceManager, &m_pipelineManager, frameIndex, g_shadowVisibleInstances, g_visibleInstances.size());
 
-    size_t transparentIdx = PBRPass::ExecuteOpaque(&m_deviceContext, &m_resourceManager, &m_pipelineManager, frameIndex, viewport, scissorRect, g_visibleInstances);
+    size_t transparentIdx = 0;
 
-    SkyboxPass::Execute(&m_deviceContext, &m_resourceManager, &m_pipelineManager, camera, Width, Height);
+    static bool useDeferredPath = true;
 
-    PBRPass::ExecuteTransparent(&m_deviceContext, &m_resourceManager, &m_pipelineManager, frameIndex, g_visibleInstances, transparentIdx);
+    if (!useDeferredPath)
+    {
+        transparentIdx = PBRPass::ExecuteOpaque(&m_deviceContext, &m_resourceManager, &m_pipelineManager, frameIndex, viewport, scissorRect, g_visibleInstances);
+    }
+    else
+    {
+        transparentIdx = GBufferPass::Execute(&m_deviceContext, &m_resourceManager, &m_pipelineManager, frameIndex, viewport, scissorRect, g_visibleInstances);
+    }
+
+    SkyboxPass::Execute(&m_deviceContext, &m_resourceManager, &m_pipelineManager, camera, viewport, scissorRect, Width, Height);
+
+    PBRPass::ExecuteTransparent(&m_deviceContext, &m_resourceManager, &m_pipelineManager, frameIndex, viewport, scissorRect, g_visibleInstances, transparentIdx);
 
     PostProcessPass::Execute(&m_deviceContext, &m_resourceManager, &m_pipelineManager, frameIndex, viewport, scissorRect);
 

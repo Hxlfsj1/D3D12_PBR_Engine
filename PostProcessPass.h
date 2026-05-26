@@ -28,6 +28,8 @@ public:
 
         CD3DX12_CPU_DESCRIPTOR_HANDLE rtv = deviceContext->GetRTVHandle(frameIndex);
         cmdList->OMSetRenderTargets(1, &rtv, FALSE, nullptr);
+        cmdList->RSSetViewports(1, &viewport);
+        cmdList->RSSetScissorRects(1, &scissorRect);
 
         cmdList->SetGraphicsRootSignature(pipelineManager->GetPostProcessRootSignature());
         cmdList->SetPipelineState(pipelineManager->GetPostProcessPSO());

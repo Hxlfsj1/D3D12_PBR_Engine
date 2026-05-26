@@ -15,10 +15,19 @@ public:
         ResourceManager* resourceManager,
         PipelineManager* pipelineManager,
         Camera& camera,
+        const D3D12_VIEWPORT& viewport,
+        const D3D12_RECT& scissorRect,
         int width,
         int height)
     {
         auto cmdList = deviceContext->GetCommandList();
+
+        CD3DX12_CPU_DESCRIPTOR_HANDLE rtv = resourceManager->GetPostProcessRtvHandle();
+        CD3DX12_CPU_DESCRIPTOR_HANDLE dsv = deviceContext->GetDSVHandle();
+        cmdList->OMSetRenderTargets(1, &rtv, FALSE, &dsv);
+
+        cmdList->RSSetViewports(1, &viewport);
+        cmdList->RSSetScissorRects(1, &scissorRect);
 
         cmdList->SetGraphicsRootSignature(pipelineManager->GetRootSignature());
         ID3D12DescriptorHeap* heaps[] = { resourceManager->GetMainDescriptorHeap() };

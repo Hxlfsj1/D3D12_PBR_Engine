@@ -459,6 +459,76 @@ public:
         return true;
     }
 
+    bool InitGBuffer(RenderDevice* dc, int width, int height)
+    {
+        ID3D12Device* device = dc->GetDevice();
+        m_rtvDescriptorSize = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
+
+        D3D12_DESCRIPTOR_HEAP_DESC rtvHeapDesc = {};
+        rtvHeapDesc.NumDescriptors = 3;
+        rtvHeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
+        rtvHeapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
+        if (FAILED(device->CreateDescriptorHeap(&rtvHeapDesc, IID_PPV_ARGS(&m_gbufferRtvHeap))))
+        {
+            return false;
+        }
+
+        auto defHeapProps = CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_DEFAULT);
+
+        D3D12_CLEAR_VALUE clearVal = {};
+        clearVal.Color[0] = 0.0f; clearVal.Color[1] = 0.0f; clearVal.Color[2] = 0.0f; clearVal.Color[3] = 0.0f;
+
+        D3D12_RESOURCE_DESC albedoDesc = CD3DX12_RESOURCE_DESC::Tex2D(
+            DXGI_FORMAT_R8G8B8A8_UNORM, (UINT64)width, (UINT)height, 1, 1, 1, 0, D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET);
+        clearVal.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+        if (FAILED(device->CreateCommittedResource(&defHeapProps, D3D12_HEAP_FLAG_NONE, &albedoDesc,
+            D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, &clearVal, IID_PPV_ARGS(&m_gbufferAlbedo)))) return false;
+
+        D3D12_RESOURCE_DESC normalDesc = CD3DX12_RESOURCE_DESC::Tex2D(
+            DXGI_FORMAT_R16G16B16A16_FLOAT, (UINT64)width, (UINT)height, 1, 1, 1, 0, D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET);
+        clearVal.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
+        if (FAILED(device->CreateCommittedResource(&defHeapProps, D3D12_HEAP_FLAG_NONE, &normalDesc,
+            D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, &clearVal, IID_PPV_ARGS(&m_gbufferNormal)))) return false;
+
+        D3D12_RESOURCE_DESC ormDesc = CD3DX12_RESOURCE_DESC::Tex2D(
+            DXGI_FORMAT_R8G8B8A8_UNORM, (UINT64)width, (UINT)height, 1, 1, 1, 0, D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET);
+        clearVal.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+        if (FAILED(device->CreateCommittedResource(&defHeapProps, D3D12_HEAP_FLAG_NONE, &ormDesc,
+            D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, &clearVal, IID_PPV_ARGS(&m_gbufferORM)))) return false;
+
+        CD3DX12_CPU_DESCRIPTOR_HANDLE rtvHandle(m_gbufferRtvHeap->GetCPUDescriptorHandleForHeapStart());
+        device->CreateRenderTargetView(m_gbufferAlbedo.Get(), nullptr, rtvHandle);
+
+        rtvHandle.Offset(1, m_rtvDescriptorSize);
+        device->CreateRenderTargetView(m_gbufferNormal.Get(), nullptr, rtvHandle);
+
+        rtvHandle.Offset(1, m_rtvDescriptorSize);
+        device->CreateRenderTargetView(m_gbufferORM.Get(), nullptr, rtvHandle);
+
+        m_gbufferAlbedoSrvIdx = srvIdx++;
+        m_gbufferNormalSrvIdx = srvIdx++;
+        m_gbufferORMSrvIdx = srvIdx++;
+
+        D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
+        srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+        srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+        srvDesc.Texture2D.MipLevels = 1;
+
+        srvDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+        CD3DX12_CPU_DESCRIPTOR_HANDLE hAlbedoSrv(mainDescriptorHeap->GetCPUDescriptorHandleForHeapStart(), m_gbufferAlbedoSrvIdx, srvDescriptorSize);
+        device->CreateShaderResourceView(m_gbufferAlbedo.Get(), &srvDesc, hAlbedoSrv);
+
+        srvDesc.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
+        CD3DX12_CPU_DESCRIPTOR_HANDLE hNormalSrv(mainDescriptorHeap->GetCPUDescriptorHandleForHeapStart(), m_gbufferNormalSrvIdx, srvDescriptorSize);
+        device->CreateShaderResourceView(m_gbufferNormal.Get(), &srvDesc, hNormalSrv);
+
+        srvDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+        CD3DX12_CPU_DESCRIPTOR_HANDLE hORMSrv(mainDescriptorHeap->GetCPUDescriptorHandleForHeapStart(), m_gbufferORMSrvIdx, srvDescriptorSize);
+        device->CreateShaderResourceView(m_gbufferORM.Get(), &srvDesc, hORMSrv);
+
+        return true;
+    }
+
     void FreeUploadHeaps()
     {
         for (auto& pair : myModels)
@@ -580,6 +650,51 @@ public:
         return m_materialBuffer->GetGPUVirtualAddress();
     }
 
+    ID3D12Resource* GetGBufferAlbedo()
+    {
+        return m_gbufferAlbedo.Get();
+    }
+
+    ID3D12Resource* GetGBufferNormal()
+    {
+        return m_gbufferNormal.Get();
+    }
+
+    UINT GetGBufferAlbedoSrvIdx()
+    {
+        return m_gbufferAlbedoSrvIdx;
+    }
+
+    UINT GetGBufferNormalSrvIdx()
+    {
+        return m_gbufferNormalSrvIdx;
+    }
+
+    CD3DX12_CPU_DESCRIPTOR_HANDLE GetGBufferAlbedoRtvHandle()
+    {
+        return CD3DX12_CPU_DESCRIPTOR_HANDLE(m_gbufferRtvHeap->GetCPUDescriptorHandleForHeapStart(), 0, m_rtvDescriptorSize);
+    }
+
+    CD3DX12_CPU_DESCRIPTOR_HANDLE GetGBufferNormalRtvHandle()
+    {
+        return CD3DX12_CPU_DESCRIPTOR_HANDLE(m_gbufferRtvHeap->GetCPUDescriptorHandleForHeapStart(), 1, m_rtvDescriptorSize);
+    }
+
+    ID3D12Resource* GetGBufferORM()
+    {
+        return m_gbufferORM.Get();
+    }
+
+    UINT GetGBufferORMSrvIdx()
+    {
+        return m_gbufferORMSrvIdx;
+    }
+
+    CD3DX12_CPU_DESCRIPTOR_HANDLE GetGBufferORMRtvHandle()
+    {
+        return CD3DX12_CPU_DESCRIPTOR_HANDLE(m_gbufferRtvHeap->GetCPUDescriptorHandleForHeapStart(), 2, m_rtvDescriptorSize);
+    }
+
 private:
     UINT srvIdx;
     UINT srvDescriptorSize;
@@ -631,6 +746,18 @@ private:
 
     ComPtr<ID3D12Resource> m_materialBuffer;
     ComPtr<ID3D12Resource> m_materialUploadBuffer;
+
+    Microsoft::WRL::ComPtr<ID3D12Resource> m_gbufferAlbedo;
+    Microsoft::WRL::ComPtr<ID3D12Resource> m_gbufferNormal;
+    Microsoft::WRL::ComPtr<ID3D12Resource> m_gbufferORM;
+
+    Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> m_gbufferRtvHeap;
+
+    UINT m_gbufferAlbedoSrvIdx = 0;
+    UINT m_gbufferNormalSrvIdx = 0;
+    UINT m_gbufferORMSrvIdx = 0;
+
+    UINT m_rtvDescriptorSize = 0;
 };
 
 #endif

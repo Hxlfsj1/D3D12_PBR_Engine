@@ -67,6 +67,9 @@
     <None Include="Shaders\Shaders_For_ZPrepass.hlsl">
       <Filter>源文件\Shaders</Filter>
     </None>
+    <None Include="Shaders\Shaders_For_GBuffer.hlsl">
+      <Filter>源文件\Shaders</Filter>
+    </None>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="Assets.h">
@@ -134,6 +137,9 @@
     </ClInclude>
     <ClInclude Include="meshoptimizer.h">
       <Filter>头文件\ThirdParty</Filter>
+    </ClInclude>
+    <ClInclude Include="GbufferPass.h">
+      <Filter>头文件\Passes</Filter>
     </ClInclude>
   </ItemGroup>
   <ItemGroup>

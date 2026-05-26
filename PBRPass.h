@@ -148,6 +148,8 @@ public:
         ResourceManager* resourceManager,
         PipelineManager* pipelineManager,
         int frameIndex,
+        const D3D12_VIEWPORT& viewport,
+        const D3D12_RECT& scissorRect,
         const std::vector<ModelInstance*>& visibleInstances,
         size_t transparentStartIndex)
     {
@@ -161,6 +163,12 @@ public:
         }
 
         auto cmdList = deviceContext->GetCommandList();
+
+        CD3DX12_CPU_DESCRIPTOR_HANDLE rtv = resourceManager->GetPostProcessRtvHandle();
+        CD3DX12_CPU_DESCRIPTOR_HANDLE dsv = deviceContext->GetDSVHandle();
+        cmdList->OMSetRenderTargets(1, &rtv, FALSE, &dsv);
+        cmdList->RSSetViewports(1, &viewport);
+        cmdList->RSSetScissorRects(1, &scissorRect);
         D3D12_GPU_VIRTUAL_ADDRESS baseGpuAddress = resourceManager->GetCBVGPUAddress(frameIndex);
 
         cmdList->SetGraphicsRootShaderResourceView(3, resourceManager->GetMaterialBufferGPUAddress());

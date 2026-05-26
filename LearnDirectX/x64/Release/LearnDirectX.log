@@ -23,8 +23,11 @@ D:\项目\LearnDirectX\ShadowPass.h(80,43): warning C4267: “=”: 从“size_t
 D:\项目\LearnDirectX\PBRPass.h(121,55): warning C4267: “=”: 从“size_t”转换到“UINT”，可能丢失数据
   (编译源文件“PBR_Render.cpp”)
   
+D:\项目\LearnDirectX\GBufferPass.h(105,47): warning C4267: “=”: 从“size_t”转换到“UINT”，可能丢失数据
+  (编译源文件“PBR_Render.cpp”)
+  
   正在生成代码
-  1 of 5998 functions (<0.1%) were compiled, the rest were copied from previous compilation.
+  1 of 6007 functions (<0.1%) were compiled, the rest were copied from previous compilation.
     0 functions were new in current compilation
     24 functions had inline decision re-evaluated but remain unchanged
   已完成代码的生成

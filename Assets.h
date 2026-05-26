@@ -29,11 +29,11 @@ public:
         {
             {
                 "Model_0",
-                "Models/Blender_Chan.glb",
+                "Models/MP5.glb",
                 { 0.0f, 0.0f, 0.0f },
                 { 0.0f, 0.0f, 0.0f },
                 { 1.0f, 1.0f, 1.0f },
-                true            
+                true          
             },
 
             {
