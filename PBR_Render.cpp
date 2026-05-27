@@ -14,6 +14,7 @@
 #include "PostProcessPass.h"
 #include "PBRPass.h"
 #include "GBufferPass.h"
+#include "DeferredLightingPass.h"
 
 #define STB_IMAGE_IMPLEMENTATION
 #include <stb_image.h>
@@ -487,6 +488,8 @@ void D3D12App::Render()
     else
     {
         transparentIdx = GBufferPass::Execute(&m_deviceContext, &m_resourceManager, &m_pipelineManager, frameIndex, viewport, scissorRect, g_visibleInstances);
+
+        DeferredLightingPass::Execute(&m_deviceContext, &m_resourceManager, &m_pipelineManager, camera, Width, Height, frameIndex);
     }
 
     SkyboxPass::Execute(&m_deviceContext, &m_resourceManager, &m_pipelineManager, camera, viewport, scissorRect, Width, Height);

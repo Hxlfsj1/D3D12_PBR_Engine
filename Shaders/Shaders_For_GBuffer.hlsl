@@ -76,6 +76,9 @@ GBufferOutput PSMain(VS_OUTPUT input)
     
     Texture2D tAlbedo = ResourceDescriptorHeap[gMaterialData[materialID].albedoIdx];
     float4 albedoSample = tAlbedo.Sample(s1, input.texCoord);
+    
+    clip(albedoSample.a - 0.5f);
+
     output.albedo = float4(pow(abs(albedoSample.rgb), 2.2), albedoSample.a);
     
 #if LOD_LEVEL == 0
@@ -87,7 +90,7 @@ GBufferOutput PSMain(VS_OUTPUT input)
     float3 B = normalize(input.worldBitangent);
     float3x3 TBN = float3x3(T, B, N);
     float3 finalNormal = normalize(mul(normalMap, TBN));
-#else
+#else    
     float3 finalNormal = normalize(input.worldNormal);
 #endif
     output.normal = float4(finalNormal, 1.0f);

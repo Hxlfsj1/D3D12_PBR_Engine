@@ -38,4 +38,16 @@ struct InstanceData
     DirectX::XMFLOAT4X4 normalMat;
 };
 
+struct alignas(256) DeferredConstants
+{
+    DirectX::XMFLOAT4X4 invViewProj;
+
+    UINT gbufferAlbedoIdx;
+    UINT gbufferNormalIdx;
+    UINT gbufferORMIdx;
+    UINT depthBufferIdx;
+
+    UINT padTo256[44];
+};
+
 #endif

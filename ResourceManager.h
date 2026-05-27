@@ -459,6 +459,8 @@ public:
         return true;
     }
 
+    // Request the Base Color, Normal, and ORM textures
+    // Map the depth buffer as an SRV, directly reusing the physical VRAM from the Z-Prepass
     bool InitGBuffer(RenderDevice* dc, int width, int height)
     {
         ID3D12Device* device = dc->GetDevice();
@@ -525,6 +527,16 @@ public:
         srvDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
         CD3DX12_CPU_DESCRIPTOR_HANDLE hORMSrv(mainDescriptorHeap->GetCPUDescriptorHandleForHeapStart(), m_gbufferORMSrvIdx, srvDescriptorSize);
         device->CreateShaderResourceView(m_gbufferORM.Get(), &srvDesc, hORMSrv);
+
+        m_depthBufferSrvIdx = srvIdx++;
+        D3D12_SHADER_RESOURCE_VIEW_DESC depthSrvDesc = {};
+        depthSrvDesc.Format = DXGI_FORMAT_R32_FLOAT;
+        depthSrvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+        depthSrvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+        depthSrvDesc.Texture2D.MipLevels = 1;
+
+        CD3DX12_CPU_DESCRIPTOR_HANDLE hDepthSrv(mainDescriptorHeap->GetCPUDescriptorHandleForHeapStart(), m_depthBufferSrvIdx, srvDescriptorSize);
+        device->CreateShaderResourceView(dc->GetDepthStencilBuffer(), &depthSrvDesc, hDepthSrv);
 
         return true;
     }
@@ -695,6 +707,11 @@ public:
         return CD3DX12_CPU_DESCRIPTOR_HANDLE(m_gbufferRtvHeap->GetCPUDescriptorHandleForHeapStart(), 2, m_rtvDescriptorSize);
     }
 
+    UINT GetDepthBufferSrvIdx()
+    {
+        return m_depthBufferSrvIdx;
+    }
+
 private:
     UINT srvIdx;
     UINT srvDescriptorSize;
@@ -758,6 +775,8 @@ private:
     UINT m_gbufferORMSrvIdx = 0;
 
     UINT m_rtvDescriptorSize = 0;
+
+    UINT m_depthBufferSrvIdx = 0;
 };
 
 #endif

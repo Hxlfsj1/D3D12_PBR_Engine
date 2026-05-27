@@ -241,7 +241,7 @@ public:
 
         CD3DX12_HEAP_PROPERTIES dsvHeapProps(D3D12_HEAP_TYPE_DEFAULT);
         CD3DX12_RESOURCE_DESC dsvResDesc = CD3DX12_RESOURCE_DESC::Tex2D(
-            DXGI_FORMAT_D32_FLOAT,
+            DXGI_FORMAT_R32_TYPELESS,
             width,
             height,
             1,
@@ -263,14 +263,18 @@ public:
             return false;
         }
 
+        D3D12_DEPTH_STENCIL_VIEW_DESC dsvDesc = {};
+        dsvDesc.Format = DXGI_FORMAT_D32_FLOAT;
+        dsvDesc.ViewDimension = D3D12_DSV_DIMENSION_TEXTURE2D;
+        dsvDesc.Flags = D3D12_DSV_FLAG_NONE;
+
         device->CreateDepthStencilView(
             depthStencilBuffer.Get(),
-            nullptr,
+            &dsvDesc,
             dsDescriptorHeap->GetCPUDescriptorHandleForHeapStart());
 
         return true;
     }
-
 
     // Track GPU progress, prevent data updates until execution is complete
     void WaitForPreviousFrame(int frameIndex)
@@ -288,6 +292,7 @@ public:
     IDXGISwapChain3* GetSwapChain() { return swapChain.Get(); }
     ID3D12Resource* GetRenderTarget(int i) { return m_renderTargets[i].Get(); }
     ID3D12CommandAllocator* GetCommandAllocator(int i) { return m_commandAllocator[i].Get(); }
+    ID3D12Resource* GetDepthStencilBuffer() { return depthStencilBuffer.Get(); }
 
     CD3DX12_CPU_DESCRIPTOR_HANDLE GetRTVHandle(int frameIndex)
     {

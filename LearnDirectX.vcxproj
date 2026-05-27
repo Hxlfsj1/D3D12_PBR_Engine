@@ -149,6 +149,7 @@
     <ClInclude Include="Assets.h" />
     <ClInclude Include="Camera.h" />
     <ClInclude Include="D3D12App.h" />
+    <ClInclude Include="DeferredLightingPass.h" />
     <ClInclude Include="GbufferPass.h" />
     <ClInclude Include="IBLBaker.h" />
     <ClInclude Include="InputManager.h" />
@@ -209,6 +210,11 @@
   </ItemGroup>
   <ItemGroup>
     <None Include="Shaders\Shaders_For_GBuffer.hlsl">
+      <FileType>Document</FileType>
+    </None>
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="Shaders\Shaders_For_Deferred.hlsl">
       <FileType>Document</FileType>
     </None>
   </ItemGroup>

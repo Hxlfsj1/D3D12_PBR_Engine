@@ -396,7 +396,6 @@ float4 PSMain(VS_OUTPUT input) : SV_TARGET
     // It serves as a visual constraint to mimic energy conservation rather than achieving strict physical correctness
     float3 ambientDiffuse = kD_IBL * diffuse_IBL * ao;
     float3 ambientSpecular = specular_IBL * ao;
-    // ---------------------------------------------
     
     // Add emissive (if applicable)
     float3 emissive = hasEmissive ? pow(tEmissive.Sample(s1, input.texCoord).rgb, 2.2) : float3(0.0, 0.0, 0.0);

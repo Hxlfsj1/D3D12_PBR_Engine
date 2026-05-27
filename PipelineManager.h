@@ -31,6 +31,7 @@ public:
         if (!BuildComputePipeline(dc)) return false;
         if (!BuildShadowPipeline(dc)) return false;
         if (!BuildPostProcessPipeline(dc)) return false;
+        if (!BuildDeferredPipeline(dc)) return false;
 
         return true;
     }
@@ -102,6 +103,16 @@ public:
     ID3D12PipelineState* GetPostProcessPSO()
     {
         return postProcessPSO.Get();
+    }
+
+    ID3D12RootSignature* GetDeferredRootSignature()
+    {
+        return deferredRootSignature.Get();
+    }
+
+    ID3D12PipelineState* GetDeferredPSO()
+    {
+        return deferredPSO.Get();
     }
 
 private:
@@ -261,6 +272,10 @@ private:
         gbufferPsoDesc.RTVFormats[0] = DXGI_FORMAT_R8G8B8A8_UNORM;
         gbufferPsoDesc.RTVFormats[1] = DXGI_FORMAT_R16G16B16A16_FLOAT;
         gbufferPsoDesc.RTVFormats[2] = DXGI_FORMAT_R8G8B8A8_UNORM;
+
+        gbufferPsoDesc.DepthStencilState = CD3DX12_DEPTH_STENCIL_DESC(D3D12_DEFAULT);
+        gbufferPsoDesc.DepthStencilState.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ALL;
+        gbufferPsoDesc.DepthStencilState.DepthFunc = D3D12_COMPARISON_FUNC_LESS;
 
         gbufferPsoDesc.VS = CD3DX12_SHADER_BYTECODE(vsGBuffer0->GetBufferPointer(), vsGBuffer0->GetBufferSize());
         gbufferPsoDesc.PS = CD3DX12_SHADER_BYTECODE(psGBuffer0->GetBufferPointer(), psGBuffer0->GetBufferSize());
@@ -503,6 +518,76 @@ private:
         return true;
     }
 
+    bool BuildDeferredPipeline(RenderDevice* dc)
+    {
+        D3D12_ROOT_PARAMETER rootParameters[3];
+
+        rootParameters[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
+        rootParameters[0].Descriptor.ShaderRegister = 0;
+        rootParameters[0].Descriptor.RegisterSpace = 0;
+        rootParameters[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+
+        rootParameters[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
+        rootParameters[1].Descriptor.ShaderRegister = 1;
+        rootParameters[1].Descriptor.RegisterSpace = 0;
+        rootParameters[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+
+        rootParameters[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
+        rootParameters[2].Descriptor.ShaderRegister = 2;
+        rootParameters[2].Descriptor.RegisterSpace = 0;
+        rootParameters[2].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+
+        D3D12_STATIC_SAMPLER_DESC samplers[2];
+        samplers[0] = CD3DX12_STATIC_SAMPLER_DESC(0, D3D12_FILTER_MIN_MAG_MIP_LINEAR);
+        samplers[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+
+        samplers[1] = CD3DX12_STATIC_SAMPLER_DESC(
+            1,
+            D3D12_FILTER_COMPARISON_MIN_MAG_LINEAR_MIP_POINT,
+            D3D12_TEXTURE_ADDRESS_MODE_BORDER,
+            D3D12_TEXTURE_ADDRESS_MODE_BORDER,
+            D3D12_TEXTURE_ADDRESS_MODE_BORDER);
+        samplers[1].ComparisonFunc = D3D12_COMPARISON_FUNC_LESS_EQUAL;
+        samplers[1].BorderColor = D3D12_STATIC_BORDER_COLOR_OPAQUE_WHITE;
+        samplers[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+
+        CD3DX12_ROOT_SIGNATURE_DESC rsDesc;
+        rsDesc.Init(3, rootParameters, 2, samplers,
+            D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT |
+            D3D12_ROOT_SIGNATURE_FLAG_CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED);
+
+        ComPtr<ID3DBlob> rsBlob;
+        if (FAILED(D3D12SerializeRootSignature(&rsDesc, D3D_ROOT_SIGNATURE_VERSION_1, &rsBlob, nullptr))) return false;
+        if (FAILED(dc->GetDevice()->CreateRootSignature(0, rsBlob->GetBufferPointer(), rsBlob->GetBufferSize(), IID_PPV_ARGS(&deferredRootSignature)))) return false;
+
+        auto vs = ShaderCompiler::CompileFromFile(L"Shaders/Shaders_For_Deferred.hlsl", L"VSMain", L"vs_6_6");
+        auto ps = ShaderCompiler::CompileFromFile(L"Shaders/Shaders_For_Deferred.hlsl", L"PSMain", L"ps_6_6");
+
+        D3D12_GRAPHICS_PIPELINE_STATE_DESC psoDesc = {};
+        psoDesc.InputLayout = { nullptr, 0 };
+        psoDesc.pRootSignature = deferredRootSignature.Get();
+        psoDesc.VS = CD3DX12_SHADER_BYTECODE(vs->GetBufferPointer(), vs->GetBufferSize());
+        psoDesc.PS = CD3DX12_SHADER_BYTECODE(ps->GetBufferPointer(), ps->GetBufferSize());
+
+        psoDesc.RasterizerState = CD3DX12_RASTERIZER_DESC(D3D12_DEFAULT);
+        psoDesc.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
+
+        psoDesc.BlendState = CD3DX12_BLEND_DESC(D3D12_DEFAULT);
+
+        psoDesc.DepthStencilState.DepthEnable = FALSE;
+        psoDesc.DepthStencilState.StencilEnable = FALSE;
+
+        psoDesc.SampleMask = UINT_MAX;
+        psoDesc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+        psoDesc.NumRenderTargets = 1;
+        psoDesc.RTVFormats[0] = DXGI_FORMAT_R16G16B16A16_FLOAT;
+        psoDesc.SampleDesc.Count = 1;
+
+        if (FAILED(dc->GetDevice()->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(&deferredPSO)))) return false;
+
+        return true;
+    }
+
 private:
 
     ComPtr<ID3D12PipelineState> psoZPrepass;
@@ -522,6 +607,9 @@ private:
 
     ComPtr<ID3D12RootSignature> postProcessRootSignature;
     ComPtr<ID3D12PipelineState> postProcessPSO;
+
+    ComPtr<ID3D12RootSignature> deferredRootSignature;
+    ComPtr<ID3D12PipelineState> deferredPSO;
 };
 
 #endif
