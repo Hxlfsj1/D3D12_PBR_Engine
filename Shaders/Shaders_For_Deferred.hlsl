@@ -38,6 +38,7 @@ struct VS_OUTPUT
     float2 texCoord : TEXCOORD;
 };
 
+// Draw a bufferless fullscreen triangle
 VS_OUTPUT VSMain(uint vertexID : SV_VertexID)
 {
     VS_OUTPUT output;
@@ -169,12 +170,14 @@ float4 PSMain(VS_OUTPUT input) : SV_TARGET
     Texture2D tORM = ResourceDescriptorHeap[gbufferORMIdx];
     Texture2D tDepth = ResourceDescriptorHeap[depthBufferIdx];
 
+    // Cull the skybox area with a depth of 1 to skip shading
     float depth = tDepth.SampleLevel(s1, input.texCoord, 0).r;
     if (depth >= 1.0f)
     {
         discard;
     }
 
+    // Unpack G-Buffer data
     float3 albedo = tAlbedo.SampleLevel(s1, input.texCoord, 0).rgb;
     float3 N = normalize(tNormal.SampleLevel(s1, input.texCoord, 0).xyz);
     float4 ormSample = tORM.SampleLevel(s1, input.texCoord, 0);
@@ -182,6 +185,7 @@ float4 PSMain(VS_OUTPUT input) : SV_TARGET
     float roughness = max(ormSample.g, 0.04);
     float metallic = ormSample.b;
 
+    // Reconstruct world position from NDC coordinates and depth
     float x = input.texCoord.x * 2.0f - 1.0f;
     float y = 1.0f - input.texCoord.y * 2.0f;
     float4 clipSpacePos = float4(x, y, depth, 1.0f);

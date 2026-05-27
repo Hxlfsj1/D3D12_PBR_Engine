@@ -232,7 +232,7 @@ void FindBlocker(out float avgBlockerDepth, out float numBlockers, float2 uv, fl
         float2 offset = mul(POISSON_DISK[i], rotMat) * searchRadius;
         float shadowMapDepth = tShadowMap.SampleLevel(s1, uv + offset, 0).r;
         
-        if (shadowMapDepth < zReceiver - 0.001)
+        if (shadowMapDepth < zReceiver)
         {
             blockerSum += shadowMapDepth;
             numBlockers += 1.0;

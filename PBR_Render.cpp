@@ -479,7 +479,7 @@ void D3D12App::Render()
 
     size_t transparentIdx = 0;
 
-    static bool useDeferredPath = true;
+    static bool useDeferredPath = false;
 
     if (!useDeferredPath)
     {
