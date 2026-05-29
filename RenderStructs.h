@@ -47,7 +47,23 @@ struct alignas(256) DeferredConstants
     UINT gbufferORMIdx;
     UINT depthBufferIdx;
 
-    UINT padTo256[44];
+    UINT hbaoIdx;
+    UINT padTo256[43];
+};
+
+struct alignas(256) HBAOConstants
+{
+    DirectX::XMFLOAT4X4 projMat;
+    DirectX::XMFLOAT4X4 invProjMat;
+    DirectX::XMFLOAT4X4 viewMat;
+
+    float radius;
+    float bias;
+    float power;
+    float resolutionX;
+
+    float resolutionY;
+    UINT padTo256[11];
 };
 
 #endif

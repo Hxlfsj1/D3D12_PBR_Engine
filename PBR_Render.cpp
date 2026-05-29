@@ -14,6 +14,7 @@
 #include "PostProcessPass.h"
 #include "PBRPass.h"
 #include "GBufferPass.h"
+#include "HBAOPass.h"
 #include "DeferredLightingPass.h"
 
 #define STB_IMAGE_IMPLEMENTATION
@@ -184,6 +185,8 @@ bool D3D12App::InitD3D()
     if (!m_resourceManager.InitPostProcess(&m_deviceContext, Width, Height)) return false;
 
     if (!m_resourceManager.InitGBuffer(&m_deviceContext, Width, Height)) return false;
+
+    if (!m_resourceManager.InitHBAO(&m_deviceContext, Width, Height)) return false;
 
     viewport = CD3DX12_VIEWPORT(0.0f, 0.0f, (float)Width, (float)Height);
     scissorRect = CD3DX12_RECT(0, 0, Width, Height);
@@ -479,7 +482,7 @@ void D3D12App::Render()
 
     size_t transparentIdx = 0;
 
-    static bool useDeferredPath = false;
+    static bool useDeferredPath = true;
 
     if (!useDeferredPath)
     {
@@ -488,6 +491,8 @@ void D3D12App::Render()
     else
     {
         transparentIdx = GBufferPass::Execute(&m_deviceContext, &m_resourceManager, &m_pipelineManager, frameIndex, viewport, scissorRect, g_visibleInstances);
+
+        HBAOPass::Execute(&m_deviceContext, &m_resourceManager, &m_pipelineManager, camera, Width, Height, frameIndex);
 
         DeferredLightingPass::Execute(&m_deviceContext, &m_resourceManager, &m_pipelineManager, camera, Width, Height, frameIndex);
     }

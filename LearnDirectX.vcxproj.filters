@@ -73,6 +73,9 @@
     <None Include="Shaders\Shaders_For_Deferred.hlsl">
       <Filter>源文件\Shaders</Filter>
     </None>
+    <None Include="Shaders\Shaders_For_HBAO.hlsl">
+      <Filter>源文件\Shaders</Filter>
+    </None>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="Assets.h">
@@ -145,6 +148,9 @@
       <Filter>头文件\Passes</Filter>
     </ClInclude>
     <ClInclude Include="DeferredLightingPass.h">
+      <Filter>头文件\Passes</Filter>
+    </ClInclude>
+    <ClInclude Include="HBAOPass.h">
       <Filter>头文件\Passes</Filter>
     </ClInclude>
   </ItemGroup>

@@ -20,6 +20,7 @@ cbuffer DeferredConstants : register(b1)
     uint gbufferNormalIdx;
     uint gbufferORMIdx;
     uint depthBufferIdx;
+    uint hbaoIdx;
 };
 
 cbuffer SHBuffer : register(b2)
@@ -229,15 +230,22 @@ float4 PSMain(VS_OUTPUT input) : SV_TARGET
     float3 irradiance = EvaluateSH9(N);
     float3 diffuse_IBL = irradiance * albedo;
     
+    Texture2D tHBAO = ResourceDescriptorHeap[hbaoIdx];
+    float hbao = tHBAO.SampleLevel(s1, input.texCoord, 0).r;
+
+    float finalAO = min(ao, hbao);
+
+    float3 ambientDiffuse = kD_IBL * diffuse_IBL * finalAO;
+
     TextureCube tPrefilter = ResourceDescriptorHeap[iblPrefilterIdx];
+    float3 prefilteredColor = tPrefilter.SampleLevel(s1, R, roughness * 4.0).rgb;
     Texture2D tBRDF = ResourceDescriptorHeap[iblBRDFIdx];
+    float2 brdf = tBRDF.Sample(s1, float2(max(dot(N, V), 0.0), roughness)).rg;
+    float3 specular_IBL = prefilteredColor * (F_IBL * brdf.x + brdf.y);
     
-    const float MAX_REFLECTION_LOD = 4.0;
-    float3 prefilteredColor = tPrefilter.SampleLevel(s1, R, roughness * MAX_REFLECTION_LOD).rgb;
-    float2 brdf = tBRDF.SampleLevel(s1, float2(max(dot(N, V), 0.0), roughness), 0).rg;
-    float3 specular_IBL = prefilteredColor * (F0 * brdf.x + brdf.y);
+    float3 ambientSpecular = specular_IBL * finalAO;
     
-    float3 ambient = (kD_IBL * diffuse_IBL + specular_IBL) * ao;
+    float3 ambient = ambientDiffuse + ambientSpecular;
     
     float3 color = ambient + Lo;
 

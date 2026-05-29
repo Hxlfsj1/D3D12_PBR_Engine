@@ -32,6 +32,7 @@ public:
         if (!BuildShadowPipeline(dc)) return false;
         if (!BuildPostProcessPipeline(dc)) return false;
         if (!BuildDeferredPipeline(dc)) return false;
+        if (!BuildHBAOPipeline(dc)) return false;
 
         return true;
     }
@@ -113,6 +114,21 @@ public:
     ID3D12PipelineState* GetDeferredPSO()
     {
         return deferredPSO.Get();
+    }
+
+    ID3D12RootSignature* GetHBAORootSignature()
+    {
+        return hbaoRootSignature.Get();
+    }
+
+    ID3D12PipelineState* GetHBAOPSO()
+    {
+        return hbaoPSO.Get();
+    }
+
+    ID3D12PipelineState* GetHBAOBlurPSO()
+    {
+        return hbaoBlurPSO.Get();
     }
 
 private:
@@ -588,6 +604,88 @@ private:
         return true;
     }
 
+    bool BuildHBAOPipeline(RenderDevice* dc)
+    {
+        D3D12_ROOT_PARAMETER rootParameters[2];
+
+        rootParameters[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
+        rootParameters[0].Descriptor.ShaderRegister = 0;
+        rootParameters[0].Descriptor.RegisterSpace = 0;
+        rootParameters[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+
+        rootParameters[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
+        rootParameters[1].Constants.ShaderRegister = 1;
+        rootParameters[1].Constants.Num32BitValues = 4;
+        rootParameters[1].Constants.RegisterSpace = 0;
+        rootParameters[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+
+        D3D12_STATIC_SAMPLER_DESC samplers[2];
+
+        samplers[0] = CD3DX12_STATIC_SAMPLER_DESC(0, D3D12_FILTER_MIN_MAG_MIP_POINT);
+        samplers[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+
+        samplers[1] = CD3DX12_STATIC_SAMPLER_DESC(1, D3D12_FILTER_MIN_MAG_MIP_LINEAR);
+        samplers[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+
+        CD3DX12_ROOT_SIGNATURE_DESC rsDesc;
+        rsDesc.Init(
+            2,
+            rootParameters,
+            2,
+            samplers,
+            D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT |
+            D3D12_ROOT_SIGNATURE_FLAG_CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED
+        );
+
+        ComPtr<ID3DBlob> rsBlob;
+
+        if (FAILED(D3D12SerializeRootSignature(&rsDesc, D3D_ROOT_SIGNATURE_VERSION_1, &rsBlob, nullptr)))
+        {
+            return false;
+        }
+
+        if (FAILED(dc->GetDevice()->CreateRootSignature(0, rsBlob->GetBufferPointer(), rsBlob->GetBufferSize(), IID_PPV_ARGS(&hbaoRootSignature))))
+        {
+            return false;
+        }
+
+        auto vs = ShaderCompiler::CompileFromFile(L"Shaders/Shaders_For_HBAO.hlsl", L"VSMain", L"vs_6_6");
+        auto psHBAO = ShaderCompiler::CompileFromFile(L"Shaders/Shaders_For_HBAO.hlsl", L"PSMain_HBAO", L"ps_6_6");
+        auto psBlur = ShaderCompiler::CompileFromFile(L"Shaders/Shaders_For_HBAO.hlsl", L"PSMain_Blur", L"ps_6_6");
+
+        D3D12_GRAPHICS_PIPELINE_STATE_DESC psoDesc = {};
+        psoDesc.InputLayout = { nullptr, 0 };
+        psoDesc.pRootSignature = hbaoRootSignature.Get();
+        psoDesc.VS = CD3DX12_SHADER_BYTECODE(vs->GetBufferPointer(), vs->GetBufferSize());
+        psoDesc.PS = CD3DX12_SHADER_BYTECODE(psHBAO->GetBufferPointer(), psHBAO->GetBufferSize());
+
+        psoDesc.RasterizerState = CD3DX12_RASTERIZER_DESC(D3D12_DEFAULT);
+        psoDesc.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
+        psoDesc.BlendState = CD3DX12_BLEND_DESC(D3D12_DEFAULT);
+        psoDesc.DepthStencilState.DepthEnable = FALSE;
+        psoDesc.DepthStencilState.StencilEnable = FALSE;
+
+        psoDesc.SampleMask = UINT_MAX;
+        psoDesc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+        psoDesc.NumRenderTargets = 1;
+        psoDesc.RTVFormats[0] = DXGI_FORMAT_R16_FLOAT;
+        psoDesc.SampleDesc.Count = 1;
+
+        if (FAILED(dc->GetDevice()->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(&hbaoPSO))))
+        {
+            return false;
+        }
+
+        psoDesc.PS = CD3DX12_SHADER_BYTECODE(psBlur->GetBufferPointer(), psBlur->GetBufferSize());
+
+        if (FAILED(dc->GetDevice()->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(&hbaoBlurPSO))))
+        {
+            return false;
+        }
+
+        return true;
+    }
+
 private:
 
     ComPtr<ID3D12PipelineState> psoZPrepass;
@@ -610,6 +708,10 @@ private:
 
     ComPtr<ID3D12RootSignature> deferredRootSignature;
     ComPtr<ID3D12PipelineState> deferredPSO;
+
+    ComPtr<ID3D12RootSignature> hbaoRootSignature;
+    ComPtr<ID3D12PipelineState> hbaoPSO;
+    ComPtr<ID3D12PipelineState> hbaoBlurPSO;
 };
 
 #endif

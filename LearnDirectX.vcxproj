@@ -151,6 +151,7 @@
     <ClInclude Include="D3D12App.h" />
     <ClInclude Include="DeferredLightingPass.h" />
     <ClInclude Include="GbufferPass.h" />
+    <ClInclude Include="HBAOPass.h" />
     <ClInclude Include="IBLBaker.h" />
     <ClInclude Include="InputManager.h" />
     <ClInclude Include="json.hpp" />
@@ -215,6 +216,11 @@
   </ItemGroup>
   <ItemGroup>
     <None Include="Shaders\Shaders_For_Deferred.hlsl">
+      <FileType>Document</FileType>
+    </None>
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="Shaders\Shaders_For_HBAO.hlsl">
       <FileType>Document</FileType>
     </None>
   </ItemGroup>

@@ -55,6 +55,8 @@ public:
 
         deferredCb.depthBufferIdx = resourceManager->GetDepthBufferSrvIdx();
 
+        deferredCb.hbaoIdx = resourceManager->GetHBAOBlurredSrvIdx();
+
         memcpy(cbvCpuAddress, &deferredCb, sizeof(DeferredConstants));
 
         cmdList->SetGraphicsRootSignature(pipelineManager->GetDeferredRootSignature());
