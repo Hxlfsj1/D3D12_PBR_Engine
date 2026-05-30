@@ -28,6 +28,7 @@ struct VS_OUTPUT
     float2 uv : TEXCOORD;
 };
 
+// Draw a bufferless fullscreen triangle (the same as Shaders_For_Deferred.hlsl)
 VS_OUTPUT VSMain(uint vertexID : SV_VertexID)
 {
     VS_OUTPUT output;
@@ -36,6 +37,13 @@ VS_OUTPUT VSMain(uint vertexID : SV_VertexID)
     return output;
 }
 
+/*
+Reconstruct view space position from NDC coordinates and depth
+
+We compute in View Space for two reasons: First,
+it's completely sufficient since AO doesn't rely on world-space lights.
+Second, it saves 16 expensive inverse view matrix multiplications per pixel during ray marching.
+*/
 float3 GetViewPos(float2 uv, uint depthIdx)
 {
     Texture2D tDepth = ResourceDescriptorHeap[depthIdx];
@@ -56,18 +64,23 @@ float rand(float2 uv)
 
 float4 PSMain_HBAO(VS_OUTPUT input) : SV_TARGET
 {
+    // Unpack normal data in G-buffer
     Texture2D tNormal = ResourceDescriptorHeap[texIdx1];
     float3 worldNormal = tNormal.SampleLevel(sPoint, input.uv, 0).xyz * 2.0f - 1.0f;
     float3 viewNormal = normalize(mul(worldNormal, (float3x3) viewMat));
 
     float3 P = GetViewPos(input.uv, texIdx0);
     
+    // Apply a random rotation offset to the 4 sampling directions
     float randomAngle = rand(input.uv) * 3.1415926f * 2.0f;
     
+    // Define ray marching parameters
     int numDirs = 4;
     int numSteps = 4;
+    
     float ao = 0.0f;
     
+    // Calculate and clamp the UV step size
     float stepSizeUV = (radius / P.z) / (float) numSteps;
     stepSizeUV = clamp(stepSizeUV, 0.001f, 0.05f);
     
@@ -76,6 +89,7 @@ float4 PSMain_HBAO(VS_OUTPUT input) : SV_TARGET
         float angle = randomAngle + (float) i * (2.0f * 3.1415926f / (float) numDirs);
         float2 dir = float2(cos(angle), sin(angle));
         
+        // Apply angle bias to prevent surface acne
         float maxAngle = bias;
         
         for (int j = 1; j <= numSteps; ++j)
@@ -89,11 +103,13 @@ float4 PSMain_HBAO(VS_OUTPUT input) : SV_TARGET
             float3 V = S - P;
             float dist = length(V);
             
+            // Check distance to prevent halo artifacts
             if (dist < radius)
             {
                 float currentAngle = dot(normalize(V), viewNormal);
                 if (currentAngle > maxAngle)
                 {
+                    // Apply linear falloff based on distance
                     float falloff = 1.0f - (dist / radius);
                     ao += (currentAngle - maxAngle) * falloff;
                     maxAngle = currentAngle;
@@ -113,27 +129,33 @@ float4 PSMain_Blur(VS_OUTPUT input) : SV_TARGET
     Texture2D tNormal = ResourceDescriptorHeap[texIdx2];
 
     float centerDepth = tDepth.SampleLevel(sPoint, input.uv, 0).r;
-    float3 centerNormal = tNormal.SampleLevel(sPoint, input.uv, 0).xyz;
+    float3 centerNormal = normalize(tNormal.SampleLevel(sPoint, input.uv, 0).xyz * 2.0f - 1.0f);
     
     float result = 0.0f;
     float weightSum = 0.0f;
+    // Calculate texel size based on screen resolution
     float2 texelSize = float2(1.0f / resolutionX, 1.0f / resolutionY);
     
     for (int x = -2; x <= 2; ++x)
     {
         for (int y = -2; y <= 2; ++y)
         {
+            // Fetch sample data
             float2 offset = float2((float) x, (float) y) * texelSize;
             float2 sampleUV = input.uv + offset;
             
             float sampleAO = tRawHBAO.SampleLevel(sLinear, sampleUV, 0).r;
             float sampleDepth = tDepth.SampleLevel(sPoint, sampleUV, 0).r;
-            float3 sampleNormal = tNormal.SampleLevel(sPoint, sampleUV, 0).xyz;
+            float3 sampleNormal = normalize(tNormal.SampleLevel(sPoint, sampleUV, 0).xyz * 2.0f - 1.0f);
             
+            // Spatial weight (Distance falloff)
             float spatialWeight = exp(-(x * x + y * y) / (2.0f * 2.0f));
+            // Depth weight (Edge preservation)
             float depthWeight = exp(-abs(centerDepth - sampleDepth) * 100.0f);
+            // Normal weight (Angle-based rejection)
             float normalWeight = pow(max(dot(centerNormal, sampleNormal), 0.0f), 16.0f);
             
+            // Combine weights to compute the final bilateral weight
             float weight = spatialWeight * depthWeight * normalWeight;
             
             result += sampleAO * weight;
@@ -141,6 +163,7 @@ float4 PSMain_Blur(VS_OUTPUT input) : SV_TARGET
         }
     }
     
+    // Use a weighted average since each pixel's contribution varies
     result /= max(weightSum, 0.0001f);
     return float4(result, result, result, 1.0f);
 }
