@@ -36,6 +36,9 @@ struct InstanceData
     DirectX::XMFLOAT4X4 wvpMat;
     DirectX::XMFLOAT4X4 worldMat;
     DirectX::XMFLOAT4X4 normalMat;
+
+    UINT customMaterialID;
+    UINT pad[3];
 };
 
 struct alignas(256) DeferredConstants

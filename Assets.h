@@ -13,6 +13,8 @@ struct InstanceDesc
     DirectX::XMFLOAT3 rot;
     DirectX::XMFLOAT3 scale;
     bool isTransparent = false;
+
+    UINT materialOverrideIndex = 0xFFFFFFFF;
 };
 
 class Assets

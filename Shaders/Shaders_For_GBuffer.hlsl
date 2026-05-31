@@ -11,12 +11,17 @@ struct MaterialData
     uint isUnlit;
     uint3 pad;
 };
+
 struct InstanceData
 {
     float4x4 wvpMat;
     float4x4 worldMat;
     float4x4 normalMat;
+    
+    uint customMaterialID;
+    uint3 pad;
 };
+
 cbuffer MeshConstants : register(b1)
 {
     uint materialID;
@@ -47,6 +52,7 @@ struct VS_OUTPUT
     float3 worldTangent : TANGENT;
     float3 worldBitangent : BITANGENT;
 #endif
+    nointerpolation uint instanceID : TEXCOORD5;
 };
 
 VS_OUTPUT VSMain(VS_INPUT input)
@@ -60,6 +66,8 @@ VS_OUTPUT VSMain(VS_INPUT input)
     output.worldTangent = mul(input.tangent, (float3x3) normalMat);
     output.worldBitangent = mul(input.bitangent, (float3x3) normalMat);
 #endif
+    output.instanceID = input.instanceID;
+    
     return output;
 }
 
@@ -74,7 +82,10 @@ GBufferOutput PSMain(VS_OUTPUT input)
 {
     GBufferOutput output;
     
-    Texture2D tAlbedo = ResourceDescriptorHeap[gMaterialData[materialID].albedoIdx];
+    uint instMatID = gInstanceData[input.instanceID].customMaterialID;
+    uint finalMatID = (instMatID != 0xFFFFFFFF) ? instMatID : materialID;
+    
+    Texture2D tAlbedo = ResourceDescriptorHeap[gMaterialData[finalMatID].albedoIdx];
     float4 albedoSample = tAlbedo.Sample(s1, input.texCoord);
     
     clip(albedoSample.a - 0.5f);
@@ -82,7 +93,7 @@ GBufferOutput PSMain(VS_OUTPUT input)
     output.albedo = float4(pow(abs(albedoSample.rgb), 2.2), albedoSample.a);
     
 #if LOD_LEVEL == 0
-    Texture2D tNormal = ResourceDescriptorHeap[gMaterialData[materialID].normalIdx];
+    Texture2D tNormal = ResourceDescriptorHeap[gMaterialData[finalMatID].normalIdx];
     float3 normalMap = tNormal.Sample(s1, input.texCoord).xyz * 2.0 - 1.0;
     normalMap.y = -normalMap.y;
     float3 N = normalize(input.worldNormal);
@@ -90,12 +101,12 @@ GBufferOutput PSMain(VS_OUTPUT input)
     float3 B = normalize(input.worldBitangent);
     float3x3 TBN = float3x3(T, B, N);
     float3 finalNormal = normalize(mul(normalMap, TBN));
-#else    
+#else
     float3 finalNormal = normalize(input.worldNormal);
 #endif
     output.normal = float4(finalNormal, 1.0f);
     
-    Texture2D tORM = ResourceDescriptorHeap[gMaterialData[materialID].ormIdx];
+    Texture2D tORM = ResourceDescriptorHeap[gMaterialData[finalMatID].ormIdx];
     float3 ormSample = tORM.Sample(s1, input.texCoord).rgb;
     output.orm = float4(ormSample, 1.0f);
     

@@ -32,6 +32,9 @@ struct InstanceData
     float4x4 wvpMat;
     float4x4 worldMat;
     float4x4 normalMat;
+    
+    uint customMaterialID;
+    uint3 pad;
 };
 
 cbuffer MeshConstants : register(b1)
@@ -79,6 +82,7 @@ struct VS_OUTPUT
     float3 tangent : TANGENT;
     float3 bitangent : BITANGENT;
 #endif
+    nointerpolation uint instanceID : TEXCOORD5;
 
 #if LOD_LEVEL < 2
     float4 lightSpacePos : LIGHTSPACE;
@@ -112,6 +116,7 @@ VS_OUTPUT VSMain(VS_INPUT input)
 #if LOD_LEVEL < 2
     output.lightSpacePos = mul(float4(output.worldPos, 1.0f), lightViewProj);
 #endif
+    output.instanceID = input.instanceID;
     
     return output;
 }
@@ -119,7 +124,10 @@ VS_OUTPUT VSMain(VS_INPUT input)
 #if LOD_LEVEL == 0
 float3 getNormalFromMap(VS_OUTPUT input)
 {
-    uint normalIdx = gMaterialData[materialID].normalIdx;
+    uint instMatID = gInstanceData[input.instanceID].customMaterialID;
+    uint finalMatID = (instMatID != 0xFFFFFFFF) ? instMatID : materialID;
+
+    uint normalIdx = gMaterialData[finalMatID].normalIdx;
     Texture2D tNormal = ResourceDescriptorHeap[normalIdx];
     float3 tangentNormal = tNormal.Sample(s1, input.texCoord).xyz * 2.0 - 1.0;
     tangentNormal.y = -tangentNormal.y;
@@ -291,7 +299,10 @@ float CalcShadowFactor(float4 lightSpacePos)
 // PBR pixel Shader
 float4 PSMain(VS_OUTPUT input) : SV_TARGET
 {
-    MaterialData mat = gMaterialData[materialID];
+    uint instMatID = gInstanceData[input.instanceID].customMaterialID;
+    uint finalMatID = (instMatID != 0xFFFFFFFF) ? instMatID : materialID;
+    
+    MaterialData mat = gMaterialData[finalMatID];
     
     Texture2D tAlbedo = ResourceDescriptorHeap[mat.albedoIdx];
     Texture2D tEmissive = ResourceDescriptorHeap[mat.emissiveIdx];

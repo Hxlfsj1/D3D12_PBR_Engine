@@ -25,6 +25,8 @@ struct ModelInstance
 
     bool isVisible = true;
 
+    UINT customMaterialID = 0xFFFFFFFF;
+
     // Dirty Flag Mechanism
     XMMATRIX cachedWorldMat;
     XMMATRIX cachedNormalMat;

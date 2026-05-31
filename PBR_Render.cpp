@@ -424,6 +424,8 @@ void D3D12App::Update()
         XMStoreFloat4x4(&mappedInstanceData[i].wvpMat, XMMatrixTranspose(world * viewProj));
         XMStoreFloat4x4(&mappedInstanceData[i].worldMat, XMMatrixTranspose(world));
         XMStoreFloat4x4(&mappedInstanceData[i].normalMat, XMMatrixTranspose(normalMat));
+
+        mappedInstanceData[i].customMaterialID = g_visibleInstances[i]->customMaterialID;
     }
 
     size_t shadowOffset = g_visibleInstances.size();

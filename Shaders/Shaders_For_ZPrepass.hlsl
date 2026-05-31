@@ -3,6 +3,9 @@ struct InstanceData
     float4x4 wvpMat;
     float4x4 worldMat;
     float4x4 normalMat;
+    
+    uint customMaterialID;
+    uint3 pad;
 };
 
 StructuredBuffer<InstanceData> gInstanceData : register(t6);
