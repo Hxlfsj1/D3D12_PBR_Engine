@@ -28,7 +28,6 @@ public:
     {
         if (!BuildRootSignature(dc)) return false;
         if (!BuildPipelineStates(dc)) return false;
-        if (!BuildComputePipeline(dc)) return false;
         if (!BuildShadowPipeline(dc)) return false;
         if (!BuildPostProcessPipeline(dc)) return false;
         if (!BuildDeferredPipeline(dc)) return false;
@@ -64,16 +63,6 @@ public:
     ID3D12PipelineState* GetSkybox_PSO()
     {
         return psoSkybox.Get();
-    }
-
-    ID3D12RootSignature* GetComputeRootSignature()
-    {
-        return computeRootSignature.Get();
-    }
-
-    ID3D12PipelineState* GetComputePSO()
-    {
-        return computePSO.Get();
     }
 
     ID3D12RootSignature* GetShadowRootSignature()
@@ -357,63 +346,6 @@ private:
         return true;
     }
 
-    bool BuildComputePipeline(RenderDevice* dc)
-    {
-        D3D12_ROOT_PARAMETER computeRootParams[3];
-
-        computeRootParams[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
-        computeRootParams[0].Constants.ShaderRegister = 0;
-        computeRootParams[0].Constants.Num32BitValues = 2;
-        computeRootParams[0].Constants.RegisterSpace = 0;
-        computeRootParams[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
-
-        D3D12_DESCRIPTOR_RANGE srvRange;
-        srvRange.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
-        srvRange.NumDescriptors = 1;
-        srvRange.BaseShaderRegister = 0;
-        srvRange.RegisterSpace = 0;
-        srvRange.OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
-
-        computeRootParams[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
-        computeRootParams[1].DescriptorTable.NumDescriptorRanges = 1;
-        computeRootParams[1].DescriptorTable.pDescriptorRanges = &srvRange;
-        computeRootParams[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
-
-        D3D12_DESCRIPTOR_RANGE uavRange;
-        uavRange.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_UAV;
-        uavRange.NumDescriptors = 1;
-        uavRange.BaseShaderRegister = 0;
-        uavRange.RegisterSpace = 0;
-        uavRange.OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
-
-        computeRootParams[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
-        computeRootParams[2].DescriptorTable.NumDescriptorRanges = 1;
-        computeRootParams[2].DescriptorTable.pDescriptorRanges = &uavRange;
-        computeRootParams[2].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
-
-        CD3DX12_ROOT_SIGNATURE_DESC computeRSDesc;
-        computeRSDesc.Init(3, computeRootParams, 0, nullptr, D3D12_ROOT_SIGNATURE_FLAG_NONE);
-
-        ComPtr<ID3DBlob> rsBlob, errorBlob;
-        HRESULT hr = D3D12SerializeRootSignature(&computeRSDesc, D3D_ROOT_SIGNATURE_VERSION_1, &rsBlob, &errorBlob);
-        if (FAILED(hr)) return false;
-
-        hr = dc->GetDevice()->CreateRootSignature(0, rsBlob->GetBufferPointer(), rsBlob->GetBufferSize(), IID_PPV_ARGS(&computeRootSignature));
-        if (FAILED(hr)) return false;
-
-        auto cs = ShaderCompiler::CompileFromFile(L"Shaders/Shaders_For_SH_Calculate.hlsl", L"CSMain", L"cs_6_6");
-
-        D3D12_COMPUTE_PIPELINE_STATE_DESC computePsoDesc = {};
-        computePsoDesc.pRootSignature = computeRootSignature.Get();
-        computePsoDesc.CS = CD3DX12_SHADER_BYTECODE(cs->GetBufferPointer(), cs->GetBufferSize());
-        computePsoDesc.Flags = D3D12_PIPELINE_STATE_FLAG_NONE;
-
-        hr = dc->GetDevice()->CreateComputePipelineState(&computePsoDesc, IID_PPV_ARGS(&computePSO));
-        if (FAILED(hr)) return false;
-
-        return true;
-    }
-
     bool BuildShadowPipeline(RenderDevice* dc)
     {
         D3D12_ROOT_PARAMETER rootParams[2];
@@ -693,9 +625,6 @@ private:
     ComPtr<ID3D12PipelineState> psoGBuffer[3];
     ComPtr<ID3D12PipelineState> psoSkybox;
     ComPtr<ID3D12RootSignature> rootSignature;
-
-    ComPtr<ID3D12RootSignature> computeRootSignature;
-    ComPtr<ID3D12PipelineState> computePSO;
 
     ComPtr<ID3D12RootSignature> shadowRootSignature;
     ComPtr<ID3D12PipelineState> shadowPSO;

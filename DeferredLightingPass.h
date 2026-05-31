@@ -30,7 +30,7 @@ public:
         cmdList->RSSetViewports(1, &viewport);
         cmdList->RSSetScissorRects(1, &scissorRect);
 
-        const UINT64 deferredConstantsOffset = 1024 * 1024;
+        const UINT64 deferredConstantsOffset = 1024 * 1024 * 8;
         UINT8* cbvCpuAddress = resourceManager->GetCBVAddress(frameIndex) + deferredConstantsOffset;
         D3D12_GPU_VIRTUAL_ADDRESS cbvGpuAddress = resourceManager->GetCBVGPUAddress(frameIndex) + deferredConstantsOffset;
 

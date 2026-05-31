@@ -122,6 +122,11 @@ float4 PSMain_HBAO(VS_OUTPUT input) : SV_TARGET
     return float4(ao, ao, ao, 1.0f);
 }
 
+/*
+Bilateral filtering defines a valid blending scope:
+neighboring pixels with large depth/normal deltas (discontinuities) get near-zero weights, minimizes their AO contribution,
+ensuring we only average across geometrically similar areas and ignore completely distinct surfaces
+*/
 float4 PSMain_Blur(VS_OUTPUT input) : SV_TARGET
 {
     Texture2D tRawHBAO = ResourceDescriptorHeap[texIdx0];

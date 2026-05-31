@@ -50,7 +50,7 @@ public:
         ID3D12DescriptorHeap* heaps[] = { resourceManager->GetMainDescriptorHeap() };
         cmdList->SetDescriptorHeaps(1, heaps);
 
-        const UINT64 hbaoConstantsOffset = 1024 * 1024 * 2;
+        const UINT64 hbaoConstantsOffset = 1024 * 1024 * 9;
         UINT8* cbvCpuAddress = resourceManager->GetCBVAddress(frameIndex) + hbaoConstantsOffset;
         D3D12_GPU_VIRTUAL_ADDRESS cbvGpuAddress = resourceManager->GetCBVGPUAddress(frameIndex) + hbaoConstantsOffset;
 
