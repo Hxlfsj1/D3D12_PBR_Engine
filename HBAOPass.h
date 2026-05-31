@@ -22,11 +22,19 @@ public:
     {
         auto cmdList = deviceContext->GetCommandList();
 
-        CD3DX12_RESOURCE_BARRIER toRenderTarget1 = CD3DX12_RESOURCE_BARRIER::Transition(
-            resourceManager->GetHBAORawRT(),
-            D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
-            D3D12_RESOURCE_STATE_RENDER_TARGET);
-        cmdList->ResourceBarrier(1, &toRenderTarget1);
+        CD3DX12_RESOURCE_BARRIER barriers[2] =
+        {
+            CD3DX12_RESOURCE_BARRIER::Transition(
+                deviceContext->GetDepthStencilBuffer(),
+                D3D12_RESOURCE_STATE_DEPTH_WRITE,
+                D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE),
+
+            CD3DX12_RESOURCE_BARRIER::Transition(
+                resourceManager->GetHBAORawRT(),
+                D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+                D3D12_RESOURCE_STATE_RENDER_TARGET)
+        };
+        cmdList->ResourceBarrier(2, barriers);
 
         CD3DX12_CPU_DESCRIPTOR_HANDLE hbaoRtv = resourceManager->GetHBAORawRtvHandle();
         cmdList->OMSetRenderTargets(1, &hbaoRtv, FALSE, nullptr);

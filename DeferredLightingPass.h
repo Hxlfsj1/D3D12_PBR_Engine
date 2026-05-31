@@ -22,12 +22,6 @@ public:
     {
         auto cmdList = deviceContext->GetCommandList();
 
-        CD3DX12_RESOURCE_BARRIER depthToRead = CD3DX12_RESOURCE_BARRIER::Transition(
-            deviceContext->GetDepthStencilBuffer(),
-            D3D12_RESOURCE_STATE_DEPTH_WRITE,
-            D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
-        cmdList->ResourceBarrier(1, &depthToRead);
-
         CD3DX12_CPU_DESCRIPTOR_HANDLE rtv = resourceManager->GetPostProcessRtvHandle();
         cmdList->OMSetRenderTargets(1, &rtv, FALSE, nullptr);
 
