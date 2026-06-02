@@ -67,6 +67,13 @@ D3D12App::D3D12App(HINSTANCE hInstance) : camera(XMFLOAT3(0.0f, 3.0f, -10.0f))
     deltaTime = 0.0f;
 
     m_inputManager.Init(Width, Height);
+
+    m_useTAA = false;
+    m_taaFrameCounter = 0;
+
+    DirectX::XMStoreFloat4x4(&m_prevViewProj, DirectX::XMMatrixIdentity());
+    m_jitterX = 0.0f;
+    m_jitterY = 0.0f;
 }
 
 D3D12App::~D3D12App()
@@ -410,6 +417,31 @@ void D3D12App::Update()
 
     XMMATRIX view = camera.GetViewMatrix();
     XMMATRIX proj = XMMatrixPerspectiveFovLH(XMConvertToRadians(camera.Zoom), (float)Width / Height, 0.1f, 1000.0f);
+
+    if (m_useTAA)
+    {
+        static const float haltonX[8] = { 0.5f, 0.25f, 0.75f, 0.125f, 0.625f, 0.375f, 0.875f, 0.0f };
+        static const float haltonY[8] = { 0.333333f, 0.666667f, 0.111111f, 0.444444f, 0.777778f, 0.222222f, 0.555556f, 0.888889f };
+
+        float jX = haltonX[m_taaFrameCounter % 8] - 0.5f;
+        float jY = haltonY[m_taaFrameCounter % 8] - 0.5f;
+        m_jitterX = (jX * 2.0f) / Width;
+        m_jitterY = (jY * 2.0f) / Height;
+
+        DirectX::XMFLOAT4X4 projF;
+        DirectX::XMStoreFloat4x4(&projF, proj);
+        projF._31 += m_jitterX;
+        projF._32 += m_jitterY;
+        proj = DirectX::XMLoadFloat4x4(&projF);
+
+        m_taaFrameCounter++;
+    }
+    else
+    {
+        m_jitterX = 0.0f;
+        m_jitterY = 0.0f;
+    }
+
     XMMATRIX viewProj = view * proj;
 
     // Pack all instance matrices sequentially into the StructuredBuffer for hardware instancing
@@ -434,6 +466,8 @@ void D3D12App::Update()
         XMMATRIX world = g_shadowVisibleInstances[i]->cachedWorldMat;
         XMStoreFloat4x4(&mappedInstanceData[shadowOffset + i].worldMat, XMMatrixTranspose(world));
     }
+
+    DirectX::XMStoreFloat4x4(&m_prevViewProj, viewProj);
 }
 
 void D3D12App::BeginFrame()

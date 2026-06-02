@@ -69,4 +69,18 @@ struct alignas(256) HBAOConstants
     UINT padTo256[11];
 };
 
+struct alignas(256) TAAConstants
+{
+    DirectX::XMFLOAT4X4 invViewProj;
+    DirectX::XMFLOAT4X4 prevViewProj;
+    DirectX::XMFLOAT2 jitterOffset;
+    float blendAlpha;
+    float varianceScale;
+
+    UINT colorTextureIdx;
+    UINT historyTextureIdx;
+    UINT depthTextureIdx;
+    UINT pad;
+};
+
 #endif

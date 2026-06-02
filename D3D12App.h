@@ -86,6 +86,12 @@ private:
     float timeElapsed = 0.0f;
 
     int m_visibleInstanceCount = 0;
+    bool m_useTAA;
+    UINT m_taaFrameCounter;
+
+    DirectX::XMFLOAT4X4 m_prevViewProj;
+    float m_jitterX;
+    float m_jitterY;
 };
 
 #endif
