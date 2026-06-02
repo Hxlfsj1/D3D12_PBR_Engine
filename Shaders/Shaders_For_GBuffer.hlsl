@@ -1,3 +1,11 @@
+/*
+G-Buffer Pass Output Summary:
+
+1. Target0: BaseColor and Alpha
+2. Target1: Normal in [-1, 1]
+3. Target2: ORM texture
+*/
+
 #ifndef LOD_LEVEL
 #define LOD_LEVEL 0
 #endif
