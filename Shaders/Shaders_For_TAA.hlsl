@@ -27,13 +27,15 @@ VS_OUTPUT VSMain(uint vertexID : SV_VertexID)
     return output;
 }
 
-static const float3x3 RGB_2_YCoCg = float3x3(
+static const float3x3 RGB_2_YCoCg = float3x3
+(
     0.25, 0.5, 0.25,
     0.5, 0.0, -0.5,
    -0.25, 0.5, -0.25
 );
 
-static const float3x3 YCoCg_2_RGB = float3x3(
+static const float3x3 YCoCg_2_RGB = float3x3
+(
     1.0, 1.0, -1.0,
     1.0, 0.0, 1.0,
     1.0, -1.0, -1.0
@@ -57,6 +59,7 @@ float4 PSMain(VS_OUTPUT input) : SV_TARGET
     float minDepth = depth;
     float2 velocityUV = uv;
     
+    // 3x3 depth dilation (fully unrolled to avoid branch overhead)
     [unroll]
     for (int i = -1; i <= 1; ++i)
     {
@@ -80,10 +83,12 @@ float4 PSMain(VS_OUTPUT input) : SV_TARGET
     float4 worldPosH = mul(clipSpacePos, invViewProj);
     float3 worldPos = worldPosH.xyz / worldPosH.w;
 
+    // Re-calculate previous UV (compute UVs dynamically to save VRAM)
     float4 prevClipSpacePos = mul(float4(worldPos, 1.0f), prevViewProj);
     float2 prevNDC = prevClipSpacePos.xy / prevClipSpacePos.w;
     float2 historyUV = float2(prevNDC.x * 0.5f + 0.5f, 0.5f - prevNDC.y * 0.5f);
 
+    // m1 stores YCoCg sum, m2 stores YCoCg sum of squares (Var(X) = E(X²) - E(X)²)
     float3 m1 = 0.0f;
     float3 m2 = 0.0f;
     float3 blurredCenter = 0.0f;
@@ -104,16 +109,20 @@ float4 PSMain(VS_OUTPUT input) : SV_TARGET
     }
     
     float3 mu = m1 / 9.0f;
+    // Standard deviation
     float3 sigma = sqrt(abs(m2 / 9.0f - mu * mu));
     
+    // Calculate color bounding box
     float3 boxMin = mu - 1.25f * sigma;
     float3 boxMax = mu + 1.25f * sigma;
 
+    // Laplacian sharpening
     blurredCenter /= 9.0f;
     float sharpenAmount = 0.25f;
     float3 sharpenedCenter = centerColor + (centerColor - blurredCenter) * sharpenAmount;
     sharpenedCenter = max(0.0f, sharpenedCenter);
 
+    // Off-screen history rejection: do not blend new pixels entering from outside the screen
     if (historyUV.x < 0.0f || historyUV.x > 1.0f || historyUV.y < 0.0f || historyUV.y > 1.0f)
     {
         return float4(sharpenedCenter, 1.0f);
@@ -121,11 +130,12 @@ float4 PSMain(VS_OUTPUT input) : SV_TARGET
 
     float3 historyColor = tHistoryColor.SampleLevel(sLinear, historyUV, 0).rgb;
     float3 historyYCoCg = mul(RGB_2_YCoCg, historyColor);
-
+    
+    // Define the Color Clamping Range (often referred to as a Color Bounding Box)
     float3 clampedHistoryY = clamp(historyYCoCg, boxMin, boxMax);
     float3 clampedHistoryRGB = mul(YCoCg_2_RGB, clampedHistoryY);
 
-    float3 finalColor = lerp(sharpenedCenter, clampedHistoryRGB, 0.90f);
+    float3 finalColor = lerp(sharpenedCenter, clampedHistoryRGB, blendAlpha);
 
     return float4(finalColor, 1.0f);
 }

@@ -15,7 +15,9 @@ public:
         RenderDevice* deviceContext,
         ResourceManager* resourceManager,
         PipelineManager* pipelineManager,
-        Camera& camera,
+        const DirectX::XMFLOAT4X4& viewMat,
+        const DirectX::XMFLOAT4X4& projMat,
+        const DirectX::XMFLOAT4X4& invProjMat,
         int width,
         int height,
         int frameIndex)
@@ -24,15 +26,8 @@ public:
 
         CD3DX12_RESOURCE_BARRIER barriers[2] =
         {
-            CD3DX12_RESOURCE_BARRIER::Transition(
-                deviceContext->GetDepthStencilBuffer(),
-                D3D12_RESOURCE_STATE_DEPTH_WRITE,
-                D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE),
-
-            CD3DX12_RESOURCE_BARRIER::Transition(
-                resourceManager->GetHBAORawRT(),
-                D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
-                D3D12_RESOURCE_STATE_RENDER_TARGET)
+            CD3DX12_RESOURCE_BARRIER::Transition(deviceContext->GetDepthStencilBuffer(), D3D12_RESOURCE_STATE_DEPTH_WRITE, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE),
+            CD3DX12_RESOURCE_BARRIER::Transition(resourceManager->GetHBAORawRT(), D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_RENDER_TARGET)
         };
         cmdList->ResourceBarrier(2, barriers);
 
@@ -56,14 +51,9 @@ public:
 
         HBAOConstants hbaoCb = {};
 
-        XMMATRIX view = camera.GetViewMatrix();
-        XMMATRIX proj = XMMatrixPerspectiveFovLH(XMConvertToRadians(camera.Zoom), (float)width / height, 0.1f, 1000.0f);
-        XMVECTOR det;
-        XMMATRIX invProj = XMMatrixInverse(&det, proj);
-
-        XMStoreFloat4x4(&hbaoCb.projMat, XMMatrixTranspose(proj));
-        XMStoreFloat4x4(&hbaoCb.invProjMat, XMMatrixTranspose(invProj));
-        XMStoreFloat4x4(&hbaoCb.viewMat, XMMatrixTranspose(view));
+        hbaoCb.projMat = projMat;
+        hbaoCb.invProjMat = invProjMat;
+        hbaoCb.viewMat = viewMat;
 
         hbaoCb.radius = 1.0f;
         hbaoCb.bias = 0.1f;

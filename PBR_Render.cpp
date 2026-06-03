@@ -233,10 +233,51 @@ void D3D12App::Update()
         timeElapsed -= 1.0f;
     }
 
-    XMMATRIX prevView = camera.GetViewMatrix();
-    XMMATRIX prevProj = XMMatrixPerspectiveFovLH(XMConvertToRadians(camera.Zoom), (float)Width / Height, 0.1f, 1000.0f);
-    XMMATRIX prevViewProj = prevView * prevProj;
-    DirectX::XMStoreFloat4x4(&m_prevViewProj, XMMatrixTranspose(prevViewProj));
+    // ====================================================================================================
+    // Calculate V * P matrix
+    // ====================================================================================================
+    m_prevViewProj = m_unjitteredViewProj;
+
+    XMMATRIX view = camera.GetViewMatrix();
+    XMMATRIX unjitteredProj = XMMatrixPerspectiveFovLH(XMConvertToRadians(camera.Zoom), (float)Width / Height, 0.1f, 1000.0f);
+    XMMATRIX unjitteredViewProj = view * unjitteredProj;
+
+    if (m_useTAA)
+    {
+        static const float haltonX[8] = { 0.5f, 0.25f, 0.75f, 0.125f, 0.625f, 0.375f, 0.875f, 0.0f };
+        static const float haltonY[8] = { 0.333333f, 0.666667f, 0.111111f, 0.444444f, 0.777778f, 0.222222f, 0.555556f, 0.888889f };
+
+        float jX = haltonX[m_taaFrameCounter % 8] - 0.5f;
+        float jY = haltonY[m_taaFrameCounter % 8] - 0.5f;
+        m_jitterX = (jX * 2.0f) / Width;
+        m_jitterY = (jY * 2.0f) / Height;
+        m_taaFrameCounter++;
+    }
+    else
+    {
+        m_jitterX = 0.0f;
+        m_jitterY = 0.0f;
+    }
+
+    DirectX::XMFLOAT4X4 projF;
+    DirectX::XMStoreFloat4x4(&projF, unjitteredProj);
+    projF._31 += m_jitterX;
+    projF._32 += m_jitterY;
+    XMMATRIX jitteredProj = DirectX::XMLoadFloat4x4(&projF);
+
+    XMMATRIX jitteredViewProj = view * jitteredProj;
+
+    XMVECTOR det;
+    XMMATRIX invViewProj = XMMatrixInverse(&det, jitteredViewProj);
+    XMMATRIX invProj = XMMatrixInverse(&det, jitteredProj);
+
+    XMStoreFloat4x4(&m_viewMat, XMMatrixTranspose(view));
+    XMStoreFloat4x4(&m_unjitteredProjMat, XMMatrixTranspose(unjitteredProj));
+    XMStoreFloat4x4(&m_projMat, XMMatrixTranspose(jitteredProj));
+    XMStoreFloat4x4(&m_unjitteredViewProj, XMMatrixTranspose(unjitteredViewProj));
+    XMStoreFloat4x4(&m_viewProjMat, XMMatrixTranspose(jitteredViewProj));
+    XMStoreFloat4x4(&m_invViewProjMat, XMMatrixTranspose(invViewProj));
+    XMStoreFloat4x4(&m_invProjMat, XMMatrixTranspose(invProj));
 
     // ====================================================================================================
     // Input polling and environment setup
@@ -417,51 +458,16 @@ void D3D12App::Update()
         });
 
     // ====================================================================================================
-    // Instance data packing and submission
+    // Instance data Submission and TAA offset matirx calculating
     // ====================================================================================================
     InstanceData* mappedInstanceData = reinterpret_cast<InstanceData*>(cbvAddress + 256);
 
-    XMMATRIX view = camera.GetViewMatrix();
-    XMMATRIX proj = XMMatrixPerspectiveFovLH(XMConvertToRadians(camera.Zoom), (float)Width / Height, 0.1f, 1000.0f);
-
-    XMMATRIX unjitteredViewProj = view * proj;
-
-    if (m_useTAA)
-    {
-        static const float haltonX[8] = { 0.5f, 0.25f, 0.75f, 0.125f, 0.625f, 0.375f, 0.875f, 0.0f };
-        static const float haltonY[8] = { 0.333333f, 0.666667f, 0.111111f, 0.444444f, 0.777778f, 0.222222f, 0.555556f, 0.888889f };
-
-        float jX = haltonX[m_taaFrameCounter % 8] - 0.5f;
-        float jY = haltonY[m_taaFrameCounter % 8] - 0.5f;
-        m_jitterX = (jX * 2.0f) / Width;
-        m_jitterY = (jY * 2.0f) / Height;
-
-        DirectX::XMFLOAT4X4 projF;
-        DirectX::XMStoreFloat4x4(&projF, proj);
-        projF._31 += m_jitterX;
-        projF._32 += m_jitterY;
-        proj = DirectX::XMLoadFloat4x4(&projF);
-
-        m_taaFrameCounter++;
-    }
-    else
-    {
-        m_jitterX = 0.0f;
-        m_jitterY = 0.0f;
-    }
-
-    XMMATRIX viewProj = view * proj;
-
-    // Pack all instance matrices sequentially into the StructuredBuffer for hardware instancing
     for (size_t i = 0; i < g_visibleInstances.size(); ++i)
     {
-        // Update math only if dirty (CPU optimization)
         XMMATRIX world = g_visibleInstances[i]->cachedWorldMat;
         XMMATRIX normalMat = g_visibleInstances[i]->cachedNormalMat;
 
-        // Always flush to the current frame's CBV to prevent multi-frame ghosting
-        // Do not use memcpy: It ignores SIMD 16-byte alignment and causes fatal crashes, XMStore safely offloads hardware registers
-        XMStoreFloat4x4(&mappedInstanceData[i].wvpMat, XMMatrixTranspose(world * viewProj));
+        XMStoreFloat4x4(&mappedInstanceData[i].wvpMat, XMMatrixTranspose(world * jitteredViewProj));
         XMStoreFloat4x4(&mappedInstanceData[i].worldMat, XMMatrixTranspose(world));
         XMStoreFloat4x4(&mappedInstanceData[i].normalMat, XMMatrixTranspose(normalMat));
 
@@ -534,9 +540,9 @@ void D3D12App::Render()
     {
         transparentIdx = GBufferPass::Execute(&m_deviceContext, &m_resourceManager, &m_pipelineManager, frameIndex, viewport, scissorRect, g_visibleInstances);
 
-        HBAOPass::Execute(&m_deviceContext, &m_resourceManager, &m_pipelineManager, camera, Width, Height, frameIndex);
+        HBAOPass::Execute(&m_deviceContext, &m_resourceManager, &m_pipelineManager, m_viewMat, m_projMat, m_invProjMat, Width, Height, frameIndex);
 
-        DeferredLightingPass::Execute(&m_deviceContext, &m_resourceManager, &m_pipelineManager, camera, Width, Height, frameIndex);
+        DeferredLightingPass::Execute(&m_deviceContext, &m_resourceManager, &m_pipelineManager, m_invViewProjMat, Width, Height, frameIndex);
     }
 
     SkyboxPass::Execute(&m_deviceContext, &m_resourceManager, &m_pipelineManager, camera, viewport, scissorRect, Width, Height);
@@ -547,7 +553,7 @@ void D3D12App::Render()
 
     if (m_useTAA)
     {
-        finalPostInputSRV = TAAPass::Execute(&m_deviceContext, &m_resourceManager, &m_pipelineManager, camera, m_prevViewProj, m_jitterX, m_jitterY, frameIndex, Width, Height, frameCount);
+        finalPostInputSRV = TAAPass::Execute(&m_deviceContext, &m_resourceManager, &m_pipelineManager, m_invViewProjMat, m_prevViewProj, m_jitterX, m_jitterY, frameIndex, Width, Height, frameCount);
     }
 
     PostProcessPass::Execute(&m_deviceContext, &m_resourceManager, &m_pipelineManager, frameIndex, viewport, scissorRect, finalPostInputSRV);

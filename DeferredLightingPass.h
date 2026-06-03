@@ -15,7 +15,7 @@ public:
         RenderDevice* deviceContext,
         ResourceManager* resourceManager,
         PipelineManager* pipelineManager,
-        Camera& camera,
+        const DirectX::XMFLOAT4X4& invViewProjMat,
         int width,
         int height,
         int frameIndex)
@@ -36,19 +36,12 @@ public:
 
         DeferredConstants deferredCb = {};
 
-        XMMATRIX view = camera.GetViewMatrix();
-        XMMATRIX proj = XMMatrixPerspectiveFovLH(XMConvertToRadians(camera.Zoom), (float)width / height, 0.1f, 1000.0f);
-        XMMATRIX viewProj = view * proj;
-        XMVECTOR det;
-        XMMATRIX invViewProj = XMMatrixInverse(&det, viewProj);
-        XMStoreFloat4x4(&deferredCb.invViewProj, XMMatrixTranspose(invViewProj));
+        deferredCb.invViewProj = invViewProjMat;
 
         deferredCb.gbufferAlbedoIdx = resourceManager->GetGBufferAlbedoSrvIdx();
         deferredCb.gbufferNormalIdx = resourceManager->GetGBufferNormalSrvIdx();
         deferredCb.gbufferORMIdx = resourceManager->GetGBufferORMSrvIdx();
-
         deferredCb.depthBufferIdx = resourceManager->GetDepthBufferSrvIdx();
-
         deferredCb.hbaoIdx = resourceManager->GetHBAOBlurredSrvIdx();
 
         memcpy(cbvCpuAddress, &deferredCb, sizeof(DeferredConstants));

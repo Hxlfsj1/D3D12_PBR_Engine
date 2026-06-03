@@ -6,7 +6,6 @@
 #include "ResourceManager.h"
 #include "PipelineManager.h"
 #include "RenderStructs.h"
-#include "Camera.h"
 
 class TAAPass
 {
@@ -15,20 +14,12 @@ public:
         RenderDevice* deviceContext,
         ResourceManager* resourceManager,
         PipelineManager* pipelineManager,
-        Camera& camera,
+        const DirectX::XMFLOAT4X4& currentInvViewProj,
         const DirectX::XMFLOAT4X4& prevViewProj,
         float jitterX, float jitterY,
         int frameIndex, int width, int height,
         int frameCount)
     {
-        XMMATRIX view = camera.GetViewMatrix();
-        XMMATRIX proj = XMMatrixPerspectiveFovLH(XMConvertToRadians(camera.Zoom), (float)width / height, 0.1f, 1000.0f);
-        XMVECTOR det;
-        XMMATRIX invViewProj = XMMatrixInverse(&det, view * proj);
-
-        XMFLOAT4X4 currentInvViewProj;
-        XMStoreFloat4x4(&currentInvViewProj, XMMatrixTranspose(invViewProj));
-
         int taaCurrentIdx = resourceManager->GetTAACurrentHistoryIdx();
         bool isFirstFrame = (frameCount == 1);
 

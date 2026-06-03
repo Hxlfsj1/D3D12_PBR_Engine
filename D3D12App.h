@@ -89,9 +89,17 @@ private:
     bool m_useTAA;
     UINT m_taaFrameCounter;
 
+    DirectX::XMFLOAT4X4 m_viewMat;
+    DirectX::XMFLOAT4X4 m_unjitteredProjMat;
+    DirectX::XMFLOAT4X4 m_projMat;
+    DirectX::XMFLOAT4X4 m_unjitteredViewProj;
+    DirectX::XMFLOAT4X4 m_viewProjMat;
+    DirectX::XMFLOAT4X4 m_invViewProjMat;
+    DirectX::XMFLOAT4X4 m_invProjMat;
+
     DirectX::XMFLOAT4X4 m_prevViewProj;
-    float m_jitterX;
-    float m_jitterY;
+    float m_jitterX = 0.0f;
+    float m_jitterY = 0.0f;
 };
 
 #endif
