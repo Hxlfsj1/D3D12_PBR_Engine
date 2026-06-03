@@ -14,8 +14,8 @@ struct ModelInstance
     Model* pModel;
 
     int currentLodLevel = 0;
-    float lod1Threshold = 15.0f;
-    float lod2Threshold = 40.0f;
+    float lod1Threshold = 80.0f;
+    float lod2Threshold = 200.0f;
 
     XMFLOAT3 translation = { 0.0f, 0.0f, 0.0f };
     XMFLOAT3 rotation = { 0.0f, 0.0f, 0.0f };

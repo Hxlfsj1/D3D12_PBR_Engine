@@ -15,7 +15,8 @@ public:
         PipelineManager* pipelineManager,
         int frameIndex,
         const D3D12_VIEWPORT& viewport,
-        const D3D12_RECT& scissorRect)
+        const D3D12_RECT& scissorRect,
+        UINT inputSrvIdx)
     {
         auto cmdList = deviceContext->GetCommandList();
 
@@ -41,7 +42,7 @@ public:
         ID3D12DescriptorHeap* heaps[] = { resourceManager->GetMainDescriptorHeap() };
         cmdList->SetDescriptorHeaps(1, heaps);
 
-        UINT sceneTexIdx = resourceManager->GetPostProcessSrvIdx();
+        UINT sceneTexIdx = inputSrvIdx;
         cmdList->SetGraphicsRoot32BitConstants(0, 1, &sceneTexIdx, 0);
 
         cmdList->DrawInstanced(3, 1, 0, 0);

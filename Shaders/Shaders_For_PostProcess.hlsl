@@ -27,6 +27,21 @@ float4 PSMain(VS_OUTPUT input) : SV_TARGET
     float4 hdrColor = sceneTexture.Sample(s0, input.uv);
     float3 color = hdrColor.rgb;
 
+    float3 cTop = sceneTexture.Sample(s0, input.uv, int2(0, -1)).rgb;
+    float3 cLeft = sceneTexture.Sample(s0, input.uv, int2(-1, 0)).rgb;
+    float3 cRight = sceneTexture.Sample(s0, input.uv, int2(1, 0)).rgb;
+    float3 cBottom = sceneTexture.Sample(s0, input.uv, int2(0, 1)).rgb;
+
+    float3 minColor = min(color, min(cTop, min(cLeft, min(cRight, cBottom))));
+    float3 maxColor = max(color, max(cTop, max(cLeft, max(cRight, cBottom))));
+
+    float3 w = sqrt(minColor / maxColor);
+    
+    float sharpenStrength = -0.15f;
+    float3 wFinal = w * sharpenStrength;
+
+    color = (color + (cTop + cLeft + cRight + cBottom) * wFinal) / (1.0f + 4.0f * wFinal);
+
     // ACES Filmic Tone Mapping
     const float a = 2.51;
     const float b = 0.03;

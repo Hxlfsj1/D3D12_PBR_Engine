@@ -16,6 +16,7 @@
 #include "GBufferPass.h"
 #include "HBAOPass.h"
 #include "DeferredLightingPass.h"
+#include "TAAPass.h"
 
 #define STB_IMAGE_IMPLEMENTATION
 #include <stb_image.h>
@@ -68,7 +69,7 @@ D3D12App::D3D12App(HINSTANCE hInstance) : camera(XMFLOAT3(0.0f, 3.0f, -10.0f))
 
     m_inputManager.Init(Width, Height);
 
-    m_useTAA = false;
+    m_useTAA = true;
     m_taaFrameCounter = 0;
 
     DirectX::XMStoreFloat4x4(&m_prevViewProj, DirectX::XMMatrixIdentity());
@@ -232,6 +233,11 @@ void D3D12App::Update()
         timeElapsed -= 1.0f;
     }
 
+    XMMATRIX prevView = camera.GetViewMatrix();
+    XMMATRIX prevProj = XMMatrixPerspectiveFovLH(XMConvertToRadians(camera.Zoom), (float)Width / Height, 0.1f, 1000.0f);
+    XMMATRIX prevViewProj = prevView * prevProj;
+    DirectX::XMStoreFloat4x4(&m_prevViewProj, XMMatrixTranspose(prevViewProj));
+
     // ====================================================================================================
     // Input polling and environment setup
     // ====================================================================================================
@@ -314,10 +320,22 @@ void D3D12App::Update()
     g_shadowVisibleInstances.clear();
 
     for (size_t i = 0; i < instances.size(); ++i)
-    {
+    {   
+        // Use the existing Intersects library function to determine if an object should be added to the render queue or the shadow queue
+        if (instances[i].pModel == nullptr || instances[i].pModel->meshes.empty())
+        {
+            instances[i].isVisible = false;
+            continue;
+        }
+
         // LOD
-        XMVECTOR objPosVec = XMLoadFloat3(&instances[i].translation);
-        float dist = XMVectorGetX(XMVector3Length(XMVectorSubtract(camPosVec, objPosVec)));
+        instances[i].UpdateTransform();
+
+        BoundingBox worldBox;
+        instances[i].pModel->boundingBox.Transform(worldBox, instances[i].cachedWorldMat);
+
+        XMVECTOR boxCenter = XMLoadFloat3(&worldBox.Center);
+        float dist = XMVectorGetX(XMVector3Length(XMVectorSubtract(camPosVec, boxCenter)));
 
         if (dist < instances[i].lod1Threshold)
         {
@@ -331,18 +349,6 @@ void D3D12App::Update()
         {
             instances[i].currentLodLevel = 2;
         }
-
-        // Use the existing Intersects library function to determine if an object should be added to the render queue or the shadow queue
-        if (instances[i].pModel == nullptr || instances[i].pModel->meshes.empty())
-        {
-            instances[i].isVisible = false;
-            continue;
-        }
-
-        instances[i].UpdateTransform();
-
-        BoundingBox worldBox;
-        instances[i].pModel->boundingBox.Transform(worldBox, instances[i].cachedWorldMat);
 
         // Introduce an isVisible variable to enhance scalability
         if (frustum.Intersects(worldBox))
@@ -418,6 +424,8 @@ void D3D12App::Update()
     XMMATRIX view = camera.GetViewMatrix();
     XMMATRIX proj = XMMatrixPerspectiveFovLH(XMConvertToRadians(camera.Zoom), (float)Width / Height, 0.1f, 1000.0f);
 
+    XMMATRIX unjitteredViewProj = view * proj;
+
     if (m_useTAA)
     {
         static const float haltonX[8] = { 0.5f, 0.25f, 0.75f, 0.125f, 0.625f, 0.375f, 0.875f, 0.0f };
@@ -466,8 +474,6 @@ void D3D12App::Update()
         XMMATRIX world = g_shadowVisibleInstances[i]->cachedWorldMat;
         XMStoreFloat4x4(&mappedInstanceData[shadowOffset + i].worldMat, XMMatrixTranspose(world));
     }
-
-    DirectX::XMStoreFloat4x4(&m_prevViewProj, viewProj);
 }
 
 void D3D12App::BeginFrame()
@@ -537,7 +543,14 @@ void D3D12App::Render()
 
     PBRPass::ExecuteTransparent(&m_deviceContext, &m_resourceManager, &m_pipelineManager, frameIndex, viewport, scissorRect, g_visibleInstances, transparentIdx);
 
-    PostProcessPass::Execute(&m_deviceContext, &m_resourceManager, &m_pipelineManager, frameIndex, viewport, scissorRect);
+    UINT finalPostInputSRV = m_resourceManager.GetPostProcessSrvIdx();
+
+    if (m_useTAA)
+    {
+        finalPostInputSRV = TAAPass::Execute(&m_deviceContext, &m_resourceManager, &m_pipelineManager, camera, m_prevViewProj, m_jitterX, m_jitterY, frameIndex, Width, Height, frameCount);
+    }
+
+    PostProcessPass::Execute(&m_deviceContext, &m_resourceManager, &m_pipelineManager, frameIndex, viewport, scissorRect, finalPostInputSRV);
 
     EndFrame();
 

@@ -32,6 +32,7 @@ public:
         if (!BuildPostProcessPipeline(dc)) return false;
         if (!BuildDeferredPipeline(dc)) return false;
         if (!BuildHBAOPipeline(dc)) return false;
+        if (!BuildTAAPipeline(dc)) return false;
 
         return true;
     }
@@ -118,6 +119,16 @@ public:
     ID3D12PipelineState* GetHBAOBlurPSO()
     {
         return hbaoBlurPSO.Get();
+    }
+
+    ID3D12RootSignature* GetTAARootSignature()
+    {
+        return taaRootSignature.Get();
+    }
+
+    ID3D12PipelineState* GetTAAPSO()
+    {
+        return psoTAA.Get();
     }
 
 private:
@@ -618,6 +629,61 @@ private:
         return true;
     }
 
+    bool BuildTAAPipeline(RenderDevice* dc)
+    {
+        CD3DX12_ROOT_PARAMETER rootParameters[1];
+        rootParameters[0].InitAsConstantBufferView(0);
+
+        D3D12_STATIC_SAMPLER_DESC samplers[2];
+        samplers[0] = CD3DX12_STATIC_SAMPLER_DESC(0, D3D12_FILTER_MIN_MAG_MIP_POINT);
+        samplers[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+        samplers[1] = CD3DX12_STATIC_SAMPLER_DESC(1, D3D12_FILTER_MIN_MAG_MIP_LINEAR);
+        samplers[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+
+        CD3DX12_ROOT_SIGNATURE_DESC rootSigDesc(1, rootParameters, 2, samplers, D3D12_ROOT_SIGNATURE_FLAG_CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED);
+
+        ComPtr<ID3DBlob> serializedRootSig = nullptr;
+        ComPtr<ID3DBlob> errorBlob = nullptr;
+        HRESULT hr = D3D12SerializeRootSignature(&rootSigDesc, D3D_ROOT_SIGNATURE_VERSION_1, &serializedRootSig, &errorBlob);
+        if (FAILED(hr)) return false;
+
+        hr = dc->GetDevice()->CreateRootSignature(0, serializedRootSig->GetBufferPointer(), serializedRootSig->GetBufferSize(), IID_PPV_ARGS(&taaRootSignature));
+        if (FAILED(hr)) return false;
+
+        auto vs = ShaderCompiler::CompileFromFile(L"Shaders/Shaders_For_TAA.hlsl", L"VSMain", L"vs_6_6");
+        auto ps = ShaderCompiler::CompileFromFile(L"Shaders/Shaders_For_TAA.hlsl", L"PSMain", L"ps_6_6");
+
+        if (!vs || !ps)
+        {
+            MessageBox(NULL, L"TAA Shader compilation failed! Please check if Shaders_For_TAA.hlsl exists in the Shaders directory.", L"Engine Error", MB_OK);
+            return false;
+        }
+
+        D3D12_GRAPHICS_PIPELINE_STATE_DESC psoDesc = {};
+        psoDesc.InputLayout = { nullptr, 0 };
+        psoDesc.pRootSignature = taaRootSignature.Get();
+        psoDesc.VS = CD3DX12_SHADER_BYTECODE(vs->GetBufferPointer(), vs->GetBufferSize());
+        psoDesc.PS = CD3DX12_SHADER_BYTECODE(ps->GetBufferPointer(), ps->GetBufferSize());
+        psoDesc.RasterizerState = CD3DX12_RASTERIZER_DESC(D3D12_DEFAULT);
+        psoDesc.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
+        psoDesc.BlendState = CD3DX12_BLEND_DESC(D3D12_DEFAULT);
+        psoDesc.DepthStencilState.DepthEnable = FALSE;
+        psoDesc.DepthStencilState.StencilEnable = FALSE;
+        psoDesc.SampleMask = UINT_MAX;
+        psoDesc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+        psoDesc.NumRenderTargets = 1;
+        psoDesc.RTVFormats[0] = DXGI_FORMAT_R16G16B16A16_FLOAT;
+        psoDesc.SampleDesc.Count = 1;
+
+        if (FAILED(dc->GetDevice()->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(&psoTAA))))
+        {
+            MessageBox(NULL, L"Failed to create TAA PSO!", L"Engine Error", MB_OK);
+            return false;
+        }
+
+        return true;
+    }
+
 private:
 
     ComPtr<ID3D12PipelineState> psoZPrepass;
@@ -641,6 +707,9 @@ private:
     ComPtr<ID3D12RootSignature> hbaoRootSignature;
     ComPtr<ID3D12PipelineState> hbaoPSO;
     ComPtr<ID3D12PipelineState> hbaoBlurPSO;
+
+    ComPtr<ID3D12RootSignature> taaRootSignature;
+    ComPtr<ID3D12PipelineState> psoTAA;
 };
 
 #endif
