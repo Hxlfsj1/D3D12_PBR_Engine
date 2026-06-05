@@ -47,6 +47,18 @@ public:
         return psoZPrepass.Get();
     }
 
+    ID3D12PipelineState* GetZPrepassCutout_PSO()
+    {
+        return psoZPrepassCutout.Get();
+    }
+
+    ID3D12PipelineState* GetPBRCutout_PSO(int lodLevel = 0)
+    {
+        if (lodLevel < 0) lodLevel = 0;
+        if (lodLevel > 2) lodLevel = 2;
+        return psoPBRCutout[lodLevel].Get();
+    }
+
     ID3D12PipelineState* GetPBR_PSO(int lodLevel = 0)
     {
         if (lodLevel < 0) lodLevel = 0;
@@ -59,6 +71,13 @@ public:
         if (lodLevel < 0) lodLevel = 0;
         if (lodLevel > 2) lodLevel = 2;
         return psoGBuffer[lodLevel].Get();
+    }
+
+    ID3D12PipelineState* GetGBufferCutout_PSO(int lodLevel = 0)
+    {
+        if (lodLevel < 0) lodLevel = 0;
+        if (lodLevel > 2) lodLevel = 2;
+        return psoGBufferCutout[lodLevel].Get();
     }
 
     ID3D12PipelineState* GetSkybox_PSO()
@@ -74,6 +93,11 @@ public:
     ID3D12PipelineState* GetShadowPSO()
     {
         return shadowPSO.Get();
+    }
+
+    ID3D12PipelineState* GetShadowCutoutPSO()
+    {
+        return shadowCutoutPSO.Get();
     }
 
     ID3D12PipelineState* GetTransparentPSO_DepthOnly()
@@ -200,27 +224,18 @@ private:
 
     bool BuildPipelineStates(RenderDevice* dc)
     {
+        // ====================================================================================================
+        // MACROS & INPUT LAYOUTS
+        // ====================================================================================================
         std::vector<std::wstring> lod0Macros = { L"LOD_LEVEL=0" };
         std::vector<std::wstring> lod1Macros = { L"LOD_LEVEL=1" };
         std::vector<std::wstring> lod2Macros = { L"LOD_LEVEL=2" };
 
-        auto vs0 = ShaderCompiler::CompileFromFile(L"Shaders/Shaders_For_PBR.hlsl", L"VSMain", L"vs_6_6", lod0Macros);
-        auto vs1 = ShaderCompiler::CompileFromFile(L"Shaders/Shaders_For_PBR.hlsl", L"VSMain", L"vs_6_6", lod1Macros);
-        auto vs2 = ShaderCompiler::CompileFromFile(L"Shaders/Shaders_For_PBR.hlsl", L"VSMain", L"vs_6_6", lod2Macros);
+        std::vector<std::wstring> lod0Cutout = { L"LOD_LEVEL=0", L"ALPHA_TEST=1" };
+        std::vector<std::wstring> lod1Cutout = { L"LOD_LEVEL=1", L"ALPHA_TEST=1" };
+        std::vector<std::wstring> lod2Cutout = { L"LOD_LEVEL=2", L"ALPHA_TEST=1" };
 
-        auto ps0 = ShaderCompiler::CompileFromFile(L"Shaders/Shaders_For_PBR.hlsl", L"PSMain", L"ps_6_6", lod0Macros);
-        auto ps1 = ShaderCompiler::CompileFromFile(L"Shaders/Shaders_For_PBR.hlsl", L"PSMain", L"ps_6_6", lod1Macros);
-        auto ps2 = ShaderCompiler::CompileFromFile(L"Shaders/Shaders_For_PBR.hlsl", L"PSMain", L"ps_6_6", lod2Macros);
-
-        auto vsGBuffer0 = ShaderCompiler::CompileFromFile(L"Shaders/Shaders_For_GBuffer.hlsl", L"VSMain", L"vs_6_6", lod0Macros);
-        auto vsGBuffer1 = ShaderCompiler::CompileFromFile(L"Shaders/Shaders_For_GBuffer.hlsl", L"VSMain", L"vs_6_6", lod1Macros);
-        auto vsGBuffer2 = ShaderCompiler::CompileFromFile(L"Shaders/Shaders_For_GBuffer.hlsl", L"VSMain", L"vs_6_6", lod2Macros);
-
-        auto psGBuffer0 = ShaderCompiler::CompileFromFile(L"Shaders/Shaders_For_GBuffer.hlsl", L"PSMain", L"ps_6_6", lod0Macros);
-        auto psGBuffer1 = ShaderCompiler::CompileFromFile(L"Shaders/Shaders_For_GBuffer.hlsl", L"PSMain", L"ps_6_6", lod1Macros);
-        auto psGBuffer2 = ShaderCompiler::CompileFromFile(L"Shaders/Shaders_For_GBuffer.hlsl", L"PSMain", L"ps_6_6", lod2Macros);
-
-        auto vsZPrepass = ShaderCompiler::CompileFromFile(L"Shaders/Shaders_For_ZPrepass.hlsl", L"VSMain", L"vs_6_6");
+        std::vector<std::wstring> cutoutMacros = { L"ALPHA_TEST=1" };
 
         D3D12_INPUT_ELEMENT_DESC layout[] =
         {
@@ -233,6 +248,44 @@ private:
             { "BLENDWEIGHT", 0, DXGI_FORMAT_R32G32B32A32_FLOAT, 0, 72, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 }
         };
 
+        D3D12_INPUT_ELEMENT_DESC layoutSky[] = { { "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 0, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 } };
+
+        // ====================================================================================================
+        // SHADER COMPILATION
+        // ====================================================================================================
+        auto vsZPrepass = ShaderCompiler::CompileFromFile(L"Shaders/Shaders_For_ZPrepass.hlsl", L"VSMain", L"vs_6_6");
+        auto psZPrepassCutout = ShaderCompiler::CompileFromFile(L"Shaders/Shaders_For_ZPrepass.hlsl", L"PSMain", L"ps_6_6", cutoutMacros);
+
+        auto vs0 = ShaderCompiler::CompileFromFile(L"Shaders/Shaders_For_PBR.hlsl", L"VSMain", L"vs_6_6", lod0Macros);
+        auto vs1 = ShaderCompiler::CompileFromFile(L"Shaders/Shaders_For_PBR.hlsl", L"VSMain", L"vs_6_6", lod1Macros);
+        auto vs2 = ShaderCompiler::CompileFromFile(L"Shaders/Shaders_For_PBR.hlsl", L"VSMain", L"vs_6_6", lod2Macros);
+
+        auto ps0 = ShaderCompiler::CompileFromFile(L"Shaders/Shaders_For_PBR.hlsl", L"PSMain", L"ps_6_6", lod0Macros);
+        auto ps1 = ShaderCompiler::CompileFromFile(L"Shaders/Shaders_For_PBR.hlsl", L"PSMain", L"ps_6_6", lod1Macros);
+        auto ps2 = ShaderCompiler::CompileFromFile(L"Shaders/Shaders_For_PBR.hlsl", L"PSMain", L"ps_6_6", lod2Macros);
+
+        auto psPBRCutout0 = ShaderCompiler::CompileFromFile(L"Shaders/Shaders_For_PBR.hlsl", L"PSMain", L"ps_6_6", lod0Cutout);
+        auto psPBRCutout1 = ShaderCompiler::CompileFromFile(L"Shaders/Shaders_For_PBR.hlsl", L"PSMain", L"ps_6_6", lod1Cutout);
+        auto psPBRCutout2 = ShaderCompiler::CompileFromFile(L"Shaders/Shaders_For_PBR.hlsl", L"PSMain", L"ps_6_6", lod2Cutout);
+
+        auto vsGBuffer0 = ShaderCompiler::CompileFromFile(L"Shaders/Shaders_For_GBuffer.hlsl", L"VSMain", L"vs_6_6", lod0Macros);
+        auto vsGBuffer1 = ShaderCompiler::CompileFromFile(L"Shaders/Shaders_For_GBuffer.hlsl", L"VSMain", L"vs_6_6", lod1Macros);
+        auto vsGBuffer2 = ShaderCompiler::CompileFromFile(L"Shaders/Shaders_For_GBuffer.hlsl", L"VSMain", L"vs_6_6", lod2Macros);
+
+        auto psGBuffer0 = ShaderCompiler::CompileFromFile(L"Shaders/Shaders_For_GBuffer.hlsl", L"PSMain", L"ps_6_6", lod0Macros);
+        auto psGBuffer1 = ShaderCompiler::CompileFromFile(L"Shaders/Shaders_For_GBuffer.hlsl", L"PSMain", L"ps_6_6", lod1Macros);
+        auto psGBuffer2 = ShaderCompiler::CompileFromFile(L"Shaders/Shaders_For_GBuffer.hlsl", L"PSMain", L"ps_6_6", lod2Macros);
+
+        auto psGBufferCutout0 = ShaderCompiler::CompileFromFile(L"Shaders/Shaders_For_GBuffer.hlsl", L"PSMain", L"ps_6_6", lod0Cutout);
+        auto psGBufferCutout1 = ShaderCompiler::CompileFromFile(L"Shaders/Shaders_For_GBuffer.hlsl", L"PSMain", L"ps_6_6", lod1Cutout);
+        auto psGBufferCutout2 = ShaderCompiler::CompileFromFile(L"Shaders/Shaders_For_GBuffer.hlsl", L"PSMain", L"ps_6_6", lod2Cutout);
+
+        auto vsSky = ShaderCompiler::CompileFromFile(L"Shaders/Shaders_For_Sky_Box.hlsl", L"VSMain", L"vs_6_6");
+        auto psSky = ShaderCompiler::CompileFromFile(L"Shaders/Shaders_For_Sky_Box.hlsl", L"PSMain", L"ps_6_6");
+
+        // ====================================================================================================
+        // Z-PREPASS PSO
+        // ====================================================================================================
         D3D12_GRAPHICS_PIPELINE_STATE_DESC zPrepassPsoDesc = {};
         zPrepassPsoDesc.InputLayout = { layout, _countof(layout) };
         zPrepassPsoDesc.pRootSignature = rootSignature.Get();
@@ -252,12 +305,22 @@ private:
         zPrepassPsoDesc.DSVFormat = DXGI_FORMAT_D32_FLOAT;
         zPrepassPsoDesc.SampleDesc.Count = 1;
 
-        dc->GetDevice()->CreateGraphicsPipelineState(&zPrepassPsoDesc, IID_PPV_ARGS(&psoZPrepass));
+        if (FAILED(dc->GetDevice()->CreateGraphicsPipelineState(&zPrepassPsoDesc, IID_PPV_ARGS(&psoZPrepass)))) return false;
 
+        // ====================================================================================================
+        // Z-PREPASS CUTOUT PSO
+        // ====================================================================================================
+        zPrepassPsoDesc.PS = CD3DX12_SHADER_BYTECODE(psZPrepassCutout->GetBufferPointer(), psZPrepassCutout->GetBufferSize());
+        zPrepassPsoDesc.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
+
+        if (FAILED(dc->GetDevice()->CreateGraphicsPipelineState(&zPrepassPsoDesc, IID_PPV_ARGS(&psoZPrepassCutout)))) return false;
+
+        // ====================================================================================================
+        // FORWARD PBR PSOs
+        // ====================================================================================================
         D3D12_GRAPHICS_PIPELINE_STATE_DESC psoDesc = {};
         psoDesc.InputLayout = { layout, _countof(layout) };
         psoDesc.pRootSignature = rootSignature.Get();
-
         psoDesc.RasterizerState = CD3DX12_RASTERIZER_DESC(D3D12_DEFAULT);
         psoDesc.RasterizerState.CullMode = D3D12_CULL_MODE_BACK;
         psoDesc.BlendState = CD3DX12_BLEND_DESC(D3D12_DEFAULT);
@@ -273,42 +336,78 @@ private:
 
         psoDesc.VS = CD3DX12_SHADER_BYTECODE(vs0->GetBufferPointer(), vs0->GetBufferSize());
         psoDesc.PS = CD3DX12_SHADER_BYTECODE(ps0->GetBufferPointer(), ps0->GetBufferSize());
-        dc->GetDevice()->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(&psoPBR[0]));
+        if (FAILED(dc->GetDevice()->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(&psoPBR[0])))) return false;
 
         psoDesc.VS = CD3DX12_SHADER_BYTECODE(vs1->GetBufferPointer(), vs1->GetBufferSize());
         psoDesc.PS = CD3DX12_SHADER_BYTECODE(ps1->GetBufferPointer(), ps1->GetBufferSize());
-        dc->GetDevice()->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(&psoPBR[1]));
+        if (FAILED(dc->GetDevice()->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(&psoPBR[1])))) return false;
 
         psoDesc.VS = CD3DX12_SHADER_BYTECODE(vs2->GetBufferPointer(), vs2->GetBufferSize());
         psoDesc.PS = CD3DX12_SHADER_BYTECODE(ps2->GetBufferPointer(), ps2->GetBufferSize());
-        dc->GetDevice()->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(&psoPBR[2]));
+        if (FAILED(dc->GetDevice()->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(&psoPBR[2])))) return false;
 
+        // ====================================================================================================
+        // FORWARD PBR CUTOUT PSOs
+        // ====================================================================================================
+        D3D12_GRAPHICS_PIPELINE_STATE_DESC pbrCutoutDesc = psoDesc;
+        pbrCutoutDesc.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
+
+        pbrCutoutDesc.VS = CD3DX12_SHADER_BYTECODE(vs0->GetBufferPointer(), vs0->GetBufferSize());
+        pbrCutoutDesc.PS = CD3DX12_SHADER_BYTECODE(psPBRCutout0->GetBufferPointer(), psPBRCutout0->GetBufferSize());
+        if (FAILED(dc->GetDevice()->CreateGraphicsPipelineState(&pbrCutoutDesc, IID_PPV_ARGS(&psoPBRCutout[0])))) return false;
+
+        pbrCutoutDesc.VS = CD3DX12_SHADER_BYTECODE(vs1->GetBufferPointer(), vs1->GetBufferSize());
+        pbrCutoutDesc.PS = CD3DX12_SHADER_BYTECODE(psPBRCutout1->GetBufferPointer(), psPBRCutout1->GetBufferSize());
+        if (FAILED(dc->GetDevice()->CreateGraphicsPipelineState(&pbrCutoutDesc, IID_PPV_ARGS(&psoPBRCutout[1])))) return false;
+
+        pbrCutoutDesc.VS = CD3DX12_SHADER_BYTECODE(vs2->GetBufferPointer(), vs2->GetBufferSize());
+        pbrCutoutDesc.PS = CD3DX12_SHADER_BYTECODE(psPBRCutout2->GetBufferPointer(), psPBRCutout2->GetBufferSize());
+        if (FAILED(dc->GetDevice()->CreateGraphicsPipelineState(&pbrCutoutDesc, IID_PPV_ARGS(&psoPBRCutout[2])))) return false;
+
+        // ====================================================================================================
+        // G-BUFFER PSOs
+        // ====================================================================================================
         D3D12_GRAPHICS_PIPELINE_STATE_DESC gbufferPsoDesc = psoDesc;
         gbufferPsoDesc.NumRenderTargets = 3;
         gbufferPsoDesc.RTVFormats[0] = DXGI_FORMAT_R8G8B8A8_UNORM;
         gbufferPsoDesc.RTVFormats[1] = DXGI_FORMAT_R16G16B16A16_FLOAT;
         gbufferPsoDesc.RTVFormats[2] = DXGI_FORMAT_R8G8B8A8_UNORM;
-
         gbufferPsoDesc.DepthStencilState = CD3DX12_DEPTH_STENCIL_DESC(D3D12_DEFAULT);
         gbufferPsoDesc.DepthStencilState.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ALL;
         gbufferPsoDesc.DepthStencilState.DepthFunc = D3D12_COMPARISON_FUNC_LESS;
 
         gbufferPsoDesc.VS = CD3DX12_SHADER_BYTECODE(vsGBuffer0->GetBufferPointer(), vsGBuffer0->GetBufferSize());
         gbufferPsoDesc.PS = CD3DX12_SHADER_BYTECODE(psGBuffer0->GetBufferPointer(), psGBuffer0->GetBufferSize());
-        dc->GetDevice()->CreateGraphicsPipelineState(&gbufferPsoDesc, IID_PPV_ARGS(&psoGBuffer[0]));
+        if (FAILED(dc->GetDevice()->CreateGraphicsPipelineState(&gbufferPsoDesc, IID_PPV_ARGS(&psoGBuffer[0])))) return false;
 
         gbufferPsoDesc.VS = CD3DX12_SHADER_BYTECODE(vsGBuffer1->GetBufferPointer(), vsGBuffer1->GetBufferSize());
         gbufferPsoDesc.PS = CD3DX12_SHADER_BYTECODE(psGBuffer1->GetBufferPointer(), psGBuffer1->GetBufferSize());
-        dc->GetDevice()->CreateGraphicsPipelineState(&gbufferPsoDesc, IID_PPV_ARGS(&psoGBuffer[1]));
+        if (FAILED(dc->GetDevice()->CreateGraphicsPipelineState(&gbufferPsoDesc, IID_PPV_ARGS(&psoGBuffer[1])))) return false;
 
         gbufferPsoDesc.VS = CD3DX12_SHADER_BYTECODE(vsGBuffer2->GetBufferPointer(), vsGBuffer2->GetBufferSize());
         gbufferPsoDesc.PS = CD3DX12_SHADER_BYTECODE(psGBuffer2->GetBufferPointer(), psGBuffer2->GetBufferSize());
-        dc->GetDevice()->CreateGraphicsPipelineState(&gbufferPsoDesc, IID_PPV_ARGS(&psoGBuffer[2]));
+        if (FAILED(dc->GetDevice()->CreateGraphicsPipelineState(&gbufferPsoDesc, IID_PPV_ARGS(&psoGBuffer[2])))) return false;
 
-        psoDesc.VS = CD3DX12_SHADER_BYTECODE(vs0->GetBufferPointer(), vs0->GetBufferSize());
-        psoDesc.PS = CD3DX12_SHADER_BYTECODE(ps0->GetBufferPointer(), ps0->GetBufferSize());
+        // ====================================================================================================
+        // G-BUFFER CUTOUT PSOs
+        // ====================================================================================================
+        gbufferPsoDesc.VS = CD3DX12_SHADER_BYTECODE(vsGBuffer0->GetBufferPointer(), vsGBuffer0->GetBufferSize());
+        gbufferPsoDesc.PS = CD3DX12_SHADER_BYTECODE(psGBufferCutout0->GetBufferPointer(), psGBufferCutout0->GetBufferSize());
+        if (FAILED(dc->GetDevice()->CreateGraphicsPipelineState(&gbufferPsoDesc, IID_PPV_ARGS(&psoGBufferCutout[0])))) return false;
 
+        gbufferPsoDesc.VS = CD3DX12_SHADER_BYTECODE(vsGBuffer1->GetBufferPointer(), vsGBuffer1->GetBufferSize());
+        gbufferPsoDesc.PS = CD3DX12_SHADER_BYTECODE(psGBufferCutout1->GetBufferPointer(), psGBufferCutout1->GetBufferSize());
+        if (FAILED(dc->GetDevice()->CreateGraphicsPipelineState(&gbufferPsoDesc, IID_PPV_ARGS(&psoGBufferCutout[1])))) return false;
+
+        gbufferPsoDesc.VS = CD3DX12_SHADER_BYTECODE(vsGBuffer2->GetBufferPointer(), vsGBuffer2->GetBufferSize());
+        gbufferPsoDesc.PS = CD3DX12_SHADER_BYTECODE(psGBufferCutout2->GetBufferPointer(), psGBufferCutout2->GetBufferSize());
+        if (FAILED(dc->GetDevice()->CreateGraphicsPipelineState(&gbufferPsoDesc, IID_PPV_ARGS(&psoGBufferCutout[2])))) return false;
+
+        // ====================================================================================================
+        // TRANSPARENT PSOs
+        // ====================================================================================================
         D3D12_GRAPHICS_PIPELINE_STATE_DESC depthOnlyDesc = psoDesc;
+        depthOnlyDesc.VS = CD3DX12_SHADER_BYTECODE(vs0->GetBufferPointer(), vs0->GetBufferSize());
         depthOnlyDesc.PS = { nullptr, 0 };
         depthOnlyDesc.BlendState.RenderTarget[0].RenderTargetWriteMask = 0;
         depthOnlyDesc.DepthStencilState.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ALL;
@@ -316,10 +415,9 @@ private:
         depthOnlyDesc.DepthStencilState.DepthFunc = D3D12_COMPARISON_FUNC_LESS;
         depthOnlyDesc.RasterizerState.CullMode = D3D12_CULL_MODE_BACK;
 
-        dc->GetDevice()->CreateGraphicsPipelineState(&depthOnlyDesc, IID_PPV_ARGS(&psoTransparent_DepthOnly));
+        if (FAILED(dc->GetDevice()->CreateGraphicsPipelineState(&depthOnlyDesc, IID_PPV_ARGS(&psoTransparent_DepthOnly)))) return false;
 
         D3D12_GRAPHICS_PIPELINE_STATE_DESC colorDesc = psoDesc;
-
         D3D12_RENDER_TARGET_BLEND_DESC transparencyBlendDesc = {};
         transparencyBlendDesc.BlendEnable = TRUE;
         transparencyBlendDesc.LogicOpEnable = FALSE;
@@ -332,53 +430,36 @@ private:
         transparencyBlendDesc.LogicOp = D3D12_LOGIC_OP_NOOP;
         transparencyBlendDesc.RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
 
+        colorDesc.VS = CD3DX12_SHADER_BYTECODE(vs0->GetBufferPointer(), vs0->GetBufferSize());
+        colorDesc.PS = CD3DX12_SHADER_BYTECODE(ps0->GetBufferPointer(), ps0->GetBufferSize());
         colorDesc.BlendState.RenderTarget[0] = transparencyBlendDesc;
-
         colorDesc.DepthStencilState.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ZERO;
         colorDesc.DepthStencilState.DepthFunc = D3D12_COMPARISON_FUNC_EQUAL;
         colorDesc.RasterizerState.CullMode = D3D12_CULL_MODE_BACK;
 
-        dc->GetDevice()->CreateGraphicsPipelineState(&colorDesc, IID_PPV_ARGS(&psoTransparent_Color));
+        if (FAILED(dc->GetDevice()->CreateGraphicsPipelineState(&colorDesc, IID_PPV_ARGS(&psoTransparent_Color)))) return false;
 
-        auto vsSky = ShaderCompiler::CompileFromFile(L"Shaders/Shaders_For_Sky_Box.hlsl", L"VSMain", L"vs_6_6");
-        auto psSky = ShaderCompiler::CompileFromFile(L"Shaders/Shaders_For_Sky_Box.hlsl", L"PSMain", L"ps_6_6");
-
+        // ====================================================================================================
+        // SKYBOX PSO
+        // ====================================================================================================
         D3D12_GRAPHICS_PIPELINE_STATE_DESC skyPsoDesc = psoDesc;
-        D3D12_INPUT_ELEMENT_DESC layoutSky[] = { { "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 0, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 } };
-
         skyPsoDesc.InputLayout = { layoutSky, 1 };
         skyPsoDesc.VS = CD3DX12_SHADER_BYTECODE(vsSky->GetBufferPointer(), vsSky->GetBufferSize());
         skyPsoDesc.PS = CD3DX12_SHADER_BYTECODE(psSky->GetBufferPointer(), psSky->GetBufferSize());
         skyPsoDesc.RasterizerState.CullMode = D3D12_CULL_MODE_FRONT;
         skyPsoDesc.DepthStencilState.DepthFunc = D3D12_COMPARISON_FUNC_LESS_EQUAL;
 
-        dc->GetDevice()->CreateGraphicsPipelineState(&skyPsoDesc, IID_PPV_ARGS(&psoSkybox));
+        if (FAILED(dc->GetDevice()->CreateGraphicsPipelineState(&skyPsoDesc, IID_PPV_ARGS(&psoSkybox)))) return false;
 
         return true;
     }
 
     bool BuildShadowPipeline(RenderDevice* dc)
     {
-        D3D12_ROOT_PARAMETER rootParams[2];
-
-        rootParams[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
-        rootParams[0].Descriptor.ShaderRegister = 0;
-        rootParams[0].Descriptor.RegisterSpace = 0;
-        rootParams[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_VERTEX;
-
-        rootParams[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_SRV;
-        rootParams[1].Descriptor.ShaderRegister = 0;
-        rootParams[1].Descriptor.RegisterSpace = 0;
-        rootParams[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_VERTEX;
-
-        CD3DX12_ROOT_SIGNATURE_DESC rsDesc;
-        rsDesc.Init(2, rootParams, 0, nullptr, D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT);
-
-        ComPtr<ID3DBlob> rsBlob;
-        if (FAILED(D3D12SerializeRootSignature(&rsDesc, D3D_ROOT_SIGNATURE_VERSION_1, &rsBlob, nullptr))) return false;
-        if (FAILED(dc->GetDevice()->CreateRootSignature(0, rsBlob->GetBufferPointer(), rsBlob->GetBufferSize(), IID_PPV_ARGS(&shadowRootSignature)))) return false;
-
         auto vs = ShaderCompiler::CompileFromFile(L"Shaders/Shaders_For_Shadow.hlsl", L"VSMain", L"vs_6_6");
+
+        std::vector<std::wstring> cutoutMacros = { L"ALPHA_TEST=1" };
+        auto psCutout = ShaderCompiler::CompileFromFile(L"Shaders/Shaders_For_Shadow.hlsl", L"PSMain", L"ps_6_6", cutoutMacros);
 
         D3D12_INPUT_ELEMENT_DESC layout[] =
         {
@@ -393,14 +474,13 @@ private:
 
         D3D12_GRAPHICS_PIPELINE_STATE_DESC psoDesc = {};
         psoDesc.InputLayout = { layout, _countof(layout) };
-        psoDesc.pRootSignature = shadowRootSignature.Get();
-        psoDesc.VS = CD3DX12_SHADER_BYTECODE(vs->GetBufferPointer(), vs->GetBufferSize());
-        psoDesc.PS = { nullptr, 0 };
+        psoDesc.pRootSignature = rootSignature.Get();
 
         auto rasterizerState = CD3DX12_RASTERIZER_DESC(D3D12_DEFAULT);
         rasterizerState.DepthBias = 500;
         rasterizerState.DepthBiasClamp = 0.0f;
         rasterizerState.SlopeScaledDepthBias = 1.0f;
+        rasterizerState.CullMode = D3D12_CULL_MODE_NONE;
         psoDesc.RasterizerState = rasterizerState;
 
         psoDesc.BlendState = CD3DX12_BLEND_DESC(D3D12_DEFAULT);
@@ -413,7 +493,12 @@ private:
         psoDesc.DSVFormat = DXGI_FORMAT_D32_FLOAT;
         psoDesc.SampleDesc.Count = 1;
 
+        psoDesc.VS = CD3DX12_SHADER_BYTECODE(vs->GetBufferPointer(), vs->GetBufferSize());
+        psoDesc.PS = { nullptr, 0 };
         if (FAILED(dc->GetDevice()->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(&shadowPSO)))) return false;
+
+        psoDesc.PS = CD3DX12_SHADER_BYTECODE(psCutout->GetBufferPointer(), psCutout->GetBufferSize());
+        if (FAILED(dc->GetDevice()->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(&shadowCutoutPSO)))) return false;
 
         return true;
     }
@@ -687,13 +772,17 @@ private:
 private:
 
     ComPtr<ID3D12PipelineState> psoZPrepass;
+    ComPtr<ID3D12PipelineState> psoZPrepassCutout;
+    ComPtr<ID3D12PipelineState> psoPBRCutout[3];
     ComPtr<ID3D12PipelineState> psoPBR[3];
     ComPtr<ID3D12PipelineState> psoGBuffer[3];
+    ComPtr<ID3D12PipelineState> psoGBufferCutout[3];
     ComPtr<ID3D12PipelineState> psoSkybox;
     ComPtr<ID3D12RootSignature> rootSignature;
 
     ComPtr<ID3D12RootSignature> shadowRootSignature;
     ComPtr<ID3D12PipelineState> shadowPSO;
+    ComPtr<ID3D12PipelineState> shadowCutoutPSO;
 
     ComPtr<ID3D12PipelineState> psoTransparent_DepthOnly;
     ComPtr<ID3D12PipelineState> psoTransparent_Color;

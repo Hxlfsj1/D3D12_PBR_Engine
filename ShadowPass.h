@@ -30,7 +30,7 @@ public:
 
         cmdList->ResourceBarrier(1, &toDepthWrite);
 
-        cmdList->SetGraphicsRootSignature(pipelineManager->GetShadowRootSignature());
+        cmdList->SetGraphicsRootSignature(pipelineManager->GetRootSignature());
         cmdList->SetPipelineState(pipelineManager->GetShadowPSO());
 
         D3D12_VIEWPORT shadowViewport = { 0.0f, 0.0f, 4096.0f, 4096.0f, 0.0f, 1.0f };
@@ -44,13 +44,18 @@ public:
         cmdList->OMSetRenderTargets(0, nullptr, FALSE, &dsv);
         cmdList->ClearDepthStencilView(dsv, D3D12_CLEAR_FLAG_DEPTH, 1.0f, 0, 0, nullptr);
 
+        ID3D12DescriptorHeap* heaps[] = { resourceManager->GetMainDescriptorHeap() };
+        cmdList->SetDescriptorHeaps(1, heaps);
+
         D3D12_GPU_VIRTUAL_ADDRESS baseGpuAddress = resourceManager->GetCBVGPUAddress(frameIndex);
         cmdList->SetGraphicsRootConstantBufferView(0, baseGpuAddress);
+        cmdList->SetGraphicsRootShaderResourceView(3, resourceManager->GetMaterialBufferGPUAddress());
 
         cmdList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
 
         Model* currentModel = nullptr;
         int currentLod = -1;
+        bool currentIsCutout = false;
         UINT instanceStartOffset = 0;
         UINT currentInstanceCount = 0;
 
@@ -59,24 +64,39 @@ public:
             bool isEnd = (i == shadowVisibleInstances.size());
             Model* thisModel = isEnd ? nullptr : shadowVisibleInstances[i]->pModel;
             int thisLod = isEnd ? -1 : shadowVisibleInstances[i]->currentLodLevel;
+            bool thisIsCutout = isEnd ? false : shadowVisibleInstances[i]->isCutout;
 
-            if ((isEnd || thisModel != currentModel || thisLod != currentLod) && currentInstanceCount > 0 && currentModel != nullptr)
+            if ((isEnd || thisModel != currentModel || thisLod != currentLod || thisIsCutout != currentIsCutout) && currentInstanceCount > 0 && currentModel != nullptr)
             {
                 D3D12_GPU_VIRTUAL_ADDRESS srvAddress = baseGpuAddress + 256 + ((visibleInstancesSize + instanceStartOffset) * sizeof(InstanceData));
                 cmdList->SetGraphicsRootShaderResourceView(1, srvAddress);
 
                 for (auto& mesh : currentModel->meshes)
                 {
+                    cmdList->SetGraphicsRoot32BitConstants(4, 1, &mesh.materialID, 0);
                     mesh.Draw(cmdList, currentInstanceCount, currentLod);
                 }
             }
 
             if (!isEnd)
             {
-                if (thisModel != currentModel || thisLod != currentLod)
+                if (thisModel != currentModel || thisLod != currentLod || thisIsCutout != currentIsCutout)
                 {
+                    if (thisIsCutout != currentIsCutout)
+                    {
+                        if (thisIsCutout)
+                        {
+                            cmdList->SetPipelineState(pipelineManager->GetShadowCutoutPSO());
+                        }
+                        else
+                        {
+                            cmdList->SetPipelineState(pipelineManager->GetShadowPSO());
+                        }
+                    }
+
                     currentModel = thisModel;
                     currentLod = thisLod;
+                    currentIsCutout = thisIsCutout;
                     instanceStartOffset = i;
                     currentInstanceCount = 1;
                 }

@@ -111,6 +111,7 @@ public:
             instance.rotation = desc.rot;
             instance.scale = desc.scale;
             instance.isTransparent = desc.isTransparent;
+            instance.isCutout = desc.isCutout;
 
             m_sceneInstances.push_back(instance);
         }

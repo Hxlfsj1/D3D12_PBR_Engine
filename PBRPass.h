@@ -71,10 +71,14 @@ public:
 
             auto DrawQueue = [=](size_t startIdx, size_t endIdx, bool isPBR)
                 {
-                    if (startIdx >= endIdx) return;
+                    if (startIdx >= endIdx)
+                    {
+                        return;
+                    }
 
                     Model* currentModel = nullptr;
                     int currentLod = -1;
+                    bool currentIsCutout = false;
                     UINT instanceStartOffset = 0;
                     UINT currentInstanceCount = 0;
 
@@ -83,8 +87,9 @@ public:
                         bool isEnd = (i == endIdx);
                         Model* thisModel = isEnd ? nullptr : visibleInstances[i]->pModel;
                         int thisLod = isEnd ? -1 : visibleInstances[i]->currentLodLevel;
+                        bool thisIsCutout = isEnd ? false : visibleInstances[i]->isCutout;
 
-                        if ((isEnd || thisModel != currentModel || thisLod != currentLod) && currentInstanceCount > 0 && currentModel != nullptr)
+                        if ((isEnd || thisModel != currentModel || thisLod != currentLod || thisIsCutout != currentIsCutout) && currentInstanceCount > 0 && currentModel != nullptr)
                         {
                             D3D12_GPU_VIRTUAL_ADDRESS srvAddress = baseGpuAddress + 256 + (instanceStartOffset * sizeof(InstanceData));
                             cmdList->SetGraphicsRootShaderResourceView(1, srvAddress);
@@ -102,22 +107,37 @@ public:
 
                         if (!isEnd)
                         {
-                            if (thisModel != currentModel || thisLod != currentLod)
+                            if (thisModel != currentModel || thisLod != currentLod || thisIsCutout != currentIsCutout)
                             {
-                                if (thisLod != currentLod)
+                                if (thisLod != currentLod || thisIsCutout != currentIsCutout)
                                 {
                                     if (isPBR)
                                     {
-                                        cmdList->SetPipelineState(pipelineManager->GetPBR_PSO(thisLod));
+                                        if (thisIsCutout)
+                                        {
+                                            cmdList->SetPipelineState(pipelineManager->GetPBRCutout_PSO(thisLod));
+                                        }
+                                        else
+                                        {
+                                            cmdList->SetPipelineState(pipelineManager->GetPBR_PSO(thisLod));
+                                        }
                                     }
                                     else
                                     {
-                                        cmdList->SetPipelineState(pipelineManager->GetZPrepass_PSO());
+                                        if (thisIsCutout)
+                                        {
+                                            cmdList->SetPipelineState(pipelineManager->GetZPrepassCutout_PSO());
+                                        }
+                                        else
+                                        {
+                                            cmdList->SetPipelineState(pipelineManager->GetZPrepass_PSO());
+                                        }
                                     }
                                 }
 
                                 currentModel = thisModel;
                                 currentLod = thisLod;
+                                currentIsCutout = thisIsCutout;
                                 instanceStartOffset = i;
                                 currentInstanceCount = 1;
                             }
@@ -176,7 +196,10 @@ public:
         for (size_t i = transparentStartIndex; i < visibleInstances.size(); ++i)
         {
             ModelInstance* instance = visibleInstances[i];
-            if (!instance->pModel) continue;
+            if (!instance->pModel)
+            {
+                continue;
+            }
 
             D3D12_GPU_VIRTUAL_ADDRESS srvAddress = baseGpuAddress + 256 + (i * sizeof(InstanceData));
 

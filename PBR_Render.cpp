@@ -425,11 +425,10 @@ void D3D12App::Update()
 
             if (!a->isTransparent)
             {
-                if (a->pModel != b->pModel)
-                {
-                    return a->pModel < b->pModel;
-                }
-                return a->currentLodLevel < b->currentLodLevel;
+                if (a->pModel != b->pModel) return a->pModel < b->pModel;
+                if (a->currentLodLevel != b->currentLodLevel) return a->currentLodLevel < b->currentLodLevel;
+
+                return (int)a->isCutout < (int)b->isCutout;
             }
 
             // Rebuild the instancing batches for opaque objects

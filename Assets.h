@@ -13,6 +13,7 @@ struct InstanceDesc
     DirectX::XMFLOAT3 rot;
     DirectX::XMFLOAT3 scale;
     bool isTransparent = false;
+    bool isCutout = false;
 
     UINT materialOverrideIndex = 0xFFFFFFFF;
 };
@@ -35,7 +36,8 @@ public:
                 { 0.0f, 0.0f, 0.0f },
                 { 0.0f, 0.0f, 0.0f },
                 { 1.0f, 1.0f, 1.0f },
-                true
+                true,
+                false
             },
 
             {

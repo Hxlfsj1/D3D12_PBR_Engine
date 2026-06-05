@@ -308,7 +308,10 @@ float4 PSMain(VS_OUTPUT input) : SV_TARGET
     Texture2D tEmissive = ResourceDescriptorHeap[mat.emissiveIdx];
     
     float4 albedoSample = tAlbedo.Sample(s1, input.texCoord);
-    float3 albedo = pow(albedoSample.rgb, 2.2);
+#ifdef ALPHA_TEST
+    clip(albedoSample.a - 0.5f);
+#endif
+    float3 albedo = pow(abs(albedoSample.rgb), 2.2);
     float finalAlpha = albedoSample.a;
     
     if (mat.isUnlit)

@@ -7,6 +7,14 @@ cbuffer PassConstants : register(b0)
     float3 lightColor;
     float padding3;
     float4x4 lightViewProj;
+    uint iblPrefilterIdx;
+    uint iblBRDFIdx;
+    uint shadowMapIdx;
+};
+
+cbuffer MeshConstants : register(b1)
+{
+    uint materialID;
 };
 
 struct InstanceData
@@ -14,11 +22,23 @@ struct InstanceData
     float4x4 wvpMat;
     float4x4 worldMat;
     float4x4 normalMat;
-    
     uint customMaterialID;
     uint3 pad;
 };
-StructuredBuffer<InstanceData> gInstanceData : register(t0);
+
+struct MaterialData
+{
+    uint albedoIdx;
+    uint normalIdx;
+    uint ormIdx;
+    uint emissiveIdx;
+    uint isUnlit;
+    uint3 pad;
+};
+
+StructuredBuffer<InstanceData> gInstanceData : register(t6);
+StructuredBuffer<MaterialData> gMaterialData : register(t7);
+SamplerState s1 : register(s0);
 
 struct VS_INPUT
 {
@@ -32,11 +52,34 @@ struct VS_INPUT
     uint instanceID : SV_InstanceID;
 };
 
+struct VS_OUTPUT
+{
+    float4 pos : SV_POSITION;
+    float2 texCoord : TEXCOORD;
+    nointerpolation uint instanceID : TEXCOORD1;
+};
+
 // Outputs the 4D position of each vertex from the light's perspective
 // The rasterizer will later extract the depth (Z) from this to build the Shadow Map
-float4 VSMain(VS_INPUT input) : SV_POSITION
+VS_OUTPUT VSMain(VS_INPUT input)
 {
+    VS_OUTPUT output;
     float4x4 worldMat = gInstanceData[input.instanceID].worldMat;
-    float4 worldPos = mul(float4(input.pos, 1.0f), worldMat);
-    return mul(worldPos, lightViewProj);
+    output.pos = mul(mul(float4(input.pos, 1.0f), worldMat), lightViewProj);
+    output.texCoord = input.texCoord;
+    output.instanceID = input.instanceID;
+    return output;
 }
+
+#ifdef ALPHA_TEST
+void PSMain(VS_OUTPUT input)
+{
+    uint instMatID = gInstanceData[input.instanceID].customMaterialID;
+    uint finalMatID = (instMatID != 0xFFFFFFFF) ? instMatID : materialID;
+    
+    Texture2D tAlbedo = ResourceDescriptorHeap[gMaterialData[finalMatID].albedoIdx];
+    float alpha = tAlbedo.Sample(s1, input.texCoord).a;
+    
+    clip(alpha - 0.5f);
+}
+#endif

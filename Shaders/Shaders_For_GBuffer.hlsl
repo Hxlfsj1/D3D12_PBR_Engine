@@ -96,7 +96,9 @@ GBufferOutput PSMain(VS_OUTPUT input)
     Texture2D tAlbedo = ResourceDescriptorHeap[gMaterialData[finalMatID].albedoIdx];
     float4 albedoSample = tAlbedo.Sample(s1, input.texCoord);
     
+#ifdef ALPHA_TEST
     clip(albedoSample.a - 0.5f);
+#endif
 
     output.albedo = float4(pow(abs(albedoSample.rgb), 2.2), albedoSample.a);
     
