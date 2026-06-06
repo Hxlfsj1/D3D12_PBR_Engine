@@ -57,13 +57,64 @@ public:
         std::ifstream file(filepath);
         if (!file.is_open())
         {
-            OutputDebugStringA(("Warning: Failed to open " + filepath + ", falling back to hardcoded scene.\n").c_str());
+            OutputDebugStringA(("Warning: Failed to open " + filepath + "\n").c_str());
+            return {};
         }
 
         nlohmann::json j;
         file >> j;
 
-        return j.get<std::vector<InstanceDesc>>();
+        if (j.is_object())
+        {
+            bool isStressTest = j.value("stress_test", false);
+            std::vector<InstanceDesc> instances = j.value("instances", nlohmann::json::array()).get<std::vector<InstanceDesc>>();
+
+            if (isStressTest && !instances.empty())
+            {
+                return GeneratePerformanceTestScene(instances[0].modelPath);
+            }
+
+            return instances;
+        }
+        else if (j.is_array())
+        {
+            return j.get<std::vector<InstanceDesc>>();
+        }
+
+        return {};
+    }
+
+    static std::vector<InstanceDesc> GeneratePerformanceTestScene(const std::string& modelPath)
+    {
+        std::vector<InstanceDesc> scene;
+        scene.reserve(8000);
+
+        float spacing = 3.0f;
+        float offset = (10.0f * spacing) / 2.0f;
+
+        for (int x = 0; x < 20; ++x)
+        {
+            for (int y = 0; y < 20; ++y)
+            {
+                for (int z = 0; z < 20; ++z)
+                {
+                    std::string name = "Test_Model_" + std::to_string(x) + "_" + std::to_string(y) + "_" + std::to_string(z);
+
+                    InstanceDesc desc;
+                    desc.name = name;
+                    desc.modelPath = modelPath;
+                    desc.pos = { (x * spacing) - offset, (y * spacing) - offset, (z * spacing) - offset };
+                    desc.rot = { 0.0f, 0.0f, 0.0f };
+                    desc.scale = { 1.0f, 1.0f, 1.0f };
+                    desc.isTransparent = false;
+                    desc.isCutout = false;
+                    desc.materialOverrideIndex = 0xFFFFFFFF;
+
+                    scene.push_back(desc);
+                }
+            }
+        }
+        return scene;
     }
 };
 

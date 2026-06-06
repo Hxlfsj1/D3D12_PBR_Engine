@@ -1,20 +1,25 @@
-[
-  {
-    "name": "Model_0",
-    "model_path": "Models/MP5.glb",
-    "pos": [ 0.0, 0.0, 0.0 ],
-    "rot": [ 0.0, 0.0, 0.0 ],
-    "scale": [ 1.0, 1.0, 1.0 ],
-    "is_transparent": true,
-    "is_cutout": false
-  },
-  {
-    "name": "Model_1",
-    "model_path": "Models/Plain.glb",
-    "pos": [ 0.0, 0.01, 0.0 ],
-    "rot": [ 0.0, 0.0, 0.0 ],
-    "scale": [ 1.0, 1.0, 1.0 ],
-    "is_transparent": false,
-    "is_cutout": false
-  }
-]
+{
+  "stress_test": false,
+  "instances":
+   [
+    {
+      "name": "BaseModel",
+      "model_path": "Models/MP5.glb",
+      "pos": [ 0.0, 0.0, 0.0 ],
+      "rot": [ 0.0, 0.0, 0.0 ],
+      "scale": [ 1.0, 1.0, 1.0 ],
+      "is_transparent": false,
+      "is_cutout": false
+    },
+
+    {
+      "name": "BaseModel",
+      "model_path": "Models/Plain.glb",
+      "pos": [ 0.0, 0.0, 0.0 ],
+      "rot": [ 0.0, 0.0, 0.0 ],
+      "scale": [ 1.0, 1.0, 1.0 ],
+      "is_transparent": false,
+      "is_cutout": false
+    }
+  ]
+}
