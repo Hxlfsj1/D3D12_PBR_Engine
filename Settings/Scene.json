@@ -1,7 +1,7 @@
 {
+  "skybox_path": "HDRs/citrus_orchard_road_puresky_4k.hdr",
   "stress_test": false,
-  "instances":
-   [
+  "instances": [
     {
       "name": "BaseModel",
       "model_path": "Models/MP5.glb",

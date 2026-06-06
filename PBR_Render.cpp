@@ -87,8 +87,6 @@ D3D12App::~D3D12App()
 
 bool D3D12App::Initialize(int nShowCmd)
 {
-    currentHDRPath = Assets::GetSkyboxPath();
-
     // Ask the system for a window
     if (!InitializeWindow(nShowCmd))
     {
@@ -185,6 +183,7 @@ bool D3D12App::InitD3D()
     // Stream Assets & Build IBL: Load 3D models and HDR textures into VRAM and bake IBL components
     if (!m_resourceManager.LoadAssets(&m_deviceContext, Assets::LoadSceneFromJson("Settings/Scene.json"), frameBufferCount)) return false;
     m_resourceManager.BuildGlobalMaterialPool(&m_deviceContext);
+    currentHDRPath = Assets::GetSkyboxPathFromJson();
     m_resourceManager.InitIBL(&m_deviceContext, currentHDRPath.c_str());
 
     if (!m_resourceManager.InitShadowResources(&m_deviceContext)) return false;

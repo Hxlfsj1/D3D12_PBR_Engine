@@ -47,9 +47,11 @@ inline void from_json(const nlohmann::json& j, InstanceDesc& desc)
 class Assets
 {
 public:
-    static const char* GetSkyboxPath()
+    inline static std::string s_skyboxPath = "HDRs/citrus_orchard_road_puresky_4k.hdr";
+
+    static const char* GetSkyboxPathFromJson()
     {
-        return "HDRs/citrus_orchard_road_puresky_4k.hdr";
+        return s_skyboxPath.c_str();
     }
 
     static std::vector<InstanceDesc> LoadSceneFromJson(const std::string& filepath)
@@ -66,6 +68,8 @@ public:
 
         if (j.is_object())
         {
+            s_skyboxPath = j.value("skybox_path", "HDRs/citrus_orchard_road_puresky_4k.hdr");
+
             bool isStressTest = j.value("stress_test", false);
             std::vector<InstanceDesc> instances = j.value("instances", nlohmann::json::array()).get<std::vector<InstanceDesc>>();
 
