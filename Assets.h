@@ -4,6 +4,18 @@
 #include "SceneObject.h"
 #include <vector>
 #include <string>
+#include <fstream>
+#include "json.hpp"
+
+namespace DirectX
+{
+    inline void from_json(const nlohmann::json& j, XMFLOAT3& p)
+    {
+        p.x = j[0].get<float>();
+        p.y = j[1].get<float>();
+        p.z = j[2].get<float>();
+    }
+}
 
 struct InstanceDesc
 {
@@ -18,6 +30,20 @@ struct InstanceDesc
     UINT materialOverrideIndex = 0xFFFFFFFF;
 };
 
+inline void from_json(const nlohmann::json& j, InstanceDesc& desc)
+{
+    desc.name = j.value("name", "");
+    desc.modelPath = j.value("model_path", "");
+
+    if (j.contains("pos")) desc.pos = j["pos"].get<DirectX::XMFLOAT3>();
+    if (j.contains("rot")) desc.rot = j["rot"].get<DirectX::XMFLOAT3>();
+    if (j.contains("scale")) desc.scale = j["scale"].get<DirectX::XMFLOAT3>();
+
+    desc.isTransparent = j.value("is_transparent", false);
+    desc.isCutout = j.value("is_cutout", false);
+    desc.materialOverrideIndex = j.value("material_override_index", 0xFFFFFFFF);
+}
+
 class Assets
 {
 public:
@@ -26,60 +52,18 @@ public:
         return "HDRs/citrus_orchard_road_puresky_4k.hdr";
     }
 
-    static std::vector<InstanceDesc> GetSniperAlleyScene()
+    static std::vector<InstanceDesc> LoadSceneFromJson(const std::string& filepath)
     {
-        return
+        std::ifstream file(filepath);
+        if (!file.is_open())
         {
-            {
-                "Model_0",
-                "Models/Blender_Chan.glb",
-                { 0.0f, 0.0f, 0.0f },
-                { 0.0f, 0.0f, 0.0f },
-                { 1.0f, 1.0f, 1.0f },
-                true,
-                false
-            },
-
-            {
-                "Model_1",
-                "Models/Plain.glb",
-                { 0.0f, 0.01f, 0.0f },
-                { 0.0f, 0.0f, 0.0f },
-                { 1.0f, 1.0f, 1.0f },
-                false
-            }
-        };
-    }
-
-    // Stress test
-    static std::vector<InstanceDesc> GetPerformanceTestScene()
-    {
-        std::vector<InstanceDesc> scene;
-        scene.reserve(1000);
-
-        float spacing = 3.0f;
-        float offset = (10.0f * spacing) / 2.0f;
-
-        for (int x = 0; x < 20; ++x)
-        {
-            for (int y = 0; y < 20; ++y)
-            {
-                for (int z = 0; z < 20; ++z)
-                {
-                    std::string name = "Test_MP5_" + std::to_string(x) + "_" + std::to_string(y) + "_" + std::to_string(z);
-
-                    scene.push_back({
-                        name,
-                        "Models/MP5.glb",
-                        { (x * spacing) - offset, (y * spacing) - offset, (z * spacing) - offset },
-                        { 0.0f, 0.0f, 0.0f },
-                        { 1.0f, 1.0f, 1.0f },
-                        false
-                        });
-                }
-            }
+            OutputDebugStringA(("Warning: Failed to open " + filepath + ", falling back to hardcoded scene.\n").c_str());
         }
-        return scene;
+
+        nlohmann::json j;
+        file >> j;
+
+        return j.get<std::vector<InstanceDesc>>();
     }
 };
 

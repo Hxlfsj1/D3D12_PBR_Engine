@@ -69,7 +69,7 @@ D3D12App::D3D12App(HINSTANCE hInstance) : camera(XMFLOAT3(0.0f, 3.0f, -10.0f))
 
     m_inputManager.Init(Width, Height);
 
-    m_useTAA = true;
+    m_useTAA = false;
     m_taaFrameCounter = 0;
 
     DirectX::XMStoreFloat4x4(&m_prevViewProj, DirectX::XMMatrixIdentity());
@@ -183,8 +183,7 @@ bool D3D12App::InitD3D()
     if (!m_pipelineManager.Initialize(&m_deviceContext)) return false;
 
     // Stream Assets & Build IBL: Load 3D models and HDR textures into VRAM and bake IBL components
-    auto sceneData = Assets::GetSniperAlleyScene();
-    if (!m_resourceManager.LoadAssets(&m_deviceContext, sceneData, frameBufferCount)) return false;
+    if (!m_resourceManager.LoadAssets(&m_deviceContext, Assets::LoadSceneFromJson("Settings/Scene.json"), frameBufferCount)) return false;
     m_resourceManager.BuildGlobalMaterialPool(&m_deviceContext);
     m_resourceManager.InitIBL(&m_deviceContext, currentHDRPath.c_str());
 

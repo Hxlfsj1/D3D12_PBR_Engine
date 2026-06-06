@@ -37,6 +37,9 @@
     <Filter Include="头文件\Passes">
       <UniqueIdentifier>{f19f8f1f-3882-4b97-8c16-8ff9eb0d3e57}</UniqueIdentifier>
     </Filter>
+    <Filter Include="源文件\Setting">
+      <UniqueIdentifier>{00a62b8a-e2be-4a29-aa41-4ad779378f97}</UniqueIdentifier>
+    </Filter>
   </ItemGroup>
   <ItemGroup>
     <None Include="packages.config" />
@@ -78,6 +81,9 @@
     </None>
     <None Include="Shaders\Shaders_For_TAA.hlsl">
       <Filter>源文件\Shaders</Filter>
+    </None>
+    <None Include="Settings\Scene.json">
+      <Filter>源文件\Setting</Filter>
     </None>
   </ItemGroup>
   <ItemGroup>
