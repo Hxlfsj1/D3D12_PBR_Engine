@@ -146,7 +146,7 @@
     <None Include="packages.config" />
   </ItemGroup>
   <ItemGroup>
-    <ClInclude Include="Assets.h" />
+    <ClInclude Include="Settings_Manager.h" />
     <ClInclude Include="Camera.h" />
     <ClInclude Include="D3D12App.h" />
     <ClInclude Include="DeferredLightingPass.h" />
@@ -174,7 +174,10 @@
     <ClInclude Include="Window.h" />
   </ItemGroup>
   <ItemGroup>
+    <None Include="Settings\Lighting.json" />
+    <None Include="Settings\Pipeline.json" />
     <None Include="Settings\Scene.json" />
+    <None Include="Settings\Window.json" />
     <None Include="Shaders\Shaders_For_Cubemap.hlsl">
       <FileType>Document</FileType>
     </None>

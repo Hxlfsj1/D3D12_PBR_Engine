@@ -73,6 +73,7 @@ private:
     ResourceManager m_resourceManager;
     InputManager m_inputManager;
     PipelineManager m_pipelineManager;
+    SettingsManager m_settingsManager;
 
     D3D12_VIEWPORT viewport;
     D3D12_RECT scissorRect;

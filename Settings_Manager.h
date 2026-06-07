@@ -1,10 +1,11 @@
-#ifndef ASSETS_H
-#define ASSETS_H
+#ifndef SETTINGS_MANAGER_H
+#define SETTINGS_MANAGER_H
 
 #include "SceneObject.h"
 #include <vector>
 #include <string>
 #include <fstream>
+#include <DirectXMath.h>
 #include "json.hpp"
 
 namespace DirectX
@@ -26,7 +27,6 @@ struct InstanceDesc
     DirectX::XMFLOAT3 scale;
     bool isTransparent = false;
     bool isCutout = false;
-
     UINT materialOverrideIndex = 0xFFFFFFFF;
 };
 
@@ -44,9 +44,31 @@ inline void from_json(const nlohmann::json& j, InstanceDesc& desc)
     desc.materialOverrideIndex = j.value("material_override_index", 0xFFFFFFFF);
 }
 
-class Assets
+struct WindowConfig {
+    int width = 2240;
+    int height = 1400;
+    bool fullScreen = false;
+    std::string title = "PBR IBL Model Viewer";
+};
+
+struct PipelineConfig {
+    bool useDeferred = true;
+    bool useTAA = false;
+};
+
+struct LightingConfig {
+    DirectX::XMFLOAT3 lightDir = { -0.5f, -1.0f, 0.5f };
+    DirectX::XMFLOAT3 lightColor = { 5.0f, 5.0f, 5.0f };
+    float shadowRadius = 40.0f;
+};
+
+class SettingsManager
 {
 public:
+    WindowConfig window;
+    PipelineConfig pipeline;
+    LightingConfig lighting;
+
     inline static std::string s_skyboxPath = "HDRs/citrus_orchard_road_puresky_4k.hdr";
 
     static const char* GetSkyboxPathFromJson()
@@ -119,6 +141,53 @@ public:
             }
         }
         return scene;
+    }
+
+    void LoadAllSettingsFromJson()
+    {
+        LoadWindowConfigFromJson("Settings/Window.json");
+        LoadPipelineConfigFromJson("Settings/Pipeline.json");
+        LoadLightingConfigFromJson("Settings/Lighting.json");
+    }
+
+private:
+    void LoadWindowConfigFromJson(const std::string& filepath)
+    {
+        std::ifstream file(filepath);
+        if (file.is_open())
+        {
+            nlohmann::json j; file >> j;
+            window.width = j.value("width", window.width);
+            window.height = j.value("height", window.height);
+            window.fullScreen = j.value("fullscreen", window.fullScreen);
+            window.title = j.value("title", window.title);
+        }
+        else OutputDebugStringA(("Warning: Failed to open " + filepath + "\n").c_str());
+    }
+
+    void LoadPipelineConfigFromJson(const std::string& filepath)
+    {
+        std::ifstream file(filepath);
+        if (file.is_open())
+        {
+            nlohmann::json j; file >> j;
+            pipeline.useDeferred = j.value("use_deferred", pipeline.useDeferred);
+            pipeline.useTAA = j.value("use_taa", pipeline.useTAA);
+        }
+        else OutputDebugStringA(("Warning: Failed to open " + filepath + "\n").c_str());
+    }
+
+    void LoadLightingConfigFromJson(const std::string& filepath)
+    {
+        std::ifstream file(filepath);
+        if (file.is_open())
+        {
+            nlohmann::json j; file >> j;
+            if (j.contains("light_dir")) lighting.lightDir = j["light_dir"].get<DirectX::XMFLOAT3>();
+            if (j.contains("light_color")) lighting.lightColor = j["light_color"].get<DirectX::XMFLOAT3>();
+            lighting.shadowRadius = j.value("shadow_radius", lighting.shadowRadius);
+        }
+        else OutputDebugStringA(("Warning: Failed to open " + filepath + "\n").c_str());
     }
 };
 

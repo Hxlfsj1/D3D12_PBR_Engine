@@ -16,9 +16,6 @@
     <Filter Include="源文件\Shaders">
       <UniqueIdentifier>{35159e7b-5aa0-4d18-9118-c9886cdf1ef5}</UniqueIdentifier>
     </Filter>
-    <Filter Include="头文件\Scene_Assets">
-      <UniqueIdentifier>{9b7925ba-3362-4701-b552-1b94572ab668}</UniqueIdentifier>
-    </Filter>
     <Filter Include="头文件\Core">
       <UniqueIdentifier>{0fb13ea6-214a-4507-94ce-aa40a45e4116}</UniqueIdentifier>
     </Filter>
@@ -37,7 +34,7 @@
     <Filter Include="头文件\Passes">
       <UniqueIdentifier>{f19f8f1f-3882-4b97-8c16-8ff9eb0d3e57}</UniqueIdentifier>
     </Filter>
-    <Filter Include="源文件\Setting">
+    <Filter Include="源文件\Settings">
       <UniqueIdentifier>{00a62b8a-e2be-4a29-aa41-4ad779378f97}</UniqueIdentifier>
     </Filter>
   </ItemGroup>
@@ -83,13 +80,19 @@
       <Filter>源文件\Shaders</Filter>
     </None>
     <None Include="Settings\Scene.json">
-      <Filter>源文件\Setting</Filter>
+      <Filter>源文件\Settings</Filter>
+    </None>
+    <None Include="Settings\Lighting.json">
+      <Filter>源文件\Settings</Filter>
+    </None>
+    <None Include="Settings\Pipeline.json">
+      <Filter>源文件\Settings</Filter>
+    </None>
+    <None Include="Settings\Window.json">
+      <Filter>源文件\Settings</Filter>
     </None>
   </ItemGroup>
   <ItemGroup>
-    <ClInclude Include="Assets.h">
-      <Filter>头文件\Scene_Assets</Filter>
-    </ClInclude>
     <ClInclude Include="D3D12App.h">
       <Filter>头文件\Core</Filter>
     </ClInclude>
@@ -164,6 +167,9 @@
     </ClInclude>
     <ClInclude Include="TAAPass.h">
       <Filter>头文件\Passes</Filter>
+    </ClInclude>
+    <ClInclude Include="Settings_Manager.h">
+      <Filter>头文件\Resources</Filter>
     </ClInclude>
   </ItemGroup>
   <ItemGroup>

@@ -6,7 +6,7 @@
 #include "RenderDevice.h"
 #include "PBR_Model.h"
 #include "IBLBaker.h"
-#include "Assets.h"
+#include "Settings_Manager.h"
 #include "RenderStructs.h"
 
 #include <map>

@@ -6,7 +6,7 @@
 #include "InputManager.h"
 #include "PipelineManager.h"
 
-#include "Assets.h"
+#include "Settings_Manager.h"
 
 #include "RenderStructs.h"
 #include "ShadowPass.h"
@@ -58,18 +58,10 @@ D3D12App::D3D12App(HINSTANCE hInstance) : camera(XMFLOAT3(0.0f, 3.0f, -10.0f))
     mhAppInst = hInstance;
     hwnd = NULL;
     WindowName = L"3D12D_PBR_Render";
-    WindowTitle = L"PBR IBL Model Viewer";
-    Width = 2240;
-    Height = 1400;
-    FullScreen = false;
     Running = true;
 
     frameIndex = 0;
     deltaTime = 0.0f;
-
-    m_inputManager.Init(Width, Height);
-
-    m_useTAA = false;
     m_taaFrameCounter = 0;
 
     DirectX::XMStoreFloat4x4(&m_prevViewProj, DirectX::XMMatrixIdentity());
@@ -85,8 +77,22 @@ D3D12App::~D3D12App()
     }
 }
 
+static std::wstring g_wWindowTitle;
 bool D3D12App::Initialize(int nShowCmd)
 {
+    m_settingsManager.LoadAllSettingsFromJson();
+
+    Width = m_settingsManager.window.width;
+    Height = m_settingsManager.window.height;
+    FullScreen = m_settingsManager.window.fullScreen;
+    m_useTAA = m_settingsManager.pipeline.useTAA;
+
+    std::string titleStr = m_settingsManager.window.title;
+    g_wWindowTitle = std::wstring(titleStr.begin(), titleStr.end());
+    WindowTitle = g_wWindowTitle.c_str();
+
+    m_inputManager.Init(Width, Height);
+
     // Ask the system for a window
     if (!InitializeWindow(nShowCmd))
     {
@@ -181,9 +187,9 @@ bool D3D12App::InitD3D()
     if (!m_pipelineManager.Initialize(&m_deviceContext)) return false;
 
     // Stream Assets & Build IBL: Load 3D models and HDR textures into VRAM and bake IBL components
-    if (!m_resourceManager.LoadAssets(&m_deviceContext, Assets::LoadSceneFromJson("Settings/Scene.json"), frameBufferCount)) return false;
+    if (!m_resourceManager.LoadAssets(&m_deviceContext, SettingsManager::LoadSceneFromJson("Settings/Scene.json"), frameBufferCount)) return false;
     m_resourceManager.BuildGlobalMaterialPool(&m_deviceContext);
-    currentHDRPath = Assets::GetSkyboxPathFromJson();
+    currentHDRPath = SettingsManager::GetSkyboxPathFromJson();
     m_resourceManager.InitIBL(&m_deviceContext, currentHDRPath.c_str());
 
     if (!m_resourceManager.InitShadowResources(&m_deviceContext)) return false;
@@ -295,17 +301,18 @@ void D3D12App::Update()
     PassConstants passCb;
     passCb.camPos = camera.Position;
 
-    XMVECTOR dirVec = XMVectorSet(-0.5f, -1.0f, 0.5f, 0.0f);
+    XMVECTOR dirVec = XMLoadFloat3(&m_settingsManager.lighting.lightDir);
     dirVec = XMVector3Normalize(dirVec);
     XMStoreFloat3(&passCb.lightDir, dirVec);
 
-    passCb.lightColor = XMFLOAT3(5.0f, 5.0f, 5.0f);
+    passCb.lightColor = m_settingsManager.lighting.lightColor;
 
     // Initialize shadow volume attributes: a cube located in front of the player's view
     XMVECTOR camPosVec = XMLoadFloat3(&camera.Position);
     XMVECTOR camFrontVec = XMLoadFloat3(&camera.Front);
     XMVECTOR centerVec = XMVectorAdd(camPosVec, XMVectorScale(camFrontVec, 25.0f));
-    float shadowRadius = 40.0f;
+
+    float shadowRadius = m_settingsManager.lighting.shadowRadius;
 
     // Initialize shadow volume attributes: a cube located in front of the player's view
     XMVECTOR lightPosVec = XMVectorSubtract(centerVec, XMVectorScale(dirVec, 500.0f));
@@ -527,9 +534,7 @@ void D3D12App::Render()
 
     size_t transparentIdx = 0;
 
-    static bool useDeferredPath = true;
-
-    if (!useDeferredPath)
+    if (!m_settingsManager.pipeline.useDeferred)
     {
         transparentIdx = PBRPass::ExecuteOpaque(&m_deviceContext, &m_resourceManager, &m_pipelineManager, frameIndex, viewport, scissorRect, g_visibleInstances);
     }
