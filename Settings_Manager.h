@@ -35,28 +35,40 @@ inline void from_json(const nlohmann::json& j, InstanceDesc& desc)
     desc.name = j.value("name", "");
     desc.modelPath = j.value("model_path", "");
 
-    if (j.contains("pos")) desc.pos = j["pos"].get<DirectX::XMFLOAT3>();
-    if (j.contains("rot")) desc.rot = j["rot"].get<DirectX::XMFLOAT3>();
-    if (j.contains("scale")) desc.scale = j["scale"].get<DirectX::XMFLOAT3>();
+    if (j.contains("pos"))
+    {
+        desc.pos = j["pos"].get<DirectX::XMFLOAT3>();
+    }
+    if (j.contains("rot"))
+    {
+        desc.rot = j["rot"].get<DirectX::XMFLOAT3>();
+    }
+    if (j.contains("scale"))
+    {
+        desc.scale = j["scale"].get<DirectX::XMFLOAT3>();
+    }
 
     desc.isTransparent = j.value("is_transparent", false);
     desc.isCutout = j.value("is_cutout", false);
     desc.materialOverrideIndex = j.value("material_override_index", 0xFFFFFFFF);
 }
 
-struct WindowConfig {
+struct WindowConfig
+{
     int width = 2240;
     int height = 1400;
     bool fullScreen = false;
     std::string title = "PBR IBL Model Viewer";
 };
 
-struct PipelineConfig {
+struct PipelineConfig
+{
     bool useDeferred = true;
     bool useTAA = false;
 };
 
-struct LightingConfig {
+struct LightingConfig
+{
     DirectX::XMFLOAT3 lightDir = { -0.5f, -1.0f, 0.5f };
     DirectX::XMFLOAT3 lightColor = { 5.0f, 5.0f, 5.0f };
     float shadowRadius = 40.0f;
@@ -86,7 +98,15 @@ public:
         }
 
         nlohmann::json j;
-        file >> j;
+        try
+        {
+            file >> j;
+        }
+        catch (const nlohmann::json::parse_error& e)
+        {
+            OutputDebugStringA(("Error: JSON Parse failed in " + filepath + "\nDetail: " + std::string(e.what()) + "\n").c_str());
+            return {};
+        }
 
         if (j.is_object())
         {
@@ -156,13 +176,26 @@ private:
         std::ifstream file(filepath);
         if (file.is_open())
         {
-            nlohmann::json j; file >> j;
+            nlohmann::json j;
+            try
+            {
+                file >> j;
+            }
+            catch (const nlohmann::json::parse_error& e)
+            {
+                OutputDebugStringA(("Error: Window Config JSON Parse failed in " + filepath + "\n").c_str());
+                return;
+            }
+
             window.width = j.value("width", window.width);
             window.height = j.value("height", window.height);
             window.fullScreen = j.value("fullscreen", window.fullScreen);
             window.title = j.value("title", window.title);
         }
-        else OutputDebugStringA(("Warning: Failed to open " + filepath + "\n").c_str());
+        else
+        {
+            OutputDebugStringA(("Warning: Failed to open " + filepath + "\n").c_str());
+        }
     }
 
     void LoadPipelineConfigFromJson(const std::string& filepath)
@@ -170,11 +203,24 @@ private:
         std::ifstream file(filepath);
         if (file.is_open())
         {
-            nlohmann::json j; file >> j;
+            nlohmann::json j;
+            try
+            {
+                file >> j;
+            }
+            catch (const nlohmann::json::parse_error& e)
+            {
+                OutputDebugStringA(("Error: Pipeline Config JSON Parse failed in " + filepath + "\n").c_str());
+                return;
+            }
+
             pipeline.useDeferred = j.value("use_deferred", pipeline.useDeferred);
             pipeline.useTAA = j.value("use_taa", pipeline.useTAA);
         }
-        else OutputDebugStringA(("Warning: Failed to open " + filepath + "\n").c_str());
+        else
+        {
+            OutputDebugStringA(("Warning: Failed to open " + filepath + "\n").c_str());
+        }
     }
 
     void LoadLightingConfigFromJson(const std::string& filepath)
@@ -182,12 +228,31 @@ private:
         std::ifstream file(filepath);
         if (file.is_open())
         {
-            nlohmann::json j; file >> j;
-            if (j.contains("light_dir")) lighting.lightDir = j["light_dir"].get<DirectX::XMFLOAT3>();
-            if (j.contains("light_color")) lighting.lightColor = j["light_color"].get<DirectX::XMFLOAT3>();
+            nlohmann::json j;
+            try
+            {
+                file >> j;
+            }
+            catch (const nlohmann::json::parse_error& e)
+            {
+                OutputDebugStringA(("Error: Lighting Config JSON Parse failed in " + filepath + "\n").c_str());
+                return;
+            }
+
+            if (j.contains("light_dir"))
+            {
+                lighting.lightDir = j["light_dir"].get<DirectX::XMFLOAT3>();
+            }
+            if (j.contains("light_color"))
+            {
+                lighting.lightColor = j["light_color"].get<DirectX::XMFLOAT3>();
+            }
             lighting.shadowRadius = j.value("shadow_radius", lighting.shadowRadius);
         }
-        else OutputDebugStringA(("Warning: Failed to open " + filepath + "\n").c_str());
+        else
+        {
+            OutputDebugStringA(("Warning: Failed to open " + filepath + "\n").c_str());
+        }
     }
 };
 
