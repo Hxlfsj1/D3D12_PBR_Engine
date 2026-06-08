@@ -307,15 +307,18 @@ void D3D12App::Update()
 
     passCb.lightColor = m_settingsManager.lighting.lightColor;
 
-    // Initialize shadow volume attributes: a cube located in front of the player's view
-    XMVECTOR camPosVec = XMLoadFloat3(&camera.Position);
-    XMVECTOR camFrontVec = XMLoadFloat3(&camera.Front);
-    XMVECTOR centerVec = XMVectorAdd(camPosVec, XMVectorScale(camFrontVec, 25.0f));
-
     float shadowRadius = m_settingsManager.lighting.shadowRadius;
 
+    float shadowMaxDistance = 100.0f;
+    BoundingFrustum worldFrustum = camera.GetWorldSpaceFrustum((float)Width / Height, 0.1f, shadowMaxDistance);
+
+    XMFLOAT3 frustumCorners[8];
+    worldFrustum.GetCorners(frustumCorners);
+
+    XMVECTOR camPosVec = XMLoadFloat3(&camera.Position);
+
     // Initialize shadow volume attributes: a cube located in front of the player's view
-    XMVECTOR lightPosVec = XMVectorSubtract(centerVec, XMVectorScale(dirVec, 500.0f));
+    XMVECTOR lightPosVec = XMVectorSubtract(camPosVec, XMVectorScale(dirVec, 200.0f));
     XMVECTOR lightUp = XMVectorSet(0.0f, 1.0f, 0.0f, 0.0f);
 
     if (abs(XMVectorGetY(dirVec)) > 0.99f)
@@ -323,26 +326,46 @@ void D3D12App::Update()
         lightUp = XMVectorSet(0.0f, 0.0f, 1.0f, 0.0f);
     }
 
-    XMMATRIX lightView = XMMatrixLookAtLH(lightPosVec, centerVec, lightUp);
+    XMMATRIX lightView = XMMatrixLookAtLH(lightPosVec, XMVectorAdd(lightPosVec, dirVec), lightUp);
+
+    float minX = FLT_MAX;
+    float maxX = -FLT_MAX;
+    float minY = FLT_MAX;
+    float maxY = -FLT_MAX;
+    float minZ = FLT_MAX;
+    float maxZ = -FLT_MAX;
+
+    for (int i = 0; i < 8; ++i)
+    {
+        XMVECTOR vWorld = XMLoadFloat3(&frustumCorners[i]);
+        XMVECTOR vLight = XMVector3Transform(vWorld, lightView);
+
+        XMFLOAT3 pLight;
+        XMStoreFloat3(&pLight, vLight);
+
+        minX = std::min(minX, pLight.x);
+        maxX = max(maxX, pLight.x);
+        minY = std::min(minY, pLight.y);
+        maxY = max(maxY, pLight.y);
+        minZ = std::min(minZ, pLight.z);
+        maxZ = max(maxZ, pLight.z);
+    }
+
+    minZ -= 50.0f;
+    maxZ += 50.0f;
 
     // Texel snapping technique to eliminate edge flickering
     float shadowMapSize = 4096.0f;
-    float texelSize = (shadowRadius * 2.0f) / shadowMapSize;
+    float worldTexelSizeX = (maxX - minX) / shadowMapSize;
+    float worldTexelSizeY = (maxY - minY) / shadowMapSize;
 
-    XMVECTOR centerLS = XMVector3TransformCoord(centerVec, lightView);
-    float cx = XMVectorGetX(centerLS);
-    float cy = XMVectorGetY(centerLS);
-
-    float snappedCx = floor(cx / texelSize) * texelSize;
-    float snappedCy = floor(cy / texelSize) * texelSize;
-
-    lightView.r[3] = XMVectorAdd(lightView.r[3], XMVectorSet(snappedCx - cx, snappedCy - cy, 0.0f, 0.0f));
+    minX = floor(minX / worldTexelSizeX) * worldTexelSizeX;
+    maxX = floor(maxX / worldTexelSizeX) * worldTexelSizeX;
+    minY = floor(minY / worldTexelSizeY) * worldTexelSizeY;
+    maxY = floor(maxY / worldTexelSizeY) * worldTexelSizeY;
 
     // Generate orthographic projection matrix and upload all packed data to GPU memory
-    float minZ = 0.0f;
-    float maxZ = 1000.0f;
-
-    XMMATRIX lightProj = XMMatrixOrthographicLH(shadowRadius * 2.0f, shadowRadius * 2.0f, minZ, maxZ);
+    XMMATRIX lightProj = XMMatrixOrthographicOffCenterLH(minX, maxX, minY, maxY, minZ, maxZ);
     XMMATRIX lightViewProj = lightView * lightProj;
 
     passCb.padding3 = shadowRadius * 2.0f;

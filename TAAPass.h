@@ -57,6 +57,7 @@ public:
         cb.invViewProj = currentInvViewProj;
         cb.prevViewProj = prevViewProj;
         cb.jitterOffset = DirectX::XMFLOAT2(jitterX, jitterY);
+        // Define TAA blend alpha
         cb.blendAlpha = isFirstFrame ? 0.0f : 0.95f;
         cb.varianceScale = 1.5f;
 
