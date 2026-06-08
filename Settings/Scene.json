@@ -1,6 +1,6 @@
 {
   "skybox_path": "HDRs/citrus_orchard_road_puresky_4k.hdr",
-  "stress_test": true,
+  "stress_test": false,
   "instances": [
     {
       "name": "BaseModel",
@@ -8,7 +8,7 @@
       "pos": [ 0.0, 0.01, 0.0 ],
       "rot": [ 0.0, 0.0, 0.0 ],
       "scale": [ 1.0, 1.0, 1.0 ],
-      "is_transparent": true,
+      "is_transparent": false,
       "is_cutout": false
     },
 

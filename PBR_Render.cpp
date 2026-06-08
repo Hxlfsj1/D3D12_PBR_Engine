@@ -317,7 +317,7 @@ void D3D12App::Update()
 
     XMVECTOR camPosVec = XMLoadFloat3(&camera.Position);
 
-    // Initialize shadow volume attributes: a cube located in front of the player's view
+    // Anchor to the camera and pull back along the reverse light direction to position the virtual 'sun camera' for shadow capture
     XMVECTOR lightPosVec = XMVectorSubtract(camPosVec, XMVectorScale(dirVec, 200.0f));
     XMVECTOR lightUp = XMVectorSet(0.0f, 1.0f, 0.0f, 0.0f);
 
@@ -335,6 +335,7 @@ void D3D12App::Update()
     float minZ = FLT_MAX;
     float maxZ = -FLT_MAX;
 
+    // Transform the 8 camera frustum corners into the light's view space to calculate the tightest possible bounding box
     for (int i = 0; i < 8; ++i)
     {
         XMVECTOR vWorld = XMLoadFloat3(&frustumCorners[i]);
@@ -351,10 +352,11 @@ void D3D12App::Update()
         maxZ = max(maxZ, pLight.z);
     }
 
+    // Extend Z-bounds both ways to prevent missing shadows
     minZ -= 50.0f;
     maxZ += 50.0f;
 
-    // Texel snapping technique to eliminate edge flickering
+    // Texel snapping technique to eliminate edge flickering (enforced by calculating the actual world-space length of each shadow map texel)
     float shadowMapSize = 4096.0f;
     float worldTexelSizeX = (maxX - minX) / shadowMapSize;
     float worldTexelSizeY = (maxY - minY) / shadowMapSize;
