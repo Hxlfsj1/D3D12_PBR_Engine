@@ -24,7 +24,8 @@ public:
     {
         auto cmdList = deviceContext->GetCommandList();
 
-        CD3DX12_RESOURCE_BARRIER barriers[3] = {
+        CD3DX12_RESOURCE_BARRIER barriers[3] =
+        {
             CD3DX12_RESOURCE_BARRIER::Transition(resourceManager->GetGBufferAlbedo(), D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_RENDER_TARGET),
             CD3DX12_RESOURCE_BARRIER::Transition(resourceManager->GetGBufferNormal(), D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_RENDER_TARGET),
             CD3DX12_RESOURCE_BARRIER::Transition(resourceManager->GetGBufferORM(), D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_RENDER_TARGET)
@@ -34,7 +35,8 @@ public:
         cmdList->RSSetViewports(1, &viewport);
         cmdList->RSSetScissorRects(1, &scissorRect);
 
-        CD3DX12_CPU_DESCRIPTOR_HANDLE rtvHandles[3] = {
+        CD3DX12_CPU_DESCRIPTOR_HANDLE rtvHandles[3] =
+        {
             resourceManager->GetGBufferAlbedoRtvHandle(),
             resourceManager->GetGBufferNormalRtvHandle(),
             resourceManager->GetGBufferORMRtvHandle()
@@ -119,7 +121,8 @@ public:
             }
         }
 
-        CD3DX12_RESOURCE_BARRIER revertBarriers[3] = {
+        CD3DX12_RESOURCE_BARRIER revertBarriers[3] =
+        {
             CD3DX12_RESOURCE_BARRIER::Transition(resourceManager->GetGBufferAlbedo(), D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE),
             CD3DX12_RESOURCE_BARRIER::Transition(resourceManager->GetGBufferNormal(), D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE),
             CD3DX12_RESOURCE_BARRIER::Transition(resourceManager->GetGBufferORM(), D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE)
