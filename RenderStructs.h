@@ -3,8 +3,14 @@
 
 #include "stdafx.h"
 
+constexpr UINT64 AlignConstantBufferSize(UINT64 byteSize)
+{
+    constexpr UINT64 alignment = D3D12_CONSTANT_BUFFER_DATA_PLACEMENT_ALIGNMENT;
+    return (byteSize + alignment - 1) & ~(alignment - 1);
+}
+
 // Dynamic CPU-to-GPU data payloads updated per frame (Constant Buffers)
-struct alignas(256) PassConstants
+struct alignas(D3D12_CONSTANT_BUFFER_DATA_PLACEMENT_ALIGNMENT) PassConstants
 {
     DirectX::XMFLOAT3 camPos;
     float padding1;
@@ -19,6 +25,8 @@ struct alignas(256) PassConstants
     UINT shadowMapIdx;
     UINT padTo256[33];
 };
+
+constexpr UINT64 kPassConstantsAlignedSize = AlignConstantBufferSize(sizeof(PassConstants));
 
 struct MaterialData
 {
@@ -41,7 +49,7 @@ struct InstanceData
     UINT pad[3];
 };
 
-struct alignas(256) DeferredConstants
+struct alignas(D3D12_CONSTANT_BUFFER_DATA_PLACEMENT_ALIGNMENT) DeferredConstants
 {
     DirectX::XMFLOAT4X4 invViewProj;
 
@@ -54,7 +62,7 @@ struct alignas(256) DeferredConstants
     UINT padTo256[43];
 };
 
-struct alignas(256) HBAOConstants
+struct alignas(D3D12_CONSTANT_BUFFER_DATA_PLACEMENT_ALIGNMENT) HBAOConstants
 {
     DirectX::XMFLOAT4X4 projMat;
     DirectX::XMFLOAT4X4 invProjMat;
@@ -69,7 +77,7 @@ struct alignas(256) HBAOConstants
     UINT padTo256[11];
 };
 
-struct alignas(256) TAAConstants
+struct alignas(D3D12_CONSTANT_BUFFER_DATA_PLACEMENT_ALIGNMENT) TAAConstants
 {
     DirectX::XMFLOAT4X4 invViewProj;
     DirectX::XMFLOAT4X4 prevViewProj;

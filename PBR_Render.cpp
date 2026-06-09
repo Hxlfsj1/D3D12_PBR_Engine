@@ -489,7 +489,7 @@ void D3D12App::Update()
     // ====================================================================================================
     // Instance data Submission and TAA offset matirx calculating
     // ====================================================================================================
-    InstanceData* mappedInstanceData = reinterpret_cast<InstanceData*>(cbvAddress + 256);
+    InstanceData* mappedInstanceData = reinterpret_cast<InstanceData*>(cbvAddress + kPassConstantsAlignedSize);
 
     for (size_t i = 0; i < g_visibleInstances.size(); ++i)
     {

@@ -378,7 +378,8 @@ public:
         Microsoft::WRL::ComPtr<ID3D12PipelineState> computePSO;
         device->CreateComputePipelineState(&computePsoDesc, IID_PPV_ARGS(&computePSO));
 
-        D3D12_RESOURCE_DESC uavDesc = CD3DX12_RESOURCE_DESC::Buffer(256, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
+        constexpr UINT64 shBufferByteSize = 256;
+        D3D12_RESOURCE_DESC uavDesc = CD3DX12_RESOURCE_DESC::Buffer(shBufferByteSize, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
         device->CreateCommittedResource(&defHeap, D3D12_HEAP_FLAG_NONE, &uavDesc, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, nullptr, IID_PPV_ARGS(&m_shBuffer));
 
         cmdList->SetPipelineState(computePSO.Get());
