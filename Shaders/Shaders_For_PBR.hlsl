@@ -10,7 +10,9 @@ cbuffer PassConstants : register(b0)
     float padding2;
     float3 lightColor;
     float padding3;
-    float4x4 lightViewProj;
+    
+    float4x4 lightViewProj[4];
+    float4 cascadeSplits;
     
     uint iblPrefilterIdx;
     uint iblBRDFIdx;
@@ -83,10 +85,6 @@ struct VS_OUTPUT
     float3 bitangent : BITANGENT;
 #endif
     nointerpolation uint instanceID : TEXCOORD5;
-
-#if LOD_LEVEL < 2
-    float4 lightSpacePos : LIGHTSPACE;
-#endif
 };
 
 static const float PI = 3.14159265359;
@@ -112,10 +110,7 @@ VS_OUTPUT VSMain(VS_INPUT input)
     output.tangent = normalize(mul(input.tangent, (float3x3) normalMat));
     output.bitangent = normalize(mul(input.bitangent, (float3x3) normalMat));
 #endif
-
-#if LOD_LEVEL < 2
-    output.lightSpacePos = mul(float4(output.worldPos, 1.0f), lightViewProj);
-#endif
+    
     output.instanceID = input.instanceID;
     
     return output;
@@ -223,9 +218,9 @@ float Rand(float2 co)
 }
 
 // Blocker search using Poisson Disk sampling
-void FindBlocker(out float avgBlockerDepth, out float numBlockers, float2 uv, float zReceiver, float searchRadius)
+void FindBlocker(out float avgBlockerDepth, out float numBlockers, float2 uv, float zReceiver, float searchRadius, uint cascadeIndex)
 {
-    Texture2D tShadowMap = ResourceDescriptorHeap[shadowMapIdx];
+    Texture2DArray tShadowMap = ResourceDescriptorHeap[shadowMapIdx];
     
     float blockerSum = 0.0;
     numBlockers = 0.0;
@@ -238,7 +233,7 @@ void FindBlocker(out float avgBlockerDepth, out float numBlockers, float2 uv, fl
     for (int i = 0; i < 16; ++i)
     {
         float2 offset = mul(POISSON_DISK[i], rotMat) * searchRadius;
-        float shadowMapDepth = tShadowMap.SampleLevel(s1, uv + offset, 0).r;
+        float shadowMapDepth = tShadowMap.SampleLevel(s1, float3(uv + offset, (float) cascadeIndex), 0).r;
         
         if (shadowMapDepth < zReceiver)
         {
@@ -249,9 +244,9 @@ void FindBlocker(out float avgBlockerDepth, out float numBlockers, float2 uv, fl
     avgBlockerDepth = numBlockers > 0.0 ? blockerSum / numBlockers : 1.0;
 }
 
-float CalcShadowFactor(float4 lightSpacePos)
+float CalcShadowFactor(float4 lightSpacePos, uint cascadeIndex)
 {
-    Texture2D tShadowMap = ResourceDescriptorHeap[shadowMapIdx];
+    Texture2DArray tShadowMap = ResourceDescriptorHeap[shadowMapIdx];
     
     float3 projCoords = lightSpacePos.xyz / lightSpacePos.w;
     projCoords.x = projCoords.x * 0.5f + 0.5f;
@@ -270,7 +265,7 @@ float CalcShadowFactor(float4 lightSpacePos)
     float avgBlockerDepth = 1.0;
     float numBlockers = 0.0;
     float searchRadius = LIGHT_SIZE_UV * 0.5;
-    FindBlocker(avgBlockerDepth, numBlockers, projCoords.xy, zReceiver, searchRadius);
+    FindBlocker(avgBlockerDepth, numBlockers, projCoords.xy, zReceiver, searchRadius, cascadeIndex);
     
     if (numBlockers < 1.0)
         return 1.0f;
@@ -290,7 +285,7 @@ float CalcShadowFactor(float4 lightSpacePos)
     {
         float2 offset = mul(POISSON_DISK[i], rotMat) * filterRadius;
         // Here is a hardware-accelerated 2x2 bilinear interpolation for anti-aliasing
-        shadow += tShadowMap.SampleCmpLevelZero(shadowSampler, projCoords.xy + offset, zReceiver).r;
+        shadow += tShadowMap.SampleCmpLevelZero(shadowSampler, float3(projCoords.xy + offset, (float) cascadeIndex), zReceiver).r;
     }
     
     return shadow / 16.0f;
@@ -373,7 +368,17 @@ float4 PSMain(VS_OUTPUT input) : SV_TARGET
     float3 kD = float3(1.0, 1.0, 1.0) - kS;
     kD *= 1.0 - metallic;
 
-    float shadow = CalcShadowFactor(input.lightSpacePos);
+    float dist = distance(camPos, input.worldPos);
+    uint cascadeIndex = 0;
+    if (dist > cascadeSplits.x)
+        cascadeIndex = 1;
+    if (dist > cascadeSplits.y)
+        cascadeIndex = 2;
+    if (dist > cascadeSplits.z)
+        cascadeIndex = 3;
+
+    float4 lightSpacePos = mul(float4(input.worldPos, 1.0f), lightViewProj[cascadeIndex]);
+    float shadow = CalcShadowFactor(lightSpacePos, cascadeIndex);
     
     // Calculate final light
     float NdotL = max(dot(N, L), 0.0);

@@ -6,7 +6,10 @@ cbuffer PassConstants : register(b0)
     float padding2;
     float3 lightColor;
     float padding3;
-    float4x4 lightViewProj;
+    
+    float4x4 lightViewProj[4];
+    float4 cascadeSplits;
+    
     uint iblPrefilterIdx;
     uint iblBRDFIdx;
     uint shadowMapIdx;
@@ -15,6 +18,7 @@ cbuffer PassConstants : register(b0)
 cbuffer MeshConstants : register(b1)
 {
     uint materialID;
+    uint cascadeIdx;
 };
 
 struct InstanceData
@@ -65,7 +69,7 @@ VS_OUTPUT VSMain(VS_INPUT input)
 {
     VS_OUTPUT output;
     float4x4 worldMat = gInstanceData[input.instanceID].worldMat;
-    output.pos = mul(mul(float4(input.pos, 1.0f), worldMat), lightViewProj);
+    output.pos = mul(mul(float4(input.pos, 1.0f), worldMat), lightViewProj[cascadeIdx]);
     output.texCoord = input.texCoord;
     output.instanceID = input.instanceID;
     return output;

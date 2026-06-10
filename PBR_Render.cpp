@@ -311,7 +311,6 @@ void D3D12App::Update()
 
     float shadowMaxDistance = 100.0f;
     BoundingFrustum worldFrustum = camera.GetWorldSpaceFrustum((float)Width / Height, 0.1f, shadowMaxDistance);
-
     XMFLOAT3 frustumCorners[8];
     worldFrustum.GetCorners(frustumCorners);
 
@@ -320,7 +319,6 @@ void D3D12App::Update()
     // Anchor to the camera and pull back along the reverse light direction to position the virtual 'sun camera' for shadow capture
     XMVECTOR lightPosVec = XMVectorSubtract(camPosVec, XMVectorScale(dirVec, 200.0f));
     XMVECTOR lightUp = XMVectorSet(0.0f, 1.0f, 0.0f, 0.0f);
-
     if (abs(XMVectorGetY(dirVec)) > 0.99f)
     {
         lightUp = XMVectorSet(0.0f, 0.0f, 1.0f, 0.0f);
@@ -328,10 +326,6 @@ void D3D12App::Update()
 
     XMMATRIX lightView = XMMatrixLookAtLH(lightPosVec, XMVectorAdd(lightPosVec, dirVec), lightUp);
 
-    float minX = FLT_MAX;
-    float maxX = -FLT_MAX;
-    float minY = FLT_MAX;
-    float maxY = -FLT_MAX;
     float minZ = FLT_MAX;
     float maxZ = -FLT_MAX;
 
@@ -344,10 +338,6 @@ void D3D12App::Update()
         XMFLOAT3 pLight;
         XMStoreFloat3(&pLight, vLight);
 
-        minX = std::min(minX, pLight.x);
-        maxX = max(maxX, pLight.x);
-        minY = std::min(minY, pLight.y);
-        maxY = max(maxY, pLight.y);
         minZ = std::min(minZ, pLight.z);
         maxZ = max(maxZ, pLight.z);
     }
@@ -356,23 +346,72 @@ void D3D12App::Update()
     minZ -= 50.0f;
     maxZ += 50.0f;
 
-    // Texel snapping technique to eliminate edge flickering (enforced by calculating the actual world-space length of each shadow map texel)
-    float shadowMapSize = 4096.0f;
-    float worldTexelSizeX = (maxX - minX) / shadowMapSize;
-    float worldTexelSizeY = (maxY - minY) / shadowMapSize;
-
-    minX = floor(minX / worldTexelSizeX) * worldTexelSizeX;
-    maxX = floor(maxX / worldTexelSizeX) * worldTexelSizeX;
-    minY = floor(minY / worldTexelSizeY) * worldTexelSizeY;
-    maxY = floor(maxY / worldTexelSizeY) * worldTexelSizeY;
-
-    // Generate orthographic projection matrix and upload all packed data to GPU memory
-    XMMATRIX lightProj = XMMatrixOrthographicOffCenterLH(minX, maxX, minY, maxY, minZ, maxZ);
-    XMMATRIX lightViewProj = lightView * lightProj;
-
     passCb.padding3 = shadowRadius * 2.0f;
 
-    XMStoreFloat4x4(&passCb.lightViewProj, XMMatrixTranspose(lightViewProj));
+    float nearClip = 0.1f;
+    float cascadeSplits[5] = { nearClip, 5.0f, 15.0f, 50.0f, shadowMaxDistance };
+    passCb.cascadeSplits = XMFLOAT4(cascadeSplits[1], cascadeSplits[2], cascadeSplits[3], cascadeSplits[4]);
+
+    for (int cascadeIdx = 0; cascadeIdx < NUM_CASCADES; ++cascadeIdx)
+    {
+        BoundingFrustum subFrustum = camera.GetWorldSpaceFrustum((float)Width / Height, cascadeSplits[cascadeIdx], cascadeSplits[cascadeIdx + 1]);
+        XMFLOAT3 subCorners[8];
+        subFrustum.GetCorners(subCorners);
+
+        XMVECTOR frustumCenter = XMVectorZero();
+        for (int i = 0; i < 8; ++i)
+        {
+            frustumCenter = XMVectorAdd(frustumCenter, XMLoadFloat3(&subCorners[i]));
+        }
+        frustumCenter = XMVectorScale(frustumCenter, 1.0f / 8.0f);
+
+        XMVECTOR subLightPosVec = XMVectorSubtract(frustumCenter, XMVectorScale(dirVec, 200.0f));
+        XMVECTOR subLightUp = XMVectorSet(0.0f, 1.0f, 0.0f, 0.0f);
+        if (abs(XMVectorGetY(dirVec)) > 0.99f)
+        {
+            subLightUp = XMVectorSet(0.0f, 0.0f, 1.0f, 0.0f);
+        }
+
+        XMMATRIX subLightView = XMMatrixLookAtLH(subLightPosVec, frustumCenter, subLightUp);
+
+        float subMinX = FLT_MAX;
+        float subMaxX = -FLT_MAX;
+        float subMinY = FLT_MAX;
+        float subMaxY = -FLT_MAX;
+        float subMinZ = FLT_MAX;
+        float subMaxZ = -FLT_MAX;
+
+        for (int i = 0; i < 8; ++i)
+        {
+            XMVECTOR vLight = XMVector3Transform(XMLoadFloat3(&subCorners[i]), subLightView);
+            XMFLOAT3 pLight;
+            XMStoreFloat3(&pLight, vLight);
+
+            subMinX = std::min(subMinX, pLight.x);
+            subMaxX = max(subMaxX, pLight.x);
+            subMinY = std::min(subMinY, pLight.y);
+            subMaxY = max(subMaxY, pLight.y);
+            subMinZ = std::min(subMinZ, pLight.z);
+            subMaxZ = max(subMaxZ, pLight.z);
+        }
+
+        subMinZ -= 50.0f;
+        subMaxZ += 50.0f;
+
+        // Texel snapping technique to eliminate edge flickering (enforced by calculating the actual world-space length of each shadow map texel)
+        float shadowMapSize = 4096.0f;
+        float worldTexelSizeX = (subMaxX - subMinX) / shadowMapSize;
+        float worldTexelSizeY = (subMaxY - subMinY) / shadowMapSize;
+
+        subMinX = floor(subMinX / worldTexelSizeX) * worldTexelSizeX;
+        subMaxX = floor(subMaxX / worldTexelSizeX) * worldTexelSizeX;
+        subMinY = floor(subMinY / worldTexelSizeY) * worldTexelSizeY;
+        subMaxY = floor(subMaxY / worldTexelSizeY) * worldTexelSizeY;
+
+        // Generate orthographic projection matrix and upload all packed data to GPU memory
+        XMMATRIX subLightProj = XMMatrixOrthographicOffCenterLH(subMinX, subMaxX, subMinY, subMaxY, subMinZ, subMaxZ);
+        XMStoreFloat4x4(&passCb.lightViewProj[cascadeIdx], XMMatrixTranspose(subLightView * subLightProj));
+    }
 
     passCb.iblPrefilterIdx = m_resourceManager.GetIblPrefilterIdx();
     passCb.iblBRDFIdx = m_resourceManager.GetIblBRDFIdx();

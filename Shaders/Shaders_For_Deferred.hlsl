@@ -6,7 +6,9 @@ cbuffer PassConstants : register(b0)
     float padding2;
     float3 lightColor;
     float padding3;
-    float4x4 lightViewProj;
+    
+    float4x4 lightViewProj[4];
+    float4 cascadeSplits;
     
     uint iblPrefilterIdx;
     uint iblBRDFIdx;
@@ -103,9 +105,9 @@ float Rand(float2 co)
     return frac(sin(dot(co.xy, float2(12.9898, 78.233))) * 43758.5453);
 }
 
-void FindBlocker(out float avgBlockerDepth, out float numBlockers, float2 uv, float zReceiver, float searchRadius)
+void FindBlocker(out float avgBlockerDepth, out float numBlockers, float2 uv, float zReceiver, float searchRadius, uint cascadeIndex)
 {
-    Texture2D tShadowMap = ResourceDescriptorHeap[shadowMapIdx];
+    Texture2DArray tShadowMap = ResourceDescriptorHeap[shadowMapIdx];
     float blockerSum = 0.0;
     numBlockers = 0.0;
     float randomAngle = Rand(uv) * 2.0 * PI;
@@ -116,7 +118,7 @@ void FindBlocker(out float avgBlockerDepth, out float numBlockers, float2 uv, fl
     for (int i = 0; i < 16; ++i)
     {
         float2 offset = mul(POISSON_DISK[i], rotMat) * searchRadius;
-        float shadowMapDepth = tShadowMap.SampleLevel(s1, uv + offset, 0).r;
+        float shadowMapDepth = tShadowMap.SampleLevel(s1, float3(uv + offset, (float) cascadeIndex), 0).r;
         if (shadowMapDepth < zReceiver)
         {
             blockerSum += shadowMapDepth;
@@ -126,9 +128,9 @@ void FindBlocker(out float avgBlockerDepth, out float numBlockers, float2 uv, fl
     avgBlockerDepth = numBlockers > 0.0 ? blockerSum / numBlockers : 1.0;
 }
 
-float CalcShadowFactor(float4 lightSpacePos)
+float CalcShadowFactor(float4 lightSpacePos, uint cascadeIndex)
 {
-    Texture2D tShadowMap = ResourceDescriptorHeap[shadowMapIdx];
+    Texture2DArray tShadowMap = ResourceDescriptorHeap[shadowMapIdx];
     float3 projCoords = lightSpacePos.xyz / lightSpacePos.w;
     projCoords.x = projCoords.x * 0.5f + 0.5f;
     projCoords.y = -projCoords.y * 0.5f + 0.5f;
@@ -143,7 +145,7 @@ float CalcShadowFactor(float4 lightSpacePos)
     float avgBlockerDepth = 1.0;
     float numBlockers = 0.0;
     float searchRadius = LIGHT_SIZE_UV * 0.5;
-    FindBlocker(avgBlockerDepth, numBlockers, projCoords.xy, zReceiver, searchRadius);
+    FindBlocker(avgBlockerDepth, numBlockers, projCoords.xy, zReceiver, searchRadius, cascadeIndex);
     
     if (numBlockers < 1.0)
         return 1.0f;
@@ -159,7 +161,7 @@ float CalcShadowFactor(float4 lightSpacePos)
     for (int i = 0; i < 16; ++i)
     {
         float2 offset = mul(POISSON_DISK[i], rotMat) * filterRadius;
-        shadow += tShadowMap.SampleCmpLevelZero(shadowSampler, projCoords.xy + offset, zReceiver).r;
+        shadow += tShadowMap.SampleCmpLevelZero(shadowSampler, float3(projCoords.xy + offset, (float) cascadeIndex), zReceiver).r;
     }
     return shadow / 16.0f;
 }
@@ -193,7 +195,16 @@ float4 PSMain(VS_OUTPUT input) : SV_TARGET
     float4 worldPosH = mul(clipSpacePos, invViewProj);
     float3 worldPos = worldPosH.xyz / worldPosH.w;
 
-    float4 lightSpacePos = mul(float4(worldPos, 1.0f), lightViewProj);
+    float dist = distance(camPos, worldPos);
+    uint cascadeIndex = 0;
+    if (dist > cascadeSplits.x)
+        cascadeIndex = 1;
+    if (dist > cascadeSplits.y)
+        cascadeIndex = 2;
+    if (dist > cascadeSplits.z)
+        cascadeIndex = 3;
+
+    float4 lightSpacePos = mul(float4(worldPos, 1.0f), lightViewProj[cascadeIndex]);
 
     float3 V = normalize(camPos - worldPos);
     float3 R = reflect(-V, N);
@@ -215,7 +226,7 @@ float4 PSMain(VS_OUTPUT input) : SV_TARGET
     float3 kD = float3(1.0, 1.0, 1.0) - kS;
     kD *= 1.0 - metallic;
 
-    float shadow = CalcShadowFactor(lightSpacePos);
+    float shadow = CalcShadowFactor(lightSpacePos, cascadeIndex);
     float NdotL = max(dot(N, L), 0.0);
     float3 directDiffuse = (kD * albedo / PI) * radiance * NdotL * shadow;
     float3 directSpecular = specular * radiance * NdotL * shadow;

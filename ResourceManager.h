@@ -96,7 +96,7 @@ public:
         resourceUpload.Begin();
 
         for (const auto& desc : sceneConfig)
-        {   
+        {
             // If the model data is not found in the dictionary, fetch it from the hard drive
             // This ensures a single copy of the model data while allowing for multiple unique transformations, which is the essence of instancing
             if (myModels.find(desc.modelPath) == myModels.end())
@@ -194,9 +194,9 @@ public:
 
         // Group identical meshes together to facilitate hardware instancing
         std::sort(m_sceneInstances.begin(), m_sceneInstances.end(), [](const ModelInstance& a, const ModelInstance& b)
-        {
-            return a.pModel < b.pModel;
-        });
+            {
+                return a.pModel < b.pModel;
+            });
 
         return true;
     }
@@ -359,18 +359,21 @@ public:
     bool InitShadowResources(RenderDevice* dc)
     {
         D3D12_DESCRIPTOR_HEAP_DESC dsvHeapDesc = {};
-        dsvHeapDesc.NumDescriptors = 1;
+        dsvHeapDesc.NumDescriptors = NUM_CASCADES;
         dsvHeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_DSV;
         dsvHeapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
 
-        if (FAILED(dc->GetDevice()->CreateDescriptorHeap(&dsvHeapDesc, IID_PPV_ARGS(&m_shadowDsvHeap)))) {
+        if (FAILED(dc->GetDevice()->CreateDescriptorHeap(&dsvHeapDesc, IID_PPV_ARGS(&m_shadowDsvHeap))))
+        {
             return false;
         }
+
+        m_shadowDsvDescriptorSize = dc->GetDevice()->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_DSV);
 
         D3D12_RESOURCE_DESC texDesc = CD3DX12_RESOURCE_DESC::Tex2D(
             DXGI_FORMAT_R32_TYPELESS,
             m_shadowMapSize, m_shadowMapSize,
-            1, 1, 1, 0,
+            NUM_CASCADES, 1, 1, 0,
             D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL
         );
 
@@ -387,22 +390,35 @@ public:
             &texDesc,
             D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
             &optClear,
-            IID_PPV_ARGS(&m_shadowMap)))) {
+            IID_PPV_ARGS(&m_shadowMap))))
+        {
             return false;
         }
 
         D3D12_DEPTH_STENCIL_VIEW_DESC dsvDesc = {};
         dsvDesc.Format = DXGI_FORMAT_D32_FLOAT;
-        dsvDesc.ViewDimension = D3D12_DSV_DIMENSION_TEXTURE2D;
+        dsvDesc.ViewDimension = D3D12_DSV_DIMENSION_TEXTURE2DARRAY;
         dsvDesc.Flags = D3D12_DSV_FLAG_NONE;
-        dc->GetDevice()->CreateDepthStencilView(m_shadowMap.Get(), &dsvDesc, m_shadowDsvHeap->GetCPUDescriptorHandleForHeapStart());
+        dsvDesc.Texture2DArray.MipSlice = 0;
+        dsvDesc.Texture2DArray.ArraySize = 1;
+
+        CD3DX12_CPU_DESCRIPTOR_HANDLE dsvHandle(m_shadowDsvHeap->GetCPUDescriptorHandleForHeapStart());
+        for (UINT i = 0; i < NUM_CASCADES; ++i)
+        {
+            dsvDesc.Texture2DArray.FirstArraySlice = i;
+            dc->GetDevice()->CreateDepthStencilView(m_shadowMap.Get(), &dsvDesc, dsvHandle);
+            dsvHandle.Offset(1, m_shadowDsvDescriptorSize);
+        }
 
         m_shadowSrvIdx = srvIdx++;
         D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
         srvDesc.Format = DXGI_FORMAT_R32_FLOAT;
-        srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+        srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2DARRAY;
         srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-        srvDesc.Texture2D.MipLevels = 1;
+        srvDesc.Texture2DArray.MostDetailedMip = 0;
+        srvDesc.Texture2DArray.MipLevels = 1;
+        srvDesc.Texture2DArray.FirstArraySlice = 0;
+        srvDesc.Texture2DArray.ArraySize = NUM_CASCADES;
 
         CD3DX12_CPU_DESCRIPTOR_HANDLE hSrv(mainDescriptorHeap->GetCPUDescriptorHandleForHeapStart(), m_shadowSrvIdx, srvDescriptorSize);
         dc->GetDevice()->CreateShaderResourceView(m_shadowMap.Get(), &srvDesc, hSrv);
@@ -441,7 +457,8 @@ public:
             &texDesc,
             D3D12_RESOURCE_STATE_RENDER_TARGET,
             &clearVal,
-            IID_PPV_ARGS(&m_offscreenRT)))) {
+            IID_PPV_ARGS(&m_offscreenRT))))
+        {
             return false;
         }
 
@@ -512,19 +529,28 @@ public:
             DXGI_FORMAT_R8G8B8A8_UNORM, (UINT64)width, (UINT)height, 1, 1, 1, 0, D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET);
         clearVal.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
         if (FAILED(device->CreateCommittedResource(&defHeapProps, D3D12_HEAP_FLAG_NONE, &albedoDesc,
-            D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, &clearVal, IID_PPV_ARGS(&m_gbufferAlbedo)))) return false;
+            D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, &clearVal, IID_PPV_ARGS(&m_gbufferAlbedo))))
+        {
+            return false;
+        }
 
         D3D12_RESOURCE_DESC normalDesc = CD3DX12_RESOURCE_DESC::Tex2D(
             DXGI_FORMAT_R16G16B16A16_FLOAT, (UINT64)width, (UINT)height, 1, 1, 1, 0, D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET);
         clearVal.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
         if (FAILED(device->CreateCommittedResource(&defHeapProps, D3D12_HEAP_FLAG_NONE, &normalDesc,
-            D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, &clearVal, IID_PPV_ARGS(&m_gbufferNormal)))) return false;
+            D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, &clearVal, IID_PPV_ARGS(&m_gbufferNormal))))
+        {
+            return false;
+        }
 
         D3D12_RESOURCE_DESC ormDesc = CD3DX12_RESOURCE_DESC::Tex2D(
             DXGI_FORMAT_R8G8B8A8_UNORM, (UINT64)width, (UINT)height, 1, 1, 1, 0, D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET);
         clearVal.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
         if (FAILED(device->CreateCommittedResource(&defHeapProps, D3D12_HEAP_FLAG_NONE, &ormDesc,
-            D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, &clearVal, IID_PPV_ARGS(&m_gbufferORM)))) return false;
+            D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, &clearVal, IID_PPV_ARGS(&m_gbufferORM))))
+        {
+            return false;
+        }
 
         CD3DX12_CPU_DESCRIPTOR_HANDLE rtvHandle(m_gbufferRtvHeap->GetCPUDescriptorHandleForHeapStart());
         device->CreateRenderTargetView(m_gbufferAlbedo.Get(), nullptr, rtvHandle);
@@ -592,10 +618,16 @@ public:
         auto defHeapProps = CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_DEFAULT);
 
         if (FAILED(device->CreateCommittedResource(&defHeapProps, D3D12_HEAP_FLAG_NONE, &texDesc,
-            D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, &clearVal, IID_PPV_ARGS(&m_hbaoRawRT)))) return false;
+            D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, &clearVal, IID_PPV_ARGS(&m_hbaoRawRT))))
+        {
+            return false;
+        }
 
         if (FAILED(device->CreateCommittedResource(&defHeapProps, D3D12_HEAP_FLAG_NONE, &texDesc,
-            D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, &clearVal, IID_PPV_ARGS(&m_hbaoBlurredRT)))) return false;
+            D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, &clearVal, IID_PPV_ARGS(&m_hbaoBlurredRT))))
+        {
+            return false;
+        }
 
         m_rtvDescriptorSize = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
         CD3DX12_CPU_DESCRIPTOR_HANDLE rtvHandle(m_hbaoRtvHeap->GetCPUDescriptorHandleForHeapStart());
@@ -723,9 +755,9 @@ public:
         return m_shadowMap.Get();
     }
 
-    CD3DX12_CPU_DESCRIPTOR_HANDLE GetShadowDsvHandle()
+    CD3DX12_CPU_DESCRIPTOR_HANDLE GetShadowDsvHandle(UINT cascadeIndex = 0)
     {
-        return CD3DX12_CPU_DESCRIPTOR_HANDLE(m_shadowDsvHeap->GetCPUDescriptorHandleForHeapStart());
+        return CD3DX12_CPU_DESCRIPTOR_HANDLE(m_shadowDsvHeap->GetCPUDescriptorHandleForHeapStart(), cascadeIndex, m_shadowDsvDescriptorSize);
     }
 
     UINT GetShadowSrvIdx()
@@ -891,6 +923,7 @@ private:
     Microsoft::WRL::ComPtr<ID3D12Resource> m_shadowMap;
     Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> m_shadowDsvHeap;
     UINT m_shadowSrvIdx;
+    UINT m_shadowDsvDescriptorSize = 0;
     const UINT m_shadowMapSize = 4096;
 
     Microsoft::WRL::ComPtr<ID3D12Resource> m_offscreenRT;

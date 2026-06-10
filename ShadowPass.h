@@ -39,70 +39,69 @@ public:
         cmdList->RSSetViewports(1, &shadowViewport);
         cmdList->RSSetScissorRects(1, &shadowScissor);
 
-        CD3DX12_CPU_DESCRIPTOR_HANDLE dsv = resourceManager->GetShadowDsvHandle();
-
-        cmdList->OMSetRenderTargets(0, nullptr, FALSE, &dsv);
-        cmdList->ClearDepthStencilView(dsv, D3D12_CLEAR_FLAG_DEPTH, 1.0f, 0, 0, nullptr);
-
-        ID3D12DescriptorHeap* heaps[] = { resourceManager->GetMainDescriptorHeap() };
-        cmdList->SetDescriptorHeaps(1, heaps);
-
-        D3D12_GPU_VIRTUAL_ADDRESS baseGpuAddress = resourceManager->GetCBVGPUAddress(frameIndex);
-        cmdList->SetGraphicsRootConstantBufferView(0, baseGpuAddress);
-        cmdList->SetGraphicsRootShaderResourceView(3, resourceManager->GetMaterialBufferGPUAddress());
-
-        cmdList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-
-        Model* currentModel = nullptr;
-        int currentLod = -1;
-        bool currentIsCutout = false;
-        UINT instanceStartOffset = 0;
-        UINT currentInstanceCount = 0;
-
-        for (size_t i = 0; i <= shadowVisibleInstances.size(); ++i)
+        for (UINT cascadeIdx = 0; cascadeIdx < NUM_CASCADES; ++cascadeIdx)
         {
-            bool isEnd = (i == shadowVisibleInstances.size());
-            Model* thisModel = isEnd ? nullptr : shadowVisibleInstances[i]->pModel;
-            int thisLod = isEnd ? -1 : shadowVisibleInstances[i]->currentLodLevel;
-            bool thisIsCutout = isEnd ? false : shadowVisibleInstances[i]->isCutout;
+            CD3DX12_CPU_DESCRIPTOR_HANDLE dsv = resourceManager->GetShadowDsvHandle(cascadeIdx);
+            cmdList->OMSetRenderTargets(0, nullptr, FALSE, &dsv);
+            cmdList->ClearDepthStencilView(dsv, D3D12_CLEAR_FLAG_DEPTH, 1.0f, 0, 0, nullptr);
 
-            if ((isEnd || thisModel != currentModel || thisLod != currentLod || thisIsCutout != currentIsCutout) && currentInstanceCount > 0 && currentModel != nullptr)
+            ID3D12DescriptorHeap* heaps[] = { resourceManager->GetMainDescriptorHeap() };
+            cmdList->SetDescriptorHeaps(1, heaps);
+
+            D3D12_GPU_VIRTUAL_ADDRESS baseGpuAddress = resourceManager->GetCBVGPUAddress(frameIndex);
+            cmdList->SetGraphicsRootConstantBufferView(0, baseGpuAddress);
+            cmdList->SetGraphicsRootShaderResourceView(3, resourceManager->GetMaterialBufferGPUAddress());
+
+            cmdList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+
+            Model* currentModel = nullptr;
+            int currentLod = -1;
+            bool currentIsCutout = false;
+            UINT instanceStartOffset = 0;
+            UINT currentInstanceCount = 0;
+
+            for (size_t i = 0; i <= shadowVisibleInstances.size(); ++i)
             {
-                D3D12_GPU_VIRTUAL_ADDRESS srvAddress = baseGpuAddress + kPassConstantsAlignedSize + ((visibleInstancesSize + instanceStartOffset) * sizeof(InstanceData));
-                cmdList->SetGraphicsRootShaderResourceView(1, srvAddress);
+                bool isEnd = (i == shadowVisibleInstances.size());
+                Model* thisModel = isEnd ? nullptr : shadowVisibleInstances[i]->pModel;
+                int thisLod = isEnd ? -1 : shadowVisibleInstances[i]->currentLodLevel;
+                bool thisIsCutout = isEnd ? false : shadowVisibleInstances[i]->isCutout;
 
-                for (auto& mesh : currentModel->meshes)
+                if ((isEnd || thisModel != currentModel || thisLod != currentLod || thisIsCutout != currentIsCutout) && currentInstanceCount > 0 && currentModel != nullptr)
                 {
-                    cmdList->SetGraphicsRoot32BitConstants(4, 1, &mesh.materialID, 0);
-                    mesh.Draw(cmdList, currentInstanceCount, currentLod);
-                }
-            }
+                    D3D12_GPU_VIRTUAL_ADDRESS srvAddress = baseGpuAddress + kPassConstantsAlignedSize + ((visibleInstancesSize + instanceStartOffset) * sizeof(InstanceData));
+                    cmdList->SetGraphicsRootShaderResourceView(1, srvAddress);
 
-            if (!isEnd)
-            {
-                if (thisModel != currentModel || thisLod != currentLod || thisIsCutout != currentIsCutout)
-                {
-                    if (thisIsCutout != currentIsCutout)
+                    for (auto& mesh : currentModel->meshes)
                     {
-                        if (thisIsCutout)
-                        {
-                            cmdList->SetPipelineState(pipelineManager->GetShadowCutoutPSO());
-                        }
-                        else
-                        {
-                            cmdList->SetPipelineState(pipelineManager->GetShadowPSO());
-                        }
+                        UINT constants[2] = { mesh.materialID, cascadeIdx };
+                        cmdList->SetGraphicsRoot32BitConstants(4, 2, constants, 0);
+                        mesh.Draw(cmdList, currentInstanceCount, currentLod);
                     }
-
-                    currentModel = thisModel;
-                    currentLod = thisLod;
-                    currentIsCutout = thisIsCutout;
-                    instanceStartOffset = i;
-                    currentInstanceCount = 1;
                 }
-                else
+
+                if (!isEnd)
                 {
-                    currentInstanceCount++;
+                    if (thisModel != currentModel || thisLod != currentLod || thisIsCutout != currentIsCutout)
+                    {
+                        if (thisIsCutout != currentIsCutout)
+                        {
+                            if (thisIsCutout)
+                                cmdList->SetPipelineState(pipelineManager->GetShadowCutoutPSO());
+                            else
+                                cmdList->SetPipelineState(pipelineManager->GetShadowPSO());
+                        }
+
+                        currentModel = thisModel;
+                        currentLod = thisLod;
+                        currentIsCutout = thisIsCutout;
+                        instanceStartOffset = i;
+                        currentInstanceCount = 1;
+                    }
+                    else
+                    {
+                        currentInstanceCount++;
+                    }
                 }
             }
         }

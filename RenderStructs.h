@@ -3,6 +3,8 @@
 
 #include "stdafx.h"
 
+constexpr UINT NUM_CASCADES = 4;
+
 constexpr UINT64 AlignConstantBufferSize(UINT64 byteSize)
 {
     constexpr UINT64 alignment = D3D12_CONSTANT_BUFFER_DATA_PLACEMENT_ALIGNMENT;
@@ -18,12 +20,15 @@ struct alignas(D3D12_CONSTANT_BUFFER_DATA_PLACEMENT_ALIGNMENT) PassConstants
     float padding2;
     DirectX::XMFLOAT3 lightColor;
     float padding3;
-    DirectX::XMFLOAT4X4 lightViewProj;
+
+    DirectX::XMFLOAT4X4 lightViewProj[NUM_CASCADES];
+    DirectX::XMFLOAT4 cascadeSplits;
 
     UINT iblPrefilterIdx;
     UINT iblBRDFIdx;
     UINT shadowMapIdx;
-    UINT padTo256[33];
+
+    UINT padTo256[45];
 };
 
 constexpr UINT64 kPassConstantsAlignedSize = AlignConstantBufferSize(sizeof(PassConstants));
