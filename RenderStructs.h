@@ -23,12 +23,13 @@ struct alignas(D3D12_CONSTANT_BUFFER_DATA_PLACEMENT_ALIGNMENT) PassConstants
 
     DirectX::XMFLOAT4X4 lightViewProj[NUM_CASCADES];
     DirectX::XMFLOAT4 cascadeSplits;
+    DirectX::XMFLOAT4 cascadeOrthoWidths;
 
     UINT iblPrefilterIdx;
     UINT iblBRDFIdx;
     UINT shadowMapIdx;
 
-    UINT padTo256[45];
+    UINT padTo256[41];
 };
 
 constexpr UINT64 kPassConstantsAlignedSize = AlignConstantBufferSize(sizeof(PassConstants));

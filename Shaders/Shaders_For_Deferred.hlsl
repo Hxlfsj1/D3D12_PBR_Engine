@@ -9,6 +9,7 @@ cbuffer PassConstants : register(b0)
     
     float4x4 lightViewProj[4];
     float4 cascadeSplits;
+    float4 cascadeOrthoWidths;
     
     uint iblPrefilterIdx;
     uint iblBRDFIdx;
@@ -139,8 +140,19 @@ float CalcShadowFactor(float4 lightSpacePos, uint cascadeIndex)
         return 1.0f;
 
     float zReceiver = projCoords.z;
+    
+    // Adjustable shadow parameters
     float LIGHT_WORLD_SIZE = 1.0;
-    float LIGHT_SIZE_UV = LIGHT_WORLD_SIZE / padding3;
+    float currentOrthoWidth = 1.0;
+    if (cascadeIndex == 0)
+        currentOrthoWidth = cascadeOrthoWidths.x;
+    else if (cascadeIndex == 1)
+        currentOrthoWidth = cascadeOrthoWidths.y;
+    else if (cascadeIndex == 2)
+        currentOrthoWidth = cascadeOrthoWidths.z;
+    else if (cascadeIndex == 3)
+        currentOrthoWidth = cascadeOrthoWidths.w;
+    float LIGHT_SIZE_UV = LIGHT_WORLD_SIZE / max(currentOrthoWidth, 0.001f);
     
     float avgBlockerDepth = 1.0;
     float numBlockers = 0.0;
@@ -195,6 +207,7 @@ float4 PSMain(VS_OUTPUT input) : SV_TARGET
     float4 worldPosH = mul(clipSpacePos, invViewProj);
     float3 worldPos = worldPosH.xyz / worldPosH.w;
 
+    // Use different shadow maps depending on distance
     float dist = distance(camPos, worldPos);
     uint cascadeIndex = 0;
     if (dist > cascadeSplits.x)
@@ -226,7 +239,13 @@ float4 PSMain(VS_OUTPUT input) : SV_TARGET
     float3 kD = float3(1.0, 1.0, 1.0) - kS;
     kD *= 1.0 - metallic;
 
+    // Shadow with attenuation
     float shadow = CalcShadowFactor(lightSpacePos, cascadeIndex);
+    float fadeDistance = 10.0f;
+    float fadeStart = cascadeSplits.w - fadeDistance;
+    float fadeFactor = saturate((dist - fadeStart) / fadeDistance);
+    shadow = lerp(shadow, 1.0f, fadeFactor);
+    
     float NdotL = max(dot(N, L), 0.0);
     float3 directDiffuse = (kD * albedo / PI) * radiance * NdotL * shadow;
     float3 directSpecular = specular * radiance * NdotL * shadow;
