@@ -4,6 +4,7 @@ G-Buffer Pass Output Summary:
 1. Target0: BaseColor and Alpha
 2. Target1: Normal in [-1, 1]
 3. Target2: ORM texture
+4. Target3: Emissive Color
 */
 
 #ifndef LOD_LEVEL
@@ -84,6 +85,7 @@ struct GBufferOutput
     float4 albedo : SV_Target0;
     float4 normal : SV_Target1;
     float4 orm : SV_Target2;
+    float4 emissive : SV_Target3;
 };
 
 GBufferOutput PSMain(VS_OUTPUT input)
@@ -99,8 +101,22 @@ GBufferOutput PSMain(VS_OUTPUT input)
 #ifdef ALPHA_TEST
     clip(albedoSample.a - 0.5f);
 #endif
+    
+    float3 baseAlbedo = pow(abs(albedoSample.rgb), 2.2);
+    output.albedo = float4(baseAlbedo, albedoSample.a);
+    
+    Texture2D tEmissive = ResourceDescriptorHeap[gMaterialData[finalMatID].emissiveIdx];
+    float3 emissiveSample = tEmissive.Sample(s1, input.texCoord).rgb;
 
-    output.albedo = float4(pow(abs(albedoSample.rgb), 2.2), albedoSample.a);
+    if (gMaterialData[finalMatID].isUnlit != 0)
+    {
+        output.emissive = float4(baseAlbedo, 1.0f);
+        output.albedo = float4(0.0f, 0.0f, 0.0f, albedoSample.a);
+    }
+    else
+    {
+        output.emissive = float4(emissiveSample, 1.0f);
+    }
     
 #if LOD_LEVEL == 0
     Texture2D tNormal = ResourceDescriptorHeap[gMaterialData[finalMatID].normalIdx];
@@ -111,14 +127,24 @@ GBufferOutput PSMain(VS_OUTPUT input)
     float3 B = normalize(input.worldBitangent);
     float3x3 TBN = float3x3(T, B, N);
     float3 finalNormal = normalize(mul(normalMap, TBN));
+    output.normal = float4(finalNormal * 0.5 + 0.5, 1.0);
 #else
     float3 finalNormal = normalize(input.worldNormal);
+    output.normal = float4(finalNormal * 0.5 + 0.5, 1.0);
 #endif
-    output.normal = float4(finalNormal, 1.0f);
-    
+
     Texture2D tORM = ResourceDescriptorHeap[gMaterialData[finalMatID].ormIdx];
     float3 ormSample = tORM.Sample(s1, input.texCoord).rgb;
     output.orm = float4(ormSample, 1.0f);
+    
+    if (gMaterialData[finalMatID].isUnlit != 0)
+    {
+        output.orm.a = 0.0f;
+    }
+    else
+    {
+        output.orm.a = 1.0f;
+    }
     
     return output;
 }

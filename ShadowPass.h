@@ -84,7 +84,7 @@ public:
                 {
                     if (thisModel != currentModel || thisLod != currentLod || thisIsCutout != currentIsCutout)
                     {
-                        if (thisIsCutout != currentIsCutout)
+                        if (currentModel == nullptr || thisIsCutout != currentIsCutout)
                         {
                             if (thisIsCutout)
                                 cmdList->SetPipelineState(pipelineManager->GetShadowCutoutPSO());

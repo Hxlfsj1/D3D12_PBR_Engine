@@ -43,6 +43,7 @@ public:
         deferredCb.gbufferORMIdx = resourceManager->GetGBufferORMSrvIdx();
         deferredCb.depthBufferIdx = resourceManager->GetDepthBufferSrvIdx();
         deferredCb.hbaoIdx = resourceManager->GetHBAOBlurredSrvIdx();
+        deferredCb.gbufferEmissiveIdx = resourceManager->GetGBufferEmissiveSrvIdx();
 
         memcpy(cbvCpuAddress, &deferredCb, sizeof(DeferredConstants));
 

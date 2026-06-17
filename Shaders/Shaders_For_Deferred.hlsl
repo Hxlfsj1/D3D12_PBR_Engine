@@ -23,6 +23,7 @@ cbuffer DeferredConstants : register(b1)
     uint gbufferNormalIdx;
     uint gbufferORMIdx;
     uint depthBufferIdx;
+    uint gbufferEmissiveIdx;
     uint hbaoIdx;
 };
 
@@ -196,6 +197,13 @@ float4 PSMain(VS_OUTPUT input) : SV_TARGET
     float3 albedo = tAlbedo.SampleLevel(s1, input.texCoord, 0).rgb;
     float3 N = normalize(tNormal.SampleLevel(s1, input.texCoord, 0).xyz);
     float4 ormSample = tORM.SampleLevel(s1, input.texCoord, 0);
+    if (ormSample.a < 0.5f)
+    {
+        Texture2D tEmissive = ResourceDescriptorHeap[gbufferEmissiveIdx];
+        float3 emissiveColor = tEmissive.SampleLevel(s1, input.texCoord, 0).rgb;
+        
+        return float4(emissiveColor, 1.0f);
+    }
     float ao = max(ormSample.r, 0.01);
     float roughness = max(ormSample.g, 0.04);
     float metallic = ormSample.b;
@@ -272,12 +280,15 @@ float4 PSMain(VS_OUTPUT input) : SV_TARGET
     Texture2D tBRDF = ResourceDescriptorHeap[iblBRDFIdx];
     float2 brdf = tBRDF.Sample(s1, float2(max(dot(N, V), 0.0), roughness)).rg;
     float3 specular_IBL = prefilteredColor * (F_IBL * brdf.x + brdf.y);
-    
-    float3 ambientSpecular = specular_IBL * finalAO;
-    
+    float3 ambientSpecular = specular_IBL * finalAO; 
     float3 ambient = ambientDiffuse + ambientSpecular;
     
-    float3 color = ambient + Lo;
+    float3 PBR_Color = ambient + Lo;
+    
+    Texture2D tEmissive = ResourceDescriptorHeap[gbufferEmissiveIdx];
+    float3 emissiveColor = tEmissive.SampleLevel(s1, input.texCoord, 0).rgb;
+    
+    float3 color = PBR_Color + emissiveColor;
 
     return float4(color, 1.0f);
 }

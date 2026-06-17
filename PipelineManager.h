@@ -368,10 +368,11 @@ private:
         // G-BUFFER PSOs
         // ====================================================================================================
         D3D12_GRAPHICS_PIPELINE_STATE_DESC gbufferPsoDesc = psoDesc;
-        gbufferPsoDesc.NumRenderTargets = 3;
+        gbufferPsoDesc.NumRenderTargets = 4;
         gbufferPsoDesc.RTVFormats[0] = DXGI_FORMAT_R8G8B8A8_UNORM;
         gbufferPsoDesc.RTVFormats[1] = DXGI_FORMAT_R16G16B16A16_FLOAT;
         gbufferPsoDesc.RTVFormats[2] = DXGI_FORMAT_R8G8B8A8_UNORM;
+        gbufferPsoDesc.RTVFormats[3] = DXGI_FORMAT_R8G8B8A8_UNORM;
         gbufferPsoDesc.DepthStencilState = CD3DX12_DEPTH_STENCIL_DESC(D3D12_DEFAULT);
         gbufferPsoDesc.DepthStencilState.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ALL;
         gbufferPsoDesc.DepthStencilState.DepthFunc = D3D12_COMPARISON_FUNC_LESS;

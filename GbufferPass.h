@@ -24,30 +24,33 @@ public:
     {
         auto cmdList = deviceContext->GetCommandList();
 
-        CD3DX12_RESOURCE_BARRIER barriers[3] =
+        CD3DX12_RESOURCE_BARRIER barriers[4] =
         {
             CD3DX12_RESOURCE_BARRIER::Transition(resourceManager->GetGBufferAlbedo(), D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_RENDER_TARGET),
             CD3DX12_RESOURCE_BARRIER::Transition(resourceManager->GetGBufferNormal(), D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_RENDER_TARGET),
-            CD3DX12_RESOURCE_BARRIER::Transition(resourceManager->GetGBufferORM(), D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_RENDER_TARGET)
+            CD3DX12_RESOURCE_BARRIER::Transition(resourceManager->GetGBufferORM(), D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_RENDER_TARGET),
+            CD3DX12_RESOURCE_BARRIER::Transition(resourceManager->GetGBufferEmissive(), D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_RENDER_TARGET)
         };
-        cmdList->ResourceBarrier(3, barriers);
+        cmdList->ResourceBarrier(4, barriers);
 
         cmdList->RSSetViewports(1, &viewport);
         cmdList->RSSetScissorRects(1, &scissorRect);
 
-        CD3DX12_CPU_DESCRIPTOR_HANDLE rtvHandles[3] =
+        CD3DX12_CPU_DESCRIPTOR_HANDLE rtvHandles[4] =
         {
             resourceManager->GetGBufferAlbedoRtvHandle(),
             resourceManager->GetGBufferNormalRtvHandle(),
-            resourceManager->GetGBufferORMRtvHandle()
+            resourceManager->GetGBufferORMRtvHandle(),
+            resourceManager->GetGBufferEmissiveRtvHandle()
         };
         CD3DX12_CPU_DESCRIPTOR_HANDLE dsvHandle = deviceContext->GetDSVHandle();
-        cmdList->OMSetRenderTargets(3, rtvHandles, FALSE, &dsvHandle);
+        cmdList->OMSetRenderTargets(4, rtvHandles, FALSE, &dsvHandle);
 
         const float clearColorBlack[] = { 0.0f, 0.0f, 0.0f, 0.0f };
         cmdList->ClearRenderTargetView(rtvHandles[0], clearColorBlack, 0, nullptr);
         cmdList->ClearRenderTargetView(rtvHandles[1], clearColorBlack, 0, nullptr);
         cmdList->ClearRenderTargetView(rtvHandles[2], clearColorBlack, 0, nullptr);
+        cmdList->ClearRenderTargetView(rtvHandles[3], clearColorBlack, 0, nullptr);
 
         cmdList->SetGraphicsRootSignature(pipelineManager->GetRootSignature());
         ID3D12DescriptorHeap* heaps[] = { resourceManager->GetMainDescriptorHeap() };
@@ -121,13 +124,14 @@ public:
             }
         }
 
-        CD3DX12_RESOURCE_BARRIER revertBarriers[3] =
+        CD3DX12_RESOURCE_BARRIER revertBarriers[4] =
         {
             CD3DX12_RESOURCE_BARRIER::Transition(resourceManager->GetGBufferAlbedo(), D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE),
             CD3DX12_RESOURCE_BARRIER::Transition(resourceManager->GetGBufferNormal(), D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE),
-            CD3DX12_RESOURCE_BARRIER::Transition(resourceManager->GetGBufferORM(), D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE)
+            CD3DX12_RESOURCE_BARRIER::Transition(resourceManager->GetGBufferORM(), D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE),
+            CD3DX12_RESOURCE_BARRIER::Transition(resourceManager->GetGBufferEmissive(), D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE)
         };
-        cmdList->ResourceBarrier(3, revertBarriers);
+        cmdList->ResourceBarrier(4, revertBarriers);
 
         return transparentStartIndex;
     }

@@ -63,9 +63,10 @@ struct alignas(D3D12_CONSTANT_BUFFER_DATA_PLACEMENT_ALIGNMENT) DeferredConstants
     UINT gbufferNormalIdx;
     UINT gbufferORMIdx;
     UINT depthBufferIdx;
+    UINT gbufferEmissiveIdx;
 
     UINT hbaoIdx;
-    UINT padTo256[43];
+    UINT padTo256[42];
 };
 
 struct alignas(D3D12_CONSTANT_BUFFER_DATA_PLACEMENT_ALIGNMENT) HBAOConstants
