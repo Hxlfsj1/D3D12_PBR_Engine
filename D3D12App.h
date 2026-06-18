@@ -89,6 +89,7 @@ private:
     int m_visibleInstanceCount = 0;
     bool m_useTAA;
     UINT m_taaFrameCounter;
+    bool m_taaHistoryValid = false;
 
     DirectX::XMFLOAT4X4 m_viewMat;
     DirectX::XMFLOAT4X4 m_unjitteredProjMat;
@@ -99,6 +100,7 @@ private:
     DirectX::XMFLOAT4X4 m_invProjMat;
 
     DirectX::XMFLOAT4X4 m_prevViewProj;
+    bool m_hasPrevViewProj = false;
     float m_jitterX = 0.0f;
     float m_jitterY = 0.0f;
 };

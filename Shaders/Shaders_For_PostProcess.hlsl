@@ -35,7 +35,7 @@ float4 PSMain(VS_OUTPUT input) : SV_TARGET
     float3 minColor = min(color, min(cTop, min(cLeft, min(cRight, cBottom))));
     float3 maxColor = max(color, max(cTop, max(cLeft, max(cRight, cBottom))));
 
-    float3 w = sqrt(minColor / maxColor);
+    float3 w = sqrt(saturate(minColor / max(maxColor, 1e-4f)));
     
     float sharpenStrength = -0.15f;
     float3 wFinal = w * sharpenStrength;

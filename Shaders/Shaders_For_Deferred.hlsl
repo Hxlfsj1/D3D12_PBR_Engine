@@ -195,7 +195,7 @@ float4 PSMain(VS_OUTPUT input) : SV_TARGET
 
     // Unpack G-Buffer data
     float3 albedo = tAlbedo.SampleLevel(s1, input.texCoord, 0).rgb;
-    float3 N = normalize(tNormal.SampleLevel(s1, input.texCoord, 0).xyz);
+    float3 N = normalize(tNormal.SampleLevel(s1, input.texCoord, 0).xyz * 2.0f - 1.0f);
     float4 ormSample = tORM.SampleLevel(s1, input.texCoord, 0);
     if (ormSample.a < 0.5f)
     {

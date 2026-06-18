@@ -18,10 +18,9 @@ public:
         const DirectX::XMFLOAT4X4& prevViewProj,
         float jitterX, float jitterY,
         int frameIndex, int width, int height,
-        int frameCount)
+        bool historyValid)
     {
         int taaCurrentIdx = resourceManager->GetTAACurrentHistoryIdx();
-        bool isFirstFrame = (frameCount == 1);
 
         auto cmdList = deviceContext->GetCommandList();
 
@@ -58,7 +57,7 @@ public:
         cb.prevViewProj = prevViewProj;
         cb.jitterOffset = DirectX::XMFLOAT2(jitterX, jitterY);
         // Define TAA blend alpha
-        cb.blendAlpha = isFirstFrame ? 0.0f : 0.95f;
+        cb.blendAlpha = historyValid ? 0.95f : 0.0f;
         cb.varianceScale = 1.5f;
 
         cb.colorTextureIdx = resourceManager->GetPostProcessSrvIdx();

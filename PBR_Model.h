@@ -280,12 +280,21 @@ private:
                 XMStoreFloat3(&vertex.Normal, norm);
             }
 
+            vertex.TexCoords = { 0.0f, 0.0f };
+            vertex.Tangent = { 1.0f, 0.0f, 0.0f };
+            vertex.Bitangent = { 0.0f, 1.0f, 0.0f };
+
             if (mesh->mTextureCoords[0])
             {
                 vertex.TexCoords = { mesh->mTextureCoords[0][i].x, mesh->mTextureCoords[0][i].y };
+            }
+
+            if (mesh->HasTangentsAndBitangents())
+            {
                 XMVECTOR tan = XMVectorSet(mesh->mTangents[i].x, mesh->mTangents[i].y, mesh->mTangents[i].z, 0.0f);
                 tan = XMVector3Normalize(XMVector3TransformNormal(tan, invTranspose));
                 XMStoreFloat3(&vertex.Tangent, tan);
+
                 XMVECTOR bitan = XMVectorSet(mesh->mBitangents[i].x, mesh->mBitangents[i].y, mesh->mBitangents[i].z, 0.0f);
                 bitan = XMVector3Normalize(XMVector3TransformNormal(bitan, invTranspose));
                 XMStoreFloat3(&vertex.Bitangent, bitan);

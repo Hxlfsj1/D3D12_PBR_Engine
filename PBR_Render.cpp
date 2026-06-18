@@ -63,8 +63,11 @@ D3D12App::D3D12App(HINSTANCE hInstance) : camera(XMFLOAT3(0.0f, 3.0f, -10.0f))
     frameIndex = 0;
     deltaTime = 0.0f;
     m_taaFrameCounter = 0;
+    m_taaHistoryValid = false;
 
+    DirectX::XMStoreFloat4x4(&m_unjitteredViewProj, DirectX::XMMatrixIdentity());
     DirectX::XMStoreFloat4x4(&m_prevViewProj, DirectX::XMMatrixIdentity());
+    m_hasPrevViewProj = false;
     m_jitterX = 0.0f;
     m_jitterY = 0.0f;
 }
@@ -190,7 +193,7 @@ bool D3D12App::InitD3D()
     if (!m_resourceManager.LoadAssets(&m_deviceContext, SettingsManager::LoadSceneFromJson("Settings/Scene.json"), frameBufferCount)) return false;
     m_resourceManager.BuildGlobalMaterialPool(&m_deviceContext);
     currentHDRPath = SettingsManager::GetSkyboxPathFromJson();
-    m_resourceManager.InitIBL(&m_deviceContext, currentHDRPath.c_str());
+    if (!m_resourceManager.InitIBL(&m_deviceContext, currentHDRPath.c_str())) return false;
 
     if (!m_resourceManager.InitShadowResources(&m_deviceContext)) return false;
 
@@ -240,11 +243,19 @@ void D3D12App::Update()
     // ====================================================================================================
     // Calculate V * P matrix
     // ====================================================================================================
-    m_prevViewProj = m_unjitteredViewProj;
-
     XMMATRIX view = camera.GetViewMatrix();
     XMMATRIX unjitteredProj = XMMatrixPerspectiveFovLH(XMConvertToRadians(camera.Zoom), (float)Width / Height, 0.1f, 1000.0f);
     XMMATRIX unjitteredViewProj = view * unjitteredProj;
+
+    if (m_hasPrevViewProj)
+    {
+        m_prevViewProj = m_unjitteredViewProj;
+    }
+    else
+    {
+        XMStoreFloat4x4(&m_prevViewProj, XMMatrixTranspose(unjitteredViewProj));
+        m_hasPrevViewProj = true;
+    }
 
     if (m_useTAA)
     {
@@ -605,7 +616,8 @@ void D3D12App::Render()
 
     if (m_useTAA)
     {
-        finalPostInputSRV = TAAPass::Execute(&m_deviceContext, &m_resourceManager, &m_pipelineManager, m_invViewProjMat, m_prevViewProj, m_jitterX, m_jitterY, frameIndex, Width, Height, frameCount);
+        finalPostInputSRV = TAAPass::Execute(&m_deviceContext, &m_resourceManager, &m_pipelineManager, m_invViewProjMat, m_prevViewProj, m_jitterX, m_jitterY, frameIndex, Width, Height, m_taaHistoryValid);
+        m_taaHistoryValid = true;
     }
 
     PostProcessPass::Execute(&m_deviceContext, &m_resourceManager, &m_pipelineManager, frameIndex, viewport, scissorRect, finalPostInputSRV);

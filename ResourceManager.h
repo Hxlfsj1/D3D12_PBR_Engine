@@ -278,14 +278,14 @@ public:
     // 2. An irradiance map for diffuse
     // 3. A filtered environment map for specular
     // 4. A BRDF LUT for specular
-    void InitIBL(RenderDevice* dc, const char* currentHDRPath)
+    bool InitIBL(RenderDevice* dc, const char* currentHDRPath)
     {
         int w, h, c;
         float* data = stbi_loadf(currentHDRPath, &w, &h, &c, 4);
 
         if (!data)
         {
-            return;
+            return false;
         }
 
         IBLBaker baker;
@@ -294,6 +294,13 @@ public:
         texEnvCube = baker.GetEnvCube();
         texPrefilterCube = baker.GetPrefilterCube();
         texBRDFLUT = baker.GetBRDFLUT();
+        shBuffer = baker.GetSHBuffer();
+
+        if (!texEnvCube || !texPrefilterCube || !texBRDFLUT || !shBuffer)
+        {
+            stbi_image_free(data);
+            return false;
+        }
 
         D3D12_SHADER_RESOURCE_VIEW_DESC envD = {};
         envD.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
@@ -322,8 +329,9 @@ public:
         CD3DX12_CPU_DESCRIPTOR_HANDLE hBrdf(mainDescriptorHeap->GetCPUDescriptorHandleForHeapStart(), iblBRDFIdx, srvDescriptorSize);
         dc->GetDevice()->CreateShaderResourceView(texBRDFLUT.Get(), &lsD, hBrdf);
 
-        shBuffer = baker.GetSHBuffer();
         stbi_image_free(data);
+
+        return true;
     }
 
     // Create a proxy texture and request memory from the Default Heap
