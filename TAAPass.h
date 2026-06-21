@@ -6,6 +6,7 @@
 #include "ResourceManager.h"
 #include "PipelineManager.h"
 #include "RenderStructs.h"
+#include "RDG.h"
 
 class TAAPass
 {
@@ -35,6 +36,46 @@ public:
         };
         cmdList->ResourceBarrier(3, barriers);
 
+        ExecuteNoBarrier(
+            deviceContext,
+            resourceManager,
+            pipelineManager,
+            currentInvViewProj,
+            prevViewProj,
+            jitterX,
+            jitterY,
+            frameIndex,
+            width,
+            height,
+            historyValid,
+            taaCurrentIdx);
+
+        CD3DX12_RESOURCE_BARRIER revertBarriers[3] =
+        {
+            CD3DX12_RESOURCE_BARRIER::Transition(offscreenLitBuffer, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_RENDER_TARGET),
+            CD3DX12_RESOURCE_BARRIER::Transition(currentHistoryTarget, D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE),
+            CD3DX12_RESOURCE_BARRIER::Transition(deviceContext->GetDepthStencilBuffer(), D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_DEPTH_WRITE)
+        };
+        cmdList->ResourceBarrier(3, revertBarriers);
+
+        resourceManager->FlipTAAHistoryIndex();
+
+        return resourceManager->GetTAAHistorySrvIdx(taaCurrentIdx);
+    }
+
+    static void ExecuteNoBarrier(
+        RenderDevice* deviceContext,
+        ResourceManager* resourceManager,
+        PipelineManager* pipelineManager,
+        const DirectX::XMFLOAT4X4& currentInvViewProj,
+        const DirectX::XMFLOAT4X4& prevViewProj,
+        float jitterX, float jitterY,
+        int frameIndex, int width, int height,
+        bool historyValid,
+        int taaCurrentIdx)
+    {
+        auto cmdList = deviceContext->GetCommandList();
+
         CD3DX12_CPU_DESCRIPTOR_HANDLE rtvHandle = resourceManager->GetTAARtvHandle(taaCurrentIdx);
         cmdList->OMSetRenderTargets(1, &rtvHandle, FALSE, nullptr);
 
@@ -56,7 +97,6 @@ public:
         cb.invViewProj = currentInvViewProj;
         cb.prevViewProj = prevViewProj;
         cb.jitterOffset = DirectX::XMFLOAT2(jitterX, jitterY);
-        // Define TAA blend alpha
         cb.blendAlpha = historyValid ? 0.95f : 0.0f;
         cb.varianceScale = 1.5f;
 
@@ -69,14 +109,74 @@ public:
 
         cmdList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
         cmdList->DrawInstanced(3, 1, 0, 0);
+    }
 
-        CD3DX12_RESOURCE_BARRIER revertBarriers[3] =
-        {
-            CD3DX12_RESOURCE_BARRIER::Transition(offscreenLitBuffer, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_RENDER_TARGET),
-            CD3DX12_RESOURCE_BARRIER::Transition(currentHistoryTarget, D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE),
-            CD3DX12_RESOURCE_BARRIER::Transition(deviceContext->GetDepthStencilBuffer(), D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_DEPTH_WRITE)
-        };
-        cmdList->ResourceBarrier(3, revertBarriers);
+    static UINT ExecuteRDG(
+        RenderDevice* deviceContext,
+        ResourceManager* resourceManager,
+        PipelineManager* pipelineManager,
+        const DirectX::XMFLOAT4X4& currentInvViewProj,
+        const DirectX::XMFLOAT4X4& prevViewProj,
+        float jitterX, float jitterY,
+        int frameIndex, int width, int height,
+        bool historyValid)
+    {
+        int taaCurrentIdx = resourceManager->GetTAACurrentHistoryIdx();
+
+        RDGBuilder graph(deviceContext, "TAAGraph");
+
+        RDGTextureHandle offscreenLitBuffer = graph.RegisterExternalTexture(
+            resourceManager->GetPostProcessRT(),
+            D3D12_RESOURCE_STATE_RENDER_TARGET,
+            D3D12_RESOURCE_STATE_RENDER_TARGET,
+            "PostProcessRT");
+
+        RDGTextureHandle currentHistoryTarget = graph.RegisterExternalTexture(
+            resourceManager->GetTAAHistoryRT(taaCurrentIdx),
+            D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+            D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+            "TAACurrentHistory");
+
+        RDGTextureHandle previousHistory = graph.RegisterExternalTexture(
+            resourceManager->GetTAAHistoryRT(1 - taaCurrentIdx),
+            D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+            D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+            "TAAPreviousHistory");
+
+        RDGTextureHandle depth = graph.RegisterExternalTexture(
+            deviceContext->GetDepthStencilBuffer(),
+            D3D12_RESOURCE_STATE_DEPTH_WRITE,
+            D3D12_RESOURCE_STATE_DEPTH_WRITE,
+            "SceneDepth");
+
+        RDGPassParameters params;
+        params.ReadSRV(offscreenLitBuffer);
+        params.ReadSRV(previousHistory);
+        params.ReadSRV(depth);
+        params.WriteRTV(currentHistoryTarget);
+
+        graph.AddPass(
+            "TAA",
+            ERDGPassFlags::Graphics,
+            params,
+            [=](ID3D12GraphicsCommandList* cmdList)
+            {
+                ExecuteNoBarrier(
+                    deviceContext,
+                    resourceManager,
+                    pipelineManager,
+                    currentInvViewProj,
+                    prevViewProj,
+                    jitterX,
+                    jitterY,
+                    frameIndex,
+                    width,
+                    height,
+                    historyValid,
+                    taaCurrentIdx);
+            });
+
+        graph.Execute(deviceContext->GetCommandList());
 
         resourceManager->FlipTAAHistoryIndex();
 

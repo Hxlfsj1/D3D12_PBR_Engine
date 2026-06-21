@@ -7,6 +7,7 @@
 #include "PipelineManager.h"
 #include "Camera.h"
 #include "RenderStructs.h"
+#include "RDG.h"
 
 class HBAOPass
 {
@@ -31,6 +32,49 @@ public:
         };
         cmdList->ResourceBarrier(2, barriers);
 
+        ExecuteRawNoBarrier(
+            deviceContext,
+            resourceManager,
+            pipelineManager,
+            viewMat,
+            projMat,
+            invProjMat,
+            width,
+            height,
+            frameIndex);
+
+        CD3DX12_RESOURCE_BARRIER blurBarriers[2] =
+        {
+            CD3DX12_RESOURCE_BARRIER::Transition(resourceManager->GetHBAORawRT(), D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE),
+            CD3DX12_RESOURCE_BARRIER::Transition(resourceManager->GetHBAOBlurredRT(), D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_RENDER_TARGET)
+        };
+        cmdList->ResourceBarrier(2, blurBarriers);
+
+        ExecuteBlurNoBarrier(
+            deviceContext,
+            resourceManager,
+            pipelineManager);
+
+        CD3DX12_RESOURCE_BARRIER finalBarrier = CD3DX12_RESOURCE_BARRIER::Transition(
+            resourceManager->GetHBAOBlurredRT(),
+            D3D12_RESOURCE_STATE_RENDER_TARGET,
+            D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+        cmdList->ResourceBarrier(1, &finalBarrier);
+    }
+
+    static void ExecuteRawNoBarrier(
+        RenderDevice* deviceContext,
+        ResourceManager* resourceManager,
+        PipelineManager* pipelineManager,
+        const DirectX::XMFLOAT4X4& viewMat,
+        const DirectX::XMFLOAT4X4& projMat,
+        const DirectX::XMFLOAT4X4& invProjMat,
+        int width,
+        int height,
+        int frameIndex)
+    {
+        auto cmdList = deviceContext->GetCommandList();
+
         CD3DX12_CPU_DESCRIPTOR_HANDLE hbaoRtv = resourceManager->GetHBAORawRtvHandle();
         cmdList->OMSetRenderTargets(1, &hbaoRtv, FALSE, nullptr);
 
@@ -50,11 +94,9 @@ public:
         D3D12_GPU_VIRTUAL_ADDRESS cbvGpuAddress = resourceManager->GetCBVGPUAddress(frameIndex) + hbaoConstantsOffset;
 
         HBAOConstants hbaoCb = {};
-
         hbaoCb.projMat = projMat;
         hbaoCb.invProjMat = invProjMat;
         hbaoCb.viewMat = viewMat;
-
         hbaoCb.radius = 1.0f;
         hbaoCb.bias = 0.1f;
         hbaoCb.power = 2.0f;
@@ -70,13 +112,14 @@ public:
 
         cmdList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
         cmdList->DrawInstanced(3, 1, 0, 0);
+    }
 
-        CD3DX12_RESOURCE_BARRIER blurBarriers[2] =
-        {
-            CD3DX12_RESOURCE_BARRIER::Transition(resourceManager->GetHBAORawRT(), D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE),
-            CD3DX12_RESOURCE_BARRIER::Transition(resourceManager->GetHBAOBlurredRT(), D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_RENDER_TARGET)
-        };
-        cmdList->ResourceBarrier(2, blurBarriers);
+    static void ExecuteBlurNoBarrier(
+        RenderDevice* deviceContext,
+        ResourceManager* resourceManager,
+        PipelineManager* pipelineManager)
+    {
+        auto cmdList = deviceContext->GetCommandList();
 
         CD3DX12_CPU_DESCRIPTOR_HANDLE blurRtv = resourceManager->GetHBAOBlurredRtvHandle();
         cmdList->OMSetRenderTargets(1, &blurRtv, FALSE, nullptr);
@@ -87,12 +130,87 @@ public:
         cmdList->SetGraphicsRoot32BitConstants(1, 4, bindlessIndices2, 0);
 
         cmdList->DrawInstanced(3, 1, 0, 0);
+    }
 
-        CD3DX12_RESOURCE_BARRIER finalBarrier = CD3DX12_RESOURCE_BARRIER::Transition(
+    static void ExecuteRDG(
+        RenderDevice* deviceContext,
+        ResourceManager* resourceManager,
+        PipelineManager* pipelineManager,
+        const DirectX::XMFLOAT4X4& viewMat,
+        const DirectX::XMFLOAT4X4& projMat,
+        const DirectX::XMFLOAT4X4& invProjMat,
+        int width,
+        int height,
+        int frameIndex)
+    {
+        RDGBuilder graph(deviceContext, "HBAOGraph");
+
+        RDGTextureHandle depth = graph.RegisterExternalTexture(
+            deviceContext->GetDepthStencilBuffer(),
+            D3D12_RESOURCE_STATE_DEPTH_WRITE,
+            D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+            "SceneDepth");
+
+        RDGTextureHandle gbufferNormal = graph.RegisterExternalTexture(
+            resourceManager->GetGBufferNormal(),
+            D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+            D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+            "GBufferNormal");
+
+        RDGTextureHandle hbaoRaw = graph.RegisterExternalTexture(
+            resourceManager->GetHBAORawRT(),
+            D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+            D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+            "HBAORaw");
+
+        RDGTextureHandle hbaoBlurred = graph.RegisterExternalTexture(
             resourceManager->GetHBAOBlurredRT(),
-            D3D12_RESOURCE_STATE_RENDER_TARGET,
-            D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
-        cmdList->ResourceBarrier(1, &finalBarrier);
+            D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+            D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+            "HBAOBlurred");
+
+        RDGPassParameters rawParams;
+        rawParams.ReadSRV(depth);
+        rawParams.ReadSRV(gbufferNormal);
+        rawParams.WriteRTV(hbaoRaw);
+
+        graph.AddPass(
+            "HBAORaw",
+            ERDGPassFlags::Graphics,
+            rawParams,
+            [=](ID3D12GraphicsCommandList* cmdList)
+            {
+                ExecuteRawNoBarrier(
+                    deviceContext,
+                    resourceManager,
+                    pipelineManager,
+                    viewMat,
+                    projMat,
+                    invProjMat,
+                    width,
+                    height,
+                    frameIndex);
+            });
+
+        RDGPassParameters blurParams;
+        blurParams.ReadSRV(hbaoRaw);
+        blurParams.ReadSRV(depth);
+        blurParams.ReadSRV(gbufferNormal);
+        blurParams.WriteRTV(hbaoBlurred);
+
+        graph.AddPass(
+            "HBAOBlur",
+            ERDGPassFlags::Graphics,
+            blurParams,
+            [=](ID3D12GraphicsCommandList* cmdList)
+            {
+                ExecuteBlurNoBarrier(
+                    deviceContext,
+                    resourceManager,
+                    pipelineManager);
+            });
+
+        graph.Execute(deviceContext->GetCommandList());
     }
 };
 

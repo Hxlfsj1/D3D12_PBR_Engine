@@ -5,6 +5,7 @@
 #include "RenderDevice.h"
 #include "ResourceManager.h"
 #include "PipelineManager.h"
+#include "RDG.h"
 
 class PostProcessPass
 {
@@ -27,6 +28,34 @@ public:
 
         cmdList->ResourceBarrier(1, &toSrv);
 
+        ExecuteNoBarrier(
+            deviceContext,
+            resourceManager,
+            pipelineManager,
+            frameIndex,
+            viewport,
+            scissorRect,
+            inputSrvIdx);
+
+        CD3DX12_RESOURCE_BARRIER toRtv = CD3DX12_RESOURCE_BARRIER::Transition(
+            resourceManager->GetPostProcessRT(),
+            D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+            D3D12_RESOURCE_STATE_RENDER_TARGET);
+
+        cmdList->ResourceBarrier(1, &toRtv);
+    }
+
+    static void ExecuteNoBarrier(
+        RenderDevice* deviceContext,
+        ResourceManager* resourceManager,
+        PipelineManager* pipelineManager,
+        int frameIndex,
+        const D3D12_VIEWPORT& viewport,
+        const D3D12_RECT& scissorRect,
+        UINT inputSrvIdx)
+    {
+        auto cmdList = deviceContext->GetCommandList();
+
         CD3DX12_CPU_DESCRIPTOR_HANDLE rtv = deviceContext->GetRTVHandle(frameIndex);
         cmdList->OMSetRenderTargets(1, &rtv, FALSE, nullptr);
         cmdList->RSSetViewports(1, &viewport);
@@ -46,13 +75,52 @@ public:
         cmdList->SetGraphicsRoot32BitConstants(0, 1, &sceneTexIdx, 0);
 
         cmdList->DrawInstanced(3, 1, 0, 0);
+    }
 
-        CD3DX12_RESOURCE_BARRIER toRtv = CD3DX12_RESOURCE_BARRIER::Transition(
+    static void ExecuteRDG(
+        RenderDevice* deviceContext,
+        ResourceManager* resourceManager,
+        PipelineManager* pipelineManager,
+        int frameIndex,
+        const D3D12_VIEWPORT& viewport,
+        const D3D12_RECT& scissorRect,
+        UINT inputSrvIdx)
+    {
+        RDGBuilder graph(deviceContext, "PostProcessGraph");
+
+        RDGTextureHandle postProcessRT = graph.RegisterExternalTexture(
             resourceManager->GetPostProcessRT(),
-            D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
-            D3D12_RESOURCE_STATE_RENDER_TARGET);
+            D3D12_RESOURCE_STATE_RENDER_TARGET,
+            D3D12_RESOURCE_STATE_RENDER_TARGET,
+            "PostProcessRT");
 
-        cmdList->ResourceBarrier(1, &toRtv);
+        RDGTextureHandle backBuffer = graph.RegisterExternalTexture(
+            deviceContext->GetRenderTarget(frameIndex),
+            D3D12_RESOURCE_STATE_RENDER_TARGET,
+            D3D12_RESOURCE_STATE_RENDER_TARGET,
+            "BackBuffer");
+
+        RDGPassParameters postParams;
+        postParams.ReadSRV(postProcessRT);
+        postParams.WriteRTV(backBuffer);
+
+        graph.AddPass(
+            "PostProcess",
+            ERDGPassFlags::Graphics,
+            postParams,
+            [=](ID3D12GraphicsCommandList* cmdList)
+            {
+                ExecuteNoBarrier(
+                    deviceContext,
+                    resourceManager,
+                    pipelineManager,
+                    frameIndex,
+                    viewport,
+                    scissorRect,
+                    inputSrvIdx);
+            });
+
+        graph.Execute(deviceContext->GetCommandList());
     }
 };
 

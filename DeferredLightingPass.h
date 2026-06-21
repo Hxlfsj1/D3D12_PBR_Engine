@@ -7,11 +7,39 @@
 #include "PipelineManager.h"
 #include "Camera.h"
 #include "RenderStructs.h"
+#include "RDG.h"
 
 class DeferredLightingPass
 {
 public:
     static void Execute(
+        RenderDevice* deviceContext,
+        ResourceManager* resourceManager,
+        PipelineManager* pipelineManager,
+        const DirectX::XMFLOAT4X4& invViewProjMat,
+        int width,
+        int height,
+        int frameIndex)
+    {
+        auto cmdList = deviceContext->GetCommandList();
+
+        ExecuteNoBarrier(
+            deviceContext,
+            resourceManager,
+            pipelineManager,
+            invViewProjMat,
+            width,
+            height,
+            frameIndex);
+
+        CD3DX12_RESOURCE_BARRIER depthToWrite = CD3DX12_RESOURCE_BARRIER::Transition(
+            deviceContext->GetDepthStencilBuffer(),
+            D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+            D3D12_RESOURCE_STATE_DEPTH_WRITE);
+        cmdList->ResourceBarrier(1, &depthToWrite);
+    }
+
+    static void ExecuteNoBarrier(
         RenderDevice* deviceContext,
         ResourceManager* resourceManager,
         PipelineManager* pipelineManager,
@@ -35,9 +63,7 @@ public:
         D3D12_GPU_VIRTUAL_ADDRESS cbvGpuAddress = resourceManager->GetCBVGPUAddress(frameIndex) + deferredConstantsOffset;
 
         DeferredConstants deferredCb = {};
-
         deferredCb.invViewProj = invViewProjMat;
-
         deferredCb.gbufferAlbedoIdx = resourceManager->GetGBufferAlbedoSrvIdx();
         deferredCb.gbufferNormalIdx = resourceManager->GetGBufferNormalSrvIdx();
         deferredCb.gbufferORMIdx = resourceManager->GetGBufferORMSrvIdx();
@@ -59,12 +85,94 @@ public:
 
         cmdList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
         cmdList->DrawInstanced(3, 1, 0, 0);
+    }
 
-        CD3DX12_RESOURCE_BARRIER depthToWrite = CD3DX12_RESOURCE_BARRIER::Transition(
+    static void ExecuteRDG(
+        RenderDevice* deviceContext,
+        ResourceManager* resourceManager,
+        PipelineManager* pipelineManager,
+        const DirectX::XMFLOAT4X4& invViewProjMat,
+        int width,
+        int height,
+        int frameIndex)
+    {
+        RDGBuilder graph(deviceContext, "DeferredLightingGraph");
+
+        RDGTextureHandle gbufferAlbedo = graph.RegisterExternalTexture(
+            resourceManager->GetGBufferAlbedo(),
+            D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+            D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+            "GBufferAlbedo");
+
+        RDGTextureHandle gbufferNormal = graph.RegisterExternalTexture(
+            resourceManager->GetGBufferNormal(),
+            D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+            D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+            "GBufferNormal");
+
+        RDGTextureHandle gbufferORM = graph.RegisterExternalTexture(
+            resourceManager->GetGBufferORM(),
+            D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+            D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+            "GBufferORM");
+
+        RDGTextureHandle gbufferEmissive = graph.RegisterExternalTexture(
+            resourceManager->GetGBufferEmissive(),
+            D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+            D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+            "GBufferEmissive");
+
+        RDGTextureHandle depth = graph.RegisterExternalTexture(
             deviceContext->GetDepthStencilBuffer(),
             D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
-            D3D12_RESOURCE_STATE_DEPTH_WRITE);
-        cmdList->ResourceBarrier(1, &depthToWrite);
+            D3D12_RESOURCE_STATE_DEPTH_WRITE,
+            "SceneDepth");
+
+        RDGTextureHandle hbaoBlurred = graph.RegisterExternalTexture(
+            resourceManager->GetHBAOBlurredRT(),
+            D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+            D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+            "HBAOBlurred");
+
+        RDGTextureHandle shadowMap = graph.RegisterExternalTexture(
+            resourceManager->GetShadowMap(),
+            D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+            D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+            "ShadowMap");
+
+        RDGTextureHandle sceneColor = graph.RegisterExternalTexture(
+            resourceManager->GetPostProcessRT(),
+            D3D12_RESOURCE_STATE_RENDER_TARGET,
+            D3D12_RESOURCE_STATE_RENDER_TARGET,
+            "PostProcessRT");
+
+        RDGPassParameters params;
+        params.ReadSRV(gbufferAlbedo);
+        params.ReadSRV(gbufferNormal);
+        params.ReadSRV(gbufferORM);
+        params.ReadSRV(gbufferEmissive);
+        params.ReadSRV(depth);
+        params.ReadSRV(hbaoBlurred);
+        params.ReadSRV(shadowMap);
+        params.WriteRTV(sceneColor);
+
+        graph.AddPass(
+            "DeferredLighting",
+            ERDGPassFlags::Graphics,
+            params,
+            [=](ID3D12GraphicsCommandList* cmdList)
+            {
+                ExecuteNoBarrier(
+                    deviceContext,
+                    resourceManager,
+                    pipelineManager,
+                    invViewProjMat,
+                    width,
+                    height,
+                    frameIndex);
+            });
+
+        graph.Execute(deviceContext->GetCommandList());
     }
 };
 

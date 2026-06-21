@@ -8,6 +8,7 @@
 #include "RenderStructs.h"
 #include "SceneObject.h"
 #include "PBR_Model.h"
+#include "RDG.h"
 #include <vector>
 
 class ShadowPass
@@ -27,8 +28,32 @@ public:
             resourceManager->GetShadowMap(),
             D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
             D3D12_RESOURCE_STATE_DEPTH_WRITE);
-
         cmdList->ResourceBarrier(1, &toDepthWrite);
+
+        ExecuteNoBarrier(
+            deviceContext,
+            resourceManager,
+            pipelineManager,
+            frameIndex,
+            shadowVisibleInstances,
+            visibleInstancesSize);
+
+        CD3DX12_RESOURCE_BARRIER toSrv = CD3DX12_RESOURCE_BARRIER::Transition(
+            resourceManager->GetShadowMap(),
+            D3D12_RESOURCE_STATE_DEPTH_WRITE,
+            D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+        cmdList->ResourceBarrier(1, &toSrv);
+    }
+
+    static void ExecuteNoBarrier(
+        RenderDevice* deviceContext,
+        ResourceManager* resourceManager,
+        PipelineManager* pipelineManager,
+        int frameIndex,
+        const std::vector<ModelInstance*>& shadowVisibleInstances,
+        size_t visibleInstancesSize)
+    {
+        auto cmdList = deviceContext->GetCommandList();
 
         cmdList->SetGraphicsRootSignature(pipelineManager->GetRootSignature());
         cmdList->SetPipelineState(pipelineManager->GetShadowPSO());
@@ -105,13 +130,43 @@ public:
                 }
             }
         }
+    }
 
-        CD3DX12_RESOURCE_BARRIER toSrv = CD3DX12_RESOURCE_BARRIER::Transition(
+    static void ExecuteRDG(
+        RenderDevice* deviceContext,
+        ResourceManager* resourceManager,
+        PipelineManager* pipelineManager,
+        int frameIndex,
+        const std::vector<ModelInstance*>& shadowVisibleInstances,
+        size_t visibleInstancesSize)
+    {
+        RDGBuilder graph(deviceContext, "ShadowGraph");
+
+        RDGTextureHandle shadowMap = graph.RegisterExternalTexture(
             resourceManager->GetShadowMap(),
-            D3D12_RESOURCE_STATE_DEPTH_WRITE,
-            D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+            D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+            D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+            "ShadowMap");
 
-        cmdList->ResourceBarrier(1, &toSrv);
+        RDGPassParameters params;
+        params.WriteDSV(shadowMap);
+
+        graph.AddPass(
+            "ShadowMap",
+            ERDGPassFlags::Graphics,
+            params,
+            [=](ID3D12GraphicsCommandList* cmdList)
+            {
+                ExecuteNoBarrier(
+                    deviceContext,
+                    resourceManager,
+                    pipelineManager,
+                    frameIndex,
+                    shadowVisibleInstances,
+                    visibleInstancesSize);
+            });
+
+        graph.Execute(deviceContext->GetCommandList());
     }
 };
 

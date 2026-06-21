@@ -37,6 +37,9 @@
     <Filter Include="源文件\Settings">
       <UniqueIdentifier>{00a62b8a-e2be-4a29-aa41-4ad779378f97}</UniqueIdentifier>
     </Filter>
+    <Filter Include="头文件\RDG">
+      <UniqueIdentifier>{67133a42-829f-4515-8dc3-9f17e60ff0e2}</UniqueIdentifier>
+    </Filter>
   </ItemGroup>
   <ItemGroup>
     <None Include="packages.config" />
@@ -170,6 +173,9 @@
     </ClInclude>
     <ClInclude Include="Settings_Manager.h">
       <Filter>头文件\Resources</Filter>
+    </ClInclude>
+    <ClInclude Include="RDG.h">
+      <Filter>头文件\RDG</Filter>
     </ClInclude>
   </ItemGroup>
   <ItemGroup>

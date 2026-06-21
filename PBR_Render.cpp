@@ -591,7 +591,7 @@ void D3D12App::Render()
 {
     BeginFrame();
 
-    ShadowPass::Execute(&m_deviceContext, &m_resourceManager, &m_pipelineManager, frameIndex, g_shadowVisibleInstances, g_visibleInstances.size());
+    ShadowPass::ExecuteRDG(&m_deviceContext, &m_resourceManager, &m_pipelineManager, frameIndex, g_shadowVisibleInstances, g_visibleInstances.size());
 
     size_t transparentIdx = 0;
 
@@ -601,11 +601,11 @@ void D3D12App::Render()
     }
     else
     {
-        transparentIdx = GBufferPass::Execute(&m_deviceContext, &m_resourceManager, &m_pipelineManager, frameIndex, viewport, scissorRect, g_visibleInstances);
+        transparentIdx = GBufferPass::ExecuteRDG(&m_deviceContext, &m_resourceManager, &m_pipelineManager, frameIndex, viewport, scissorRect, g_visibleInstances);
 
-        HBAOPass::Execute(&m_deviceContext, &m_resourceManager, &m_pipelineManager, m_viewMat, m_projMat, m_invProjMat, Width, Height, frameIndex);
+        HBAOPass::ExecuteRDG(&m_deviceContext, &m_resourceManager, &m_pipelineManager, m_viewMat, m_projMat, m_invProjMat, Width, Height, frameIndex);
 
-        DeferredLightingPass::Execute(&m_deviceContext, &m_resourceManager, &m_pipelineManager, m_invViewProjMat, Width, Height, frameIndex);
+        DeferredLightingPass::ExecuteRDG(&m_deviceContext, &m_resourceManager, &m_pipelineManager, m_invViewProjMat, Width, Height, frameIndex);
     }
 
     SkyboxPass::Execute(&m_deviceContext, &m_resourceManager, &m_pipelineManager, camera, viewport, scissorRect, Width, Height);
@@ -616,11 +616,18 @@ void D3D12App::Render()
 
     if (m_useTAA)
     {
-        finalPostInputSRV = TAAPass::Execute(&m_deviceContext, &m_resourceManager, &m_pipelineManager, m_invViewProjMat, m_prevViewProj, m_jitterX, m_jitterY, frameIndex, Width, Height, m_taaHistoryValid);
+        finalPostInputSRV = TAAPass::ExecuteRDG(&m_deviceContext, &m_resourceManager, &m_pipelineManager, m_invViewProjMat, m_prevViewProj, m_jitterX, m_jitterY, frameIndex, Width, Height, m_taaHistoryValid);
         m_taaHistoryValid = true;
     }
 
-    PostProcessPass::Execute(&m_deviceContext, &m_resourceManager, &m_pipelineManager, frameIndex, viewport, scissorRect, finalPostInputSRV);
+    if (!m_useTAA)
+    {
+        PostProcessPass::ExecuteRDG(&m_deviceContext, &m_resourceManager, &m_pipelineManager, frameIndex, viewport, scissorRect, finalPostInputSRV);
+    }
+    else
+    {
+        PostProcessPass::Execute(&m_deviceContext, &m_resourceManager, &m_pipelineManager, frameIndex, viewport, scissorRect, finalPostInputSRV);
+    }
 
     EndFrame();
 

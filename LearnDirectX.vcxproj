@@ -146,6 +146,7 @@
     <None Include="packages.config" />
   </ItemGroup>
   <ItemGroup>
+    <ClInclude Include="RDG.h" />
     <ClInclude Include="Settings_Manager.h" />
     <ClInclude Include="Camera.h" />
     <ClInclude Include="D3D12App.h" />

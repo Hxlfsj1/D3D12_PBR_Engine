@@ -8,6 +8,7 @@
 #include "RenderStructs.h"
 #include "SceneObject.h"
 #include "PBR_Model.h"
+#include "RDG.h"
 #include <vector>
 
 class GBufferPass
@@ -32,6 +33,38 @@ public:
             CD3DX12_RESOURCE_BARRIER::Transition(resourceManager->GetGBufferEmissive(), D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_RENDER_TARGET)
         };
         cmdList->ResourceBarrier(4, barriers);
+
+        size_t transparentStartIndex = ExecuteNoBarrier(
+            deviceContext,
+            resourceManager,
+            pipelineManager,
+            frameIndex,
+            viewport,
+            scissorRect,
+            visibleInstances);
+
+        CD3DX12_RESOURCE_BARRIER revertBarriers[4] =
+        {
+            CD3DX12_RESOURCE_BARRIER::Transition(resourceManager->GetGBufferAlbedo(), D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE),
+            CD3DX12_RESOURCE_BARRIER::Transition(resourceManager->GetGBufferNormal(), D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE),
+            CD3DX12_RESOURCE_BARRIER::Transition(resourceManager->GetGBufferORM(), D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE),
+            CD3DX12_RESOURCE_BARRIER::Transition(resourceManager->GetGBufferEmissive(), D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE)
+        };
+        cmdList->ResourceBarrier(4, revertBarriers);
+
+        return transparentStartIndex;
+    }
+
+    static size_t ExecuteNoBarrier(
+        RenderDevice* deviceContext,
+        ResourceManager* resourceManager,
+        PipelineManager* pipelineManager,
+        int frameIndex,
+        const D3D12_VIEWPORT& viewport,
+        const D3D12_RECT& scissorRect,
+        const std::vector<ModelInstance*>& visibleInstances)
+    {
+        auto cmdList = deviceContext->GetCommandList();
 
         cmdList->RSSetViewports(1, &viewport);
         cmdList->RSSetScissorRects(1, &scissorRect);
@@ -124,14 +157,76 @@ public:
             }
         }
 
-        CD3DX12_RESOURCE_BARRIER revertBarriers[4] =
-        {
-            CD3DX12_RESOURCE_BARRIER::Transition(resourceManager->GetGBufferAlbedo(), D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE),
-            CD3DX12_RESOURCE_BARRIER::Transition(resourceManager->GetGBufferNormal(), D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE),
-            CD3DX12_RESOURCE_BARRIER::Transition(resourceManager->GetGBufferORM(), D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE),
-            CD3DX12_RESOURCE_BARRIER::Transition(resourceManager->GetGBufferEmissive(), D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE)
-        };
-        cmdList->ResourceBarrier(4, revertBarriers);
+        return transparentStartIndex;
+    }
+
+    static size_t ExecuteRDG(
+        RenderDevice* deviceContext,
+        ResourceManager* resourceManager,
+        PipelineManager* pipelineManager,
+        int frameIndex,
+        const D3D12_VIEWPORT& viewport,
+        const D3D12_RECT& scissorRect,
+        const std::vector<ModelInstance*>& visibleInstances)
+    {
+        RDGBuilder graph(deviceContext, "GBufferGraph");
+
+        RDGTextureHandle gbufferAlbedo = graph.RegisterExternalTexture(
+            resourceManager->GetGBufferAlbedo(),
+            D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+            D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+            "GBufferAlbedo");
+
+        RDGTextureHandle gbufferNormal = graph.RegisterExternalTexture(
+            resourceManager->GetGBufferNormal(),
+            D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+            D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+            "GBufferNormal");
+
+        RDGTextureHandle gbufferORM = graph.RegisterExternalTexture(
+            resourceManager->GetGBufferORM(),
+            D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+            D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+            "GBufferORM");
+
+        RDGTextureHandle gbufferEmissive = graph.RegisterExternalTexture(
+            resourceManager->GetGBufferEmissive(),
+            D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+            D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+            "GBufferEmissive");
+
+        RDGTextureHandle depth = graph.RegisterExternalTexture(
+            deviceContext->GetDepthStencilBuffer(),
+            D3D12_RESOURCE_STATE_DEPTH_WRITE,
+            D3D12_RESOURCE_STATE_DEPTH_WRITE,
+            "SceneDepth");
+
+        RDGPassParameters params;
+        params.WriteRTV(gbufferAlbedo);
+        params.WriteRTV(gbufferNormal);
+        params.WriteRTV(gbufferORM);
+        params.WriteRTV(gbufferEmissive);
+        params.WriteDSV(depth);
+
+        size_t transparentStartIndex = visibleInstances.size();
+
+        graph.AddPass(
+            "GBuffer",
+            ERDGPassFlags::Graphics,
+            params,
+            [&](ID3D12GraphicsCommandList* cmdList)
+            {
+                transparentStartIndex = ExecuteNoBarrier(
+                    deviceContext,
+                    resourceManager,
+                    pipelineManager,
+                    frameIndex,
+                    viewport,
+                    scissorRect,
+                    visibleInstances);
+            });
+
+        graph.Execute(deviceContext->GetCommandList());
 
         return transparentStartIndex;
     }
