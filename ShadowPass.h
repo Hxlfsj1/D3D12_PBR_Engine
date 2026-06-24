@@ -132,7 +132,8 @@ public:
         }
     }
 
-    static void ExecuteRDG(
+    static void AddToGraph(
+        RDGBuilder& graph,
         RenderDevice* deviceContext,
         ResourceManager* resourceManager,
         PipelineManager* pipelineManager,
@@ -140,8 +141,6 @@ public:
         const std::vector<ModelInstance*>& shadowVisibleInstances,
         size_t visibleInstancesSize)
     {
-        RDGBuilder graph(deviceContext, "ShadowGraph");
-
         RDGTextureHandle shadowMap = graph.RegisterExternalTexture(
             resourceManager->GetShadowMap(),
             D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
@@ -165,6 +164,26 @@ public:
                     shadowVisibleInstances,
                     visibleInstancesSize);
             });
+    }
+
+    static void ExecuteRDG(
+        RenderDevice* deviceContext,
+        ResourceManager* resourceManager,
+        PipelineManager* pipelineManager,
+        int frameIndex,
+        const std::vector<ModelInstance*>& shadowVisibleInstances,
+        size_t visibleInstancesSize)
+    {
+        RDGBuilder graph(deviceContext, "ShadowGraph");
+
+        AddToGraph(
+            graph,
+            deviceContext,
+            resourceManager,
+            pipelineManager,
+            frameIndex,
+            shadowVisibleInstances,
+            visibleInstancesSize);
 
         graph.Execute(deviceContext->GetCommandList());
     }

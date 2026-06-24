@@ -601,11 +601,46 @@ void D3D12App::Render()
     }
     else
     {
-        transparentIdx = GBufferPass::ExecuteRDG(&m_deviceContext, &m_resourceManager, &m_pipelineManager, frameIndex, viewport, scissorRect, g_visibleInstances);
+        RDGBuilder deferredGraph(&m_deviceContext, "DeferredFrameGraph");
 
-        HBAOPass::ExecuteRDG(&m_deviceContext, &m_resourceManager, &m_pipelineManager, m_viewMat, m_projMat, m_invProjMat, Width, Height, frameIndex);
+        size_t transparentStartIndex = g_visibleInstances.size();
 
-        DeferredLightingPass::ExecuteRDG(&m_deviceContext, &m_resourceManager, &m_pipelineManager, m_invViewProjMat, Width, Height, frameIndex);
+        GBufferPass::AddToGraph(
+            deferredGraph,
+            &m_deviceContext,
+            &m_resourceManager,
+            &m_pipelineManager,
+            frameIndex,
+            viewport,
+            scissorRect,
+            g_visibleInstances,
+            transparentStartIndex);
+
+        HBAOPass::AddToGraph(
+            deferredGraph,
+            &m_deviceContext,
+            &m_resourceManager,
+            &m_pipelineManager,
+            m_viewMat,
+            m_projMat,
+            m_invProjMat,
+            Width,
+            Height,
+            frameIndex);
+
+        DeferredLightingPass::AddToGraph(
+            deferredGraph,
+            &m_deviceContext,
+            &m_resourceManager,
+            &m_pipelineManager,
+            m_invViewProjMat,
+            Width,
+            Height,
+            frameIndex);
+
+        deferredGraph.Execute(m_deviceContext.GetCommandList());
+
+        transparentIdx = transparentStartIndex;
     }
 
     SkyboxPass::Execute(&m_deviceContext, &m_resourceManager, &m_pipelineManager, camera, viewport, scissorRect, Width, Height);

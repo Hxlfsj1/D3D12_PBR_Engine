@@ -87,7 +87,8 @@ public:
         cmdList->DrawInstanced(3, 1, 0, 0);
     }
 
-    static void ExecuteRDG(
+    static void AddToGraph(
+        RDGBuilder& graph,
         RenderDevice* deviceContext,
         ResourceManager* resourceManager,
         PipelineManager* pipelineManager,
@@ -96,8 +97,6 @@ public:
         int height,
         int frameIndex)
     {
-        RDGBuilder graph(deviceContext, "DeferredLightingGraph");
-
         RDGTextureHandle gbufferAlbedo = graph.RegisterExternalTexture(
             resourceManager->GetGBufferAlbedo(),
             D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
@@ -171,6 +170,28 @@ public:
                     height,
                     frameIndex);
             });
+    }
+
+    static void ExecuteRDG(
+        RenderDevice* deviceContext,
+        ResourceManager* resourceManager,
+        PipelineManager* pipelineManager,
+        const DirectX::XMFLOAT4X4& invViewProjMat,
+        int width,
+        int height,
+        int frameIndex)
+    {
+        RDGBuilder graph(deviceContext, "DeferredLightingGraph");
+
+        AddToGraph(
+            graph,
+            deviceContext,
+            resourceManager,
+            pipelineManager,
+            invViewProjMat,
+            width,
+            height,
+            frameIndex);
 
         graph.Execute(deviceContext->GetCommandList());
     }

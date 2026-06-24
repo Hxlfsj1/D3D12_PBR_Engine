@@ -132,7 +132,8 @@ public:
         cmdList->DrawInstanced(3, 1, 0, 0);
     }
 
-    static void ExecuteRDG(
+    static void AddToGraph(
+        RDGBuilder& graph,
         RenderDevice* deviceContext,
         ResourceManager* resourceManager,
         PipelineManager* pipelineManager,
@@ -143,8 +144,6 @@ public:
         int height,
         int frameIndex)
     {
-        RDGBuilder graph(deviceContext, "HBAOGraph");
-
         RDGTextureHandle depth = graph.RegisterExternalTexture(
             deviceContext->GetDepthStencilBuffer(),
             D3D12_RESOURCE_STATE_DEPTH_WRITE,
@@ -209,6 +208,32 @@ public:
                     resourceManager,
                     pipelineManager);
             });
+    }
+
+    static void ExecuteRDG(
+        RenderDevice* deviceContext,
+        ResourceManager* resourceManager,
+        PipelineManager* pipelineManager,
+        const DirectX::XMFLOAT4X4& viewMat,
+        const DirectX::XMFLOAT4X4& projMat,
+        const DirectX::XMFLOAT4X4& invProjMat,
+        int width,
+        int height,
+        int frameIndex)
+    {
+        RDGBuilder graph(deviceContext, "HBAOGraph");
+
+        AddToGraph(
+            graph,
+            deviceContext,
+            resourceManager,
+            pipelineManager,
+            viewMat,
+            projMat,
+            invProjMat,
+            width,
+            height,
+            frameIndex);
 
         graph.Execute(deviceContext->GetCommandList());
     }

@@ -160,17 +160,17 @@ public:
         return transparentStartIndex;
     }
 
-    static size_t ExecuteRDG(
+    static void AddToGraph(
+        RDGBuilder& graph,
         RenderDevice* deviceContext,
         ResourceManager* resourceManager,
         PipelineManager* pipelineManager,
         int frameIndex,
         const D3D12_VIEWPORT& viewport,
         const D3D12_RECT& scissorRect,
-        const std::vector<ModelInstance*>& visibleInstances)
+        const std::vector<ModelInstance*>& visibleInstances,
+        size_t& transparentStartIndex)
     {
-        RDGBuilder graph(deviceContext, "GBufferGraph");
-
         RDGTextureHandle gbufferAlbedo = graph.RegisterExternalTexture(
             resourceManager->GetGBufferAlbedo(),
             D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
@@ -208,13 +208,11 @@ public:
         params.WriteRTV(gbufferEmissive);
         params.WriteDSV(depth);
 
-        size_t transparentStartIndex = visibleInstances.size();
-
         graph.AddPass(
             "GBuffer",
             ERDGPassFlags::Graphics,
             params,
-            [&](ID3D12GraphicsCommandList* cmdList)
+            [=, &transparentStartIndex](ID3D12GraphicsCommandList* cmdList)
             {
                 transparentStartIndex = ExecuteNoBarrier(
                     deviceContext,
@@ -225,6 +223,31 @@ public:
                     scissorRect,
                     visibleInstances);
             });
+    }
+
+    static size_t ExecuteRDG(
+        RenderDevice* deviceContext,
+        ResourceManager* resourceManager,
+        PipelineManager* pipelineManager,
+        int frameIndex,
+        const D3D12_VIEWPORT& viewport,
+        const D3D12_RECT& scissorRect,
+        const std::vector<ModelInstance*>& visibleInstances)
+    {
+        RDGBuilder graph(deviceContext, "GBufferGraph");
+
+        size_t transparentStartIndex = visibleInstances.size();
+
+        AddToGraph(
+            graph,
+            deviceContext,
+            resourceManager,
+            pipelineManager,
+            frameIndex,
+            viewport,
+            scissorRect,
+            visibleInstances,
+            transparentStartIndex);
 
         graph.Execute(deviceContext->GetCommandList());
 
