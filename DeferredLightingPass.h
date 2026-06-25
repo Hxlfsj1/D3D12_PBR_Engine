@@ -144,6 +144,7 @@ public:
             D3D12_RESOURCE_STATE_RENDER_TARGET,
             D3D12_RESOURCE_STATE_RENDER_TARGET,
             "PostProcessRT");
+        graph.MarkTextureAsOutput(sceneColor);
 
         RDGPassParameters params;
         params.ReadSRV(gbufferAlbedo);

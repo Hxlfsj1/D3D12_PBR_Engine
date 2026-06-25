@@ -11,12 +11,25 @@
 
 class RenderDevice;
 
-enum class ERDGPassFlags
+enum class ERDGPassFlags : uint32_t
 {
-    Graphics,
-    Compute,
-    Copy
+    None = 0,
+    Graphics = 1 << 0,
+    Compute = 1 << 1,
+    Copy = 1 << 2,
+    NeverCull = 1 << 8
 };
+
+inline ERDGPassFlags operator|(ERDGPassFlags lhs, ERDGPassFlags rhs)
+{
+    return static_cast<ERDGPassFlags>(
+        static_cast<uint32_t>(lhs) | static_cast<uint32_t>(rhs));
+}
+
+inline bool HasRDGPassFlag(ERDGPassFlags flags, ERDGPassFlags flag)
+{
+    return (static_cast<uint32_t>(flags) & static_cast<uint32_t>(flag)) != 0;
+}
 
 enum class ERDGAccess
 {
@@ -88,7 +101,9 @@ struct RDGTexture
     D3D12_RESOURCE_STATES currentState = D3D12_RESOURCE_STATE_COMMON;
     D3D12_RESOURCE_STATES finalState = D3D12_RESOURCE_STATE_COMMON;
     bool external = false;
+    bool externalOutput = false;
     uint32_t lastProducer = UINT32_MAX;
+    std::vector<uint32_t> lastReaders;
     std::string name;
 };
 
@@ -133,6 +148,16 @@ public:
         return handle;
     }
 
+    void MarkTextureAsOutput(RDGTextureHandle texture)
+    {
+        if (!texture.IsValid() || texture.index >= m_textures.size())
+        {
+            return;
+        }
+
+        m_textures[texture.index].externalOutput = true;
+    }
+
     void AddPass(
         const char* name,
         ERDGPassFlags flags,
@@ -156,10 +181,19 @@ public:
 
             const RDGTexture& texture = m_textures[access.texture.index];
 
-            if ((IsReadAccess(access.access) || IsWriteAccess(access.access)) &&
-                texture.lastProducer != UINT32_MAX)
+            if (IsReadAccess(access.access))
             {
                 AddPassDependency(pass, texture.lastProducer);
+            }
+
+            if (IsWriteAccess(access.access))
+            {
+                AddPassDependency(pass, texture.lastProducer);
+
+                for (uint32_t readerPassIndex : texture.lastReaders)
+                {
+                    AddPassDependency(pass, readerPassIndex);
+                }
             }
         }
 
@@ -170,9 +204,17 @@ public:
                 continue;
             }
 
+            RDGTexture& texture = m_textures[access.texture.index];
+
+            if (IsReadAccess(access.access))
+            {
+                texture.lastReaders.push_back(passIndex);
+            }
+
             if (IsWriteAccess(access.access))
             {
-                m_textures[access.texture.index].lastProducer = passIndex;
+                texture.lastProducer = passIndex;
+                texture.lastReaders.clear();
             }
         }
 
@@ -181,21 +223,33 @@ public:
 
     void Execute(ID3D12GraphicsCommandList* cmdList)
     {
-    #if defined(_DEBUG)
+#if defined(_DEBUG)
         if constexpr (EnableValidation)
         {
             ValidateGraph();
         }
+#endif
 
+        CompileGraph();
+        BuildBarrierPlan();
+
+#if defined(_DEBUG)
         if constexpr (EnableGraphDump)
         {
             DumpGraph();
         }
-    #endif
+#endif
 
-        for (RDGPass& pass : m_passes)
+        for (uint32_t passIndex : m_compiledPassOrder)
         {
-            TransitionResourcesForPass(cmdList, pass);
+            if (passIndex >= m_passes.size())
+            {
+                continue;
+            }
+
+            SubmitBarriers(cmdList, m_passBarriers[passIndex]);
+
+            RDGPass& pass = m_passes[passIndex];
 
             if (pass.execute)
             {
@@ -203,12 +257,259 @@ public:
             }
         }
 
-        TransitionResourcesToFinalStates(cmdList);
+        SubmitBarriers(cmdList, m_finalBarriers);
 
+        m_finalBarriers.clear();
+        m_passBarriers.clear();
+        m_livePasses.clear();
+        m_compiledPassOrder.clear();
         m_passes.clear();
     }
 
 private:
+    bool CompileGraph()
+    {
+        m_livePasses.clear();
+        m_compiledPassOrder.clear();
+
+        const uint32_t passCount = static_cast<uint32_t>(m_passes.size());
+        const uint32_t livePassCount = CullUnusedPasses(passCount);
+
+        std::vector<uint32_t> dependencyCount(passCount, 0);
+        std::vector<std::vector<uint32_t>> dependents(passCount);
+
+        for (uint32_t passIndex = 0; passIndex < passCount; ++passIndex)
+        {
+            if (!m_livePasses[passIndex])
+            {
+                continue;
+            }
+
+            for (uint32_t dependencyIndex : m_passes[passIndex].dependencies)
+            {
+                if (dependencyIndex >= passCount || !m_livePasses[dependencyIndex])
+                {
+                    continue;
+                }
+
+                ++dependencyCount[passIndex];
+                dependents[dependencyIndex].push_back(passIndex);
+            }
+        }
+
+        std::vector<uint32_t> readyPasses;
+
+        for (uint32_t passIndex = 0; passIndex < passCount; ++passIndex)
+        {
+            if (m_livePasses[passIndex] && dependencyCount[passIndex] == 0)
+            {
+                readyPasses.push_back(passIndex);
+            }
+        }
+
+        for (size_t readyIndex = 0; readyIndex < readyPasses.size(); ++readyIndex)
+        {
+            uint32_t passIndex = readyPasses[readyIndex];
+            m_compiledPassOrder.push_back(passIndex);
+
+            for (uint32_t dependentIndex : dependents[passIndex])
+            {
+                if (dependencyCount[dependentIndex] > 0)
+                {
+                    --dependencyCount[dependentIndex];
+                }
+
+                if (dependencyCount[dependentIndex] == 0)
+                {
+                    readyPasses.push_back(dependentIndex);
+                }
+            }
+        }
+
+        if (m_compiledPassOrder.size() == livePassCount)
+        {
+            return true;
+        }
+
+        m_compiledPassOrder.clear();
+
+        for (uint32_t passIndex = 0; passIndex < passCount; ++passIndex)
+        {
+            if (m_livePasses[passIndex])
+            {
+                m_compiledPassOrder.push_back(passIndex);
+            }
+        }
+
+#if defined(_DEBUG)
+        OutputDebugStringA("[RDG][Compile] Dependency cycle detected, falling back to AddPass order.\n");
+#endif
+
+        return false;
+    }
+
+    uint32_t CullUnusedPasses(uint32_t passCount)
+    {
+        m_livePasses.assign(passCount, false);
+
+        std::vector<uint32_t> workList;
+
+        for (uint32_t passIndex = 0; passIndex < passCount; ++passIndex)
+        {
+            if (HasRDGPassFlag(m_passes[passIndex].flags, ERDGPassFlags::NeverCull) ||
+                PassWritesExternalOutput(m_passes[passIndex]))
+            {
+                m_livePasses[passIndex] = true;
+                workList.push_back(passIndex);
+            }
+        }
+
+        if (workList.empty())
+        {
+            for (uint32_t passIndex = 0; passIndex < passCount; ++passIndex)
+            {
+                m_livePasses[passIndex] = true;
+            }
+
+            return passCount;
+        }
+
+        for (size_t workIndex = 0; workIndex < workList.size(); ++workIndex)
+        {
+            uint32_t passIndex = workList[workIndex];
+
+            for (uint32_t dependencyIndex : m_passes[passIndex].dependencies)
+            {
+                if (dependencyIndex >= passCount || m_livePasses[dependencyIndex])
+                {
+                    continue;
+                }
+
+                m_livePasses[dependencyIndex] = true;
+                workList.push_back(dependencyIndex);
+            }
+        }
+
+        uint32_t livePassCount = 0;
+
+        for (bool isLive : m_livePasses)
+        {
+            if (isLive)
+            {
+                ++livePassCount;
+            }
+        }
+
+        return livePassCount;
+    }
+
+    bool PassWritesExternalOutput(const RDGPass& pass) const
+    {
+        for (const RDGTextureAccess& access : pass.parameters.textures)
+        {
+            if (!access.texture.IsValid() || access.texture.index >= m_textures.size())
+            {
+                continue;
+            }
+
+            if (IsWriteAccess(access.access) &&
+                m_textures[access.texture.index].externalOutput)
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    void BuildBarrierPlan()
+    {
+        m_passBarriers.clear();
+        m_passBarriers.resize(m_passes.size());
+        m_finalBarriers.clear();
+
+        for (RDGTexture& texture : m_textures)
+        {
+            texture.currentState = texture.initialState;
+        }
+
+        for (uint32_t passIndex : m_compiledPassOrder)
+        {
+            if (passIndex >= m_passes.size())
+            {
+                continue;
+            }
+
+            RDGPass& pass = m_passes[passIndex];
+            std::vector<D3D12_RESOURCE_BARRIER>& barriers = m_passBarriers[passIndex];
+
+            for (const RDGTextureAccess& access : pass.parameters.textures)
+            {
+                if (!access.texture.IsValid() || access.texture.index >= m_textures.size())
+                {
+                    continue;
+                }
+
+                RDGTexture& texture = m_textures[access.texture.index];
+
+                if (texture.resource == nullptr)
+                {
+                    continue;
+                }
+
+                D3D12_RESOURCE_STATES desiredState = ToD3D12State(access.access);
+
+                if (texture.currentState != desiredState)
+                {
+                    D3D12_RESOURCE_BARRIER barrier = {};
+                    barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+                    barrier.Flags = D3D12_RESOURCE_BARRIER_FLAG_NONE;
+                    barrier.Transition.pResource = texture.resource;
+                    barrier.Transition.StateBefore = texture.currentState;
+                    barrier.Transition.StateAfter = desiredState;
+                    barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+
+                    barriers.push_back(barrier);
+                    TraceBarrier(pass.name.c_str(), texture.name, texture.currentState, desiredState);
+                    texture.currentState = desiredState;
+                }
+            }
+        }
+
+        for (RDGTexture& texture : m_textures)
+        {
+            if (texture.resource == nullptr)
+            {
+                continue;
+            }
+
+            if (texture.currentState != texture.finalState)
+            {
+                D3D12_RESOURCE_BARRIER barrier = {};
+                barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+                barrier.Flags = D3D12_RESOURCE_BARRIER_FLAG_NONE;
+                barrier.Transition.pResource = texture.resource;
+                barrier.Transition.StateBefore = texture.currentState;
+                barrier.Transition.StateAfter = texture.finalState;
+                barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+
+                m_finalBarriers.push_back(barrier);
+                TraceBarrier("FinalState", texture.name, texture.currentState, texture.finalState);
+                texture.currentState = texture.finalState;
+            }
+        }
+    }
+
+    void SubmitBarriers(
+        ID3D12GraphicsCommandList* cmdList,
+        const std::vector<D3D12_RESOURCE_BARRIER>& barriers) const
+    {
+        if (!barriers.empty())
+        {
+            cmdList->ResourceBarrier(static_cast<UINT>(barriers.size()), barriers.data());
+        }
+    }
+
     void AddPassDependency(RDGPass& pass, uint32_t dependencyPassIndex) const
     {
         if (dependencyPassIndex == UINT32_MAX)
@@ -225,48 +526,6 @@ private:
         }
 
         pass.dependencies.push_back(dependencyPassIndex);
-    }
-
-    void TransitionResourcesForPass(ID3D12GraphicsCommandList* cmdList, const RDGPass& pass)
-    {
-        std::vector<D3D12_RESOURCE_BARRIER> barriers;
-
-        for (const RDGTextureAccess& access : pass.parameters.textures)
-        {
-            if (!access.texture.IsValid() || access.texture.index >= m_textures.size())
-            {
-                continue;
-            }
-
-            RDGTexture& texture = m_textures[access.texture.index];
-
-            if (texture.resource == nullptr)
-            {
-                continue;
-            }
-
-            D3D12_RESOURCE_STATES desiredState = ToD3D12State(access.access);
-
-            if (texture.currentState != desiredState)
-            {
-                D3D12_RESOURCE_BARRIER barrier = {};
-                barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-                barrier.Flags = D3D12_RESOURCE_BARRIER_FLAG_NONE;
-                barrier.Transition.pResource = texture.resource;
-                barrier.Transition.StateBefore = texture.currentState;
-                barrier.Transition.StateAfter = desiredState;
-                barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-
-                barriers.push_back(barrier);
-                TraceBarrier(pass.name.c_str(), texture.name, texture.currentState, desiredState);
-                texture.currentState = desiredState;
-            }
-        }
-
-        if (!barriers.empty())
-        {
-            cmdList->ResourceBarrier(static_cast<UINT>(barriers.size()), barriers.data());
-        }
     }
 
     RDGTextureHandle FindRegisteredExternalTexture(ID3D12Resource* resource) const
@@ -288,39 +547,6 @@ private:
         }
 
         return handle;
-    }
-
-    void TransitionResourcesToFinalStates(ID3D12GraphicsCommandList* cmdList)
-    {
-        std::vector<D3D12_RESOURCE_BARRIER> barriers;
-
-        for (RDGTexture& texture : m_textures)
-        {
-            if (texture.resource == nullptr)
-            {
-                continue;
-            }
-
-            if (texture.currentState != texture.finalState)
-            {
-                D3D12_RESOURCE_BARRIER barrier = {};
-                barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-                barrier.Flags = D3D12_RESOURCE_BARRIER_FLAG_NONE;
-                barrier.Transition.pResource = texture.resource;
-                barrier.Transition.StateBefore = texture.currentState;
-                barrier.Transition.StateAfter = texture.finalState;
-                barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-
-                barriers.push_back(barrier);
-                TraceBarrier("FinalState", texture.name, texture.currentState, texture.finalState);
-                texture.currentState = texture.finalState;
-            }
-        }
-
-        if (!barriers.empty())
-        {
-            cmdList->ResourceBarrier(static_cast<UINT>(barriers.size()), barriers.data());
-        }
     }
 
     bool IsReadAccess(ERDGAccess access) const
@@ -503,11 +729,34 @@ private:
     {
         std::ostringstream oss;
         oss << "[RDG] Graph: " << m_debugName << "\n";
+        if (!m_compiledPassOrder.empty())
+        {
+            oss << "  CompiledOrder:";
+
+            for (uint32_t passIndex : m_compiledPassOrder)
+            {
+                oss << " " << passIndex;
+
+                if (passIndex < m_passes.size())
+                {
+                    oss << "(" << m_passes[passIndex].name << ")";
+                }
+            }
+
+            oss << "\n";
+        }
 
         for (size_t passIndex = 0; passIndex < m_passes.size(); ++passIndex)
         {
             const RDGPass& pass = m_passes[passIndex];
-            oss << "  Pass " << passIndex << ": " << pass.name << "\n";
+            oss << "  Pass " << passIndex << ": " << pass.name;
+
+            if (passIndex < m_livePasses.size() && !m_livePasses[passIndex])
+            {
+                oss << " [Culled]";
+            }
+
+            oss << "\n";
 
             if (!pass.dependencies.empty())
             {
@@ -571,6 +820,10 @@ private:
     std::string m_debugName;
     std::vector<RDGTexture> m_textures;
     std::vector<RDGPass> m_passes;
+    std::vector<std::vector<D3D12_RESOURCE_BARRIER>> m_passBarriers;
+    std::vector<D3D12_RESOURCE_BARRIER> m_finalBarriers;
+    std::vector<bool> m_livePasses;
+    std::vector<uint32_t> m_compiledPassOrder;
 };
 
 #endif

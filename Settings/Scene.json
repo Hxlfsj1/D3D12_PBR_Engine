@@ -4,7 +4,7 @@
   "instances": [
     {
       "name": "BaseModel",
-      "model_path": "Models/MP5.glb",
+      "model_path": "Models/V-22.glb",
       "pos": [ 0.0, 0.01, 0.0 ],
       "rot": [ 0.0, 0.0, 0.0 ],
       "scale": [ 1.0, 1.0, 1.0 ],
