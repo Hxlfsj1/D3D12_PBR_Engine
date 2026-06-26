@@ -9,7 +9,8 @@
 #include <vector>
 #include <sstream>
 
-class RenderDevice;
+#include <wrl/client.h>
+#include "RenderDevice.h"
 
 enum class ERDGPassFlags : uint32_t
 {
@@ -60,13 +61,35 @@ struct RDGTextureAccess
     ERDGAccess access = ERDGAccess::Unknown;
 };
 
+struct RDGBufferHandle
+{
+    uint32_t index = UINT32_MAX;
+
+    bool IsValid() const
+    {
+        return index != UINT32_MAX;
+    }
+};
+
+struct RDGBufferAccess
+{
+    RDGBufferHandle buffer;
+    ERDGAccess access = ERDGAccess::Unknown;
+};
+
 struct RDGPassParameters
 {
     std::vector<RDGTextureAccess> textures;
+    std::vector<RDGBufferAccess> buffers;
 
     void ReadSRV(RDGTextureHandle texture)
     {
         textures.push_back({ texture, ERDGAccess::SRV });
+    }
+
+    void ReadSRV(RDGBufferHandle buffer)
+    {
+        buffers.push_back({ buffer, ERDGAccess::SRV });
     }
 
     void WriteRTV(RDGTextureHandle texture)
@@ -79,9 +102,44 @@ struct RDGPassParameters
         textures.push_back({ texture, ERDGAccess::UAV });
     }
 
+    void WriteUAV(RDGBufferHandle buffer)
+    {
+        buffers.push_back({ buffer, ERDGAccess::UAV });
+    }
+
+    void ReadDSV(RDGTextureHandle texture)
+    {
+        textures.push_back({ texture, ERDGAccess::DSVRead });
+    }
+
     void WriteDSV(RDGTextureHandle texture)
     {
         textures.push_back({ texture, ERDGAccess::DSVWrite });
+    }
+
+    void ReadCopySrc(RDGTextureHandle texture)
+    {
+        textures.push_back({ texture, ERDGAccess::CopySrc });
+    }
+
+    void ReadCopySrc(RDGBufferHandle buffer)
+    {
+        buffers.push_back({ buffer, ERDGAccess::CopySrc });
+    }
+
+    void WriteCopyDst(RDGTextureHandle texture)
+    {
+        textures.push_back({ texture, ERDGAccess::CopyDst });
+    }
+
+    void WriteCopyDst(RDGBufferHandle buffer)
+    {
+        buffers.push_back({ buffer, ERDGAccess::CopyDst });
+    }
+
+    void Present(RDGTextureHandle texture)
+    {
+        textures.push_back({ texture, ERDGAccess::Present });
     }
 };
 
@@ -94,7 +152,33 @@ struct RDGPass
     std::vector<uint32_t> dependencies;
 };
 
+struct RDGTextureDesc
+{
+    uint32_t width = 1;
+    uint32_t height = 1;
+    uint16_t arraySize = 1;
+    uint16_t mipLevels = 1;
+    DXGI_FORMAT format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    D3D12_RESOURCE_FLAGS flags = D3D12_RESOURCE_FLAG_NONE;
+    bool hasClearValue = false;
+    D3D12_CLEAR_VALUE clearValue = {};
+};
+
 struct RDGTexture
+{
+    Microsoft::WRL::ComPtr<ID3D12Resource> ownedResource;
+    ID3D12Resource* resource = nullptr;
+    D3D12_RESOURCE_STATES initialState = D3D12_RESOURCE_STATE_COMMON;
+    D3D12_RESOURCE_STATES currentState = D3D12_RESOURCE_STATE_COMMON;
+    D3D12_RESOURCE_STATES finalState = D3D12_RESOURCE_STATE_COMMON;
+    bool external = false;
+    bool externalOutput = false;
+    uint32_t lastProducer = UINT32_MAX;
+    std::vector<uint32_t> lastReaders;
+    std::string name;
+};
+
+struct RDGBuffer
 {
     ID3D12Resource* resource = nullptr;
     D3D12_RESOURCE_STATES initialState = D3D12_RESOURCE_STATE_COMMON;
@@ -148,6 +232,88 @@ public:
         return handle;
     }
 
+    RDGTextureHandle CreateTexture(
+        const RDGTextureDesc& desc,
+        D3D12_RESOURCE_STATES initialState,
+        D3D12_RESOURCE_STATES finalState,
+        const char* name)
+    {
+        RDGTextureHandle handle;
+
+        if (m_deviceContext == nullptr || m_deviceContext->GetDevice() == nullptr)
+        {
+            return handle;
+        }
+
+        D3D12_RESOURCE_DESC resourceDesc = CD3DX12_RESOURCE_DESC::Tex2D(
+            desc.format,
+            desc.width,
+            desc.height,
+            desc.arraySize,
+            desc.mipLevels,
+            1,
+            0,
+            desc.flags);
+
+        CD3DX12_HEAP_PROPERTIES heapProps(D3D12_HEAP_TYPE_DEFAULT);
+
+        RDGTexture texture;
+        texture.initialState = initialState;
+        texture.currentState = initialState;
+        texture.finalState = finalState;
+        texture.external = false;
+        texture.name = name ? name : "TransientTexture";
+
+        const D3D12_CLEAR_VALUE* clearValue = desc.hasClearValue ? &desc.clearValue : nullptr;
+
+        HRESULT hr = m_deviceContext->GetDevice()->CreateCommittedResource(
+            &heapProps,
+            D3D12_HEAP_FLAG_NONE,
+            &resourceDesc,
+            initialState,
+            clearValue,
+            IID_PPV_ARGS(&texture.ownedResource));
+
+        if (FAILED(hr))
+        {
+            return handle;
+        }
+
+        texture.resource = texture.ownedResource.Get();
+
+        handle.index = static_cast<uint32_t>(m_textures.size());
+        m_textures.push_back(std::move(texture));
+        return handle;
+    }
+
+    RDGBufferHandle RegisterExternalBuffer(
+        ID3D12Resource* resource,
+        D3D12_RESOURCE_STATES initialState,
+        D3D12_RESOURCE_STATES finalState,
+        const char* name)
+    {
+        RDGBufferHandle existingHandle = FindRegisteredExternalBuffer(resource);
+        if (existingHandle.IsValid())
+        {
+            RDGBuffer& buffer = m_buffers[existingHandle.index];
+            buffer.finalState = finalState;
+            return existingHandle;
+        }
+
+        RDGBuffer buffer;
+        buffer.resource = resource;
+        buffer.initialState = initialState;
+        buffer.currentState = initialState;
+        buffer.finalState = finalState;
+        buffer.external = true;
+        buffer.name = name ? name : "ExternalBuffer";
+
+        RDGBufferHandle handle;
+        handle.index = static_cast<uint32_t>(m_buffers.size());
+        m_buffers.push_back(buffer);
+        return handle;
+    }
+
     void MarkTextureAsOutput(RDGTextureHandle texture)
     {
         if (!texture.IsValid() || texture.index >= m_textures.size())
@@ -156,6 +322,16 @@ public:
         }
 
         m_textures[texture.index].externalOutput = true;
+    }
+
+    void MarkBufferAsOutput(RDGBufferHandle buffer)
+    {
+        if (!buffer.IsValid() || buffer.index >= m_buffers.size())
+        {
+            return;
+        }
+
+        m_buffers[buffer.index].externalOutput = true;
     }
 
     void AddPass(
@@ -197,6 +373,31 @@ public:
             }
         }
 
+        for (const RDGBufferAccess& access : parameters.buffers)
+        {
+            if (!access.buffer.IsValid() || access.buffer.index >= m_buffers.size())
+            {
+                continue;
+            }
+
+            const RDGBuffer& buffer = m_buffers[access.buffer.index];
+
+            if (IsReadAccess(access.access))
+            {
+                AddPassDependency(pass, buffer.lastProducer);
+            }
+
+            if (IsWriteAccess(access.access))
+            {
+                AddPassDependency(pass, buffer.lastProducer);
+
+                for (uint32_t readerPassIndex : buffer.lastReaders)
+                {
+                    AddPassDependency(pass, readerPassIndex);
+                }
+            }
+        }
+
         for (const RDGTextureAccess& access : parameters.textures)
         {
             if (!access.texture.IsValid() || access.texture.index >= m_textures.size())
@@ -215,6 +416,27 @@ public:
             {
                 texture.lastProducer = passIndex;
                 texture.lastReaders.clear();
+            }
+        }
+
+        for (const RDGBufferAccess& access : parameters.buffers)
+        {
+            if (!access.buffer.IsValid() || access.buffer.index >= m_buffers.size())
+            {
+                continue;
+            }
+
+            RDGBuffer& buffer = m_buffers[access.buffer.index];
+
+            if (IsReadAccess(access.access))
+            {
+                buffer.lastReaders.push_back(passIndex);
+            }
+
+            if (IsWriteAccess(access.access))
+            {
+                buffer.lastProducer = passIndex;
+                buffer.lastReaders.clear();
             }
         }
 
@@ -419,6 +641,20 @@ private:
             }
         }
 
+        for (const RDGBufferAccess& access : pass.parameters.buffers)
+        {
+            if (!access.buffer.IsValid() || access.buffer.index >= m_buffers.size())
+            {
+                continue;
+            }
+
+            if (IsWriteAccess(access.access) &&
+                m_buffers[access.buffer.index].externalOutput)
+            {
+                return true;
+            }
+        }
+
         return false;
     }
 
@@ -431,6 +667,11 @@ private:
         for (RDGTexture& texture : m_textures)
         {
             texture.currentState = texture.initialState;
+        }
+
+        for (RDGBuffer& buffer : m_buffers)
+        {
+            buffer.currentState = buffer.initialState;
         }
 
         for (uint32_t passIndex : m_compiledPassOrder)
@@ -474,6 +715,38 @@ private:
                     texture.currentState = desiredState;
                 }
             }
+
+            for (const RDGBufferAccess& access : pass.parameters.buffers)
+            {
+                if (!access.buffer.IsValid() || access.buffer.index >= m_buffers.size())
+                {
+                    continue;
+                }
+
+                RDGBuffer& buffer = m_buffers[access.buffer.index];
+
+                if (buffer.resource == nullptr)
+                {
+                    continue;
+                }
+
+                D3D12_RESOURCE_STATES desiredState = ToD3D12State(access.access);
+
+                if (buffer.currentState != desiredState)
+                {
+                    D3D12_RESOURCE_BARRIER barrier = {};
+                    barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+                    barrier.Flags = D3D12_RESOURCE_BARRIER_FLAG_NONE;
+                    barrier.Transition.pResource = buffer.resource;
+                    barrier.Transition.StateBefore = buffer.currentState;
+                    barrier.Transition.StateAfter = desiredState;
+                    barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+
+                    barriers.push_back(barrier);
+                    TraceBarrier(pass.name.c_str(), buffer.name, buffer.currentState, desiredState);
+                    buffer.currentState = desiredState;
+                }
+            }
         }
 
         for (RDGTexture& texture : m_textures)
@@ -496,6 +769,29 @@ private:
                 m_finalBarriers.push_back(barrier);
                 TraceBarrier("FinalState", texture.name, texture.currentState, texture.finalState);
                 texture.currentState = texture.finalState;
+            }
+        }
+
+        for (RDGBuffer& buffer : m_buffers)
+        {
+            if (buffer.resource == nullptr)
+            {
+                continue;
+            }
+
+            if (buffer.currentState != buffer.finalState)
+            {
+                D3D12_RESOURCE_BARRIER barrier = {};
+                barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+                barrier.Flags = D3D12_RESOURCE_BARRIER_FLAG_NONE;
+                barrier.Transition.pResource = buffer.resource;
+                barrier.Transition.StateBefore = buffer.currentState;
+                barrier.Transition.StateAfter = buffer.finalState;
+                barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+
+                m_finalBarriers.push_back(barrier);
+                TraceBarrier("FinalState", buffer.name, buffer.currentState, buffer.finalState);
+                buffer.currentState = buffer.finalState;
             }
         }
     }
@@ -542,6 +838,27 @@ private:
             if (m_textures[textureIndex].resource == resource)
             {
                 handle.index = static_cast<uint32_t>(textureIndex);
+                return handle;
+            }
+        }
+
+        return handle;
+    }
+
+    RDGBufferHandle FindRegisteredExternalBuffer(ID3D12Resource* resource) const
+    {
+        RDGBufferHandle handle;
+
+        if (resource == nullptr)
+        {
+            return handle;
+        }
+
+        for (size_t bufferIndex = 0; bufferIndex < m_buffers.size(); ++bufferIndex)
+        {
+            if (m_buffers[bufferIndex].resource == resource)
+            {
+                handle.index = static_cast<uint32_t>(bufferIndex);
                 return handle;
             }
         }
@@ -656,6 +973,19 @@ private:
             }
         }
 
+        for (size_t bufferIndex = 0; bufferIndex < m_buffers.size(); ++bufferIndex)
+        {
+            const RDGBuffer& buffer = m_buffers[bufferIndex];
+
+            if (buffer.resource == nullptr)
+            {
+                hasIssue = true;
+                oss << "[RDG][Validation] Graph '" << m_debugName
+                    << "' registered null buffer at index " << bufferIndex
+                    << " (" << buffer.name << ")\n";
+            }
+        }
+
         for (size_t passIndex = 0; passIndex < m_passes.size(); ++passIndex)
         {
             const RDGPass& pass = m_passes[passIndex];
@@ -717,6 +1047,64 @@ private:
                     }
                 }
             }
+
+            for (size_t accessIndex = 0; accessIndex < pass.parameters.buffers.size(); ++accessIndex)
+            {
+                const RDGBufferAccess& access = pass.parameters.buffers[accessIndex];
+
+                if (!access.buffer.IsValid() || access.buffer.index >= m_buffers.size())
+                {
+                    hasIssue = true;
+                    oss << "[RDG][Validation] Graph '" << m_debugName
+                        << "', pass '" << pass.name
+                        << "' uses invalid buffer handle at access " << accessIndex << "\n";
+                    continue;
+                }
+
+                if (access.access == ERDGAccess::Unknown)
+                {
+                    hasIssue = true;
+                    oss << "[RDG][Validation] Graph '" << m_debugName
+                        << "', pass '" << pass.name
+                        << "' uses Unknown access for buffer '"
+                        << m_buffers[access.buffer.index].name << "'\n";
+                }
+
+                bool thisIsRead = IsReadAccess(access.access);
+                bool thisIsWrite = IsWriteAccess(access.access);
+
+                for (size_t prevIndex = 0; prevIndex < accessIndex; ++prevIndex)
+                {
+                    const RDGBufferAccess& previous = pass.parameters.buffers[prevIndex];
+
+                    if (!previous.buffer.IsValid() || previous.buffer.index != access.buffer.index)
+                    {
+                        continue;
+                    }
+
+                    bool previousIsRead = IsReadAccess(previous.access);
+                    bool previousIsWrite = IsWriteAccess(previous.access);
+
+                    if (thisIsWrite && previousIsWrite)
+                    {
+                        hasIssue = true;
+                        oss << "[RDG][Validation] Graph '" << m_debugName
+                            << "', pass '" << pass.name
+                            << "' writes buffer '" << m_buffers[access.buffer.index].name
+                            << "' more than once\n";
+                    }
+
+                    if ((thisIsRead && previousIsWrite) || (thisIsWrite && previousIsRead))
+                    {
+                        hasIssue = true;
+                        oss << "[RDG][Validation] Graph '" << m_debugName
+                            << "', pass '" << pass.name
+                            << "' reads and writes buffer '"
+                            << m_buffers[access.buffer.index].name
+                            << "' in the same pass\n";
+                    }
+                }
+            }
         }
 
         if (hasIssue)
@@ -758,6 +1146,11 @@ private:
 
             oss << "\n";
 
+            if (passIndex < m_passBarriers.size() && !m_passBarriers[passIndex].empty())
+            {
+                oss << "    BarriersBefore: " << m_passBarriers[passIndex].size() << "\n";
+            }
+
             if (!pass.dependencies.empty())
             {
                 oss << "    DependsOn:";
@@ -786,6 +1179,23 @@ private:
 
                 oss << "    " << textureName << " -> " << ToString(access.access) << "\n";
             }
+
+            for (const RDGBufferAccess& access : pass.parameters.buffers)
+            {
+                const char* bufferName = "InvalidBuffer";
+
+                if (access.buffer.IsValid() && access.buffer.index < m_buffers.size())
+                {
+                    bufferName = m_buffers[access.buffer.index].name.c_str();
+                }
+
+                oss << "    " << bufferName << " -> " << ToString(access.access) << "\n";
+            }
+        }
+
+        if (!m_finalBarriers.empty())
+        {
+            oss << "  FinalBarriers: " << m_finalBarriers.size() << "\n";
         }
 
         OutputDebugStringA(oss.str().c_str());
@@ -819,6 +1229,7 @@ private:
     RenderDevice* m_deviceContext = nullptr;
     std::string m_debugName;
     std::vector<RDGTexture> m_textures;
+    std::vector<RDGBuffer> m_buffers;
     std::vector<RDGPass> m_passes;
     std::vector<std::vector<D3D12_RESOURCE_BARRIER>> m_passBarriers;
     std::vector<D3D12_RESOURCE_BARRIER> m_finalBarriers;
