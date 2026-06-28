@@ -164,8 +164,17 @@ struct RDGTextureDesc
     D3D12_CLEAR_VALUE clearValue = {};
 };
 
+struct RDGBufferDesc
+{
+    uint64_t sizeInBytes = 0;
+    uint64_t alignment = 0;
+    uint32_t structureByteStride = 0;
+    D3D12_RESOURCE_FLAGS flags = D3D12_RESOURCE_FLAG_NONE;
+};
+
 struct RDGTexture
 {
+    RDGTextureDesc desc;
     Microsoft::WRL::ComPtr<ID3D12Resource> ownedResource;
     ID3D12Resource* resource = nullptr;
     D3D12_RESOURCE_STATES initialState = D3D12_RESOURCE_STATE_COMMON;
@@ -174,12 +183,16 @@ struct RDGTexture
     bool external = false;
     bool externalOutput = false;
     uint32_t lastProducer = UINT32_MAX;
+    uint32_t firstUsePass = UINT32_MAX;
+    uint32_t lastUsePass = UINT32_MAX;
     std::vector<uint32_t> lastReaders;
     std::string name;
 };
 
 struct RDGBuffer
 {
+    RDGBufferDesc desc;
+    Microsoft::WRL::ComPtr<ID3D12Resource> ownedResource;
     ID3D12Resource* resource = nullptr;
     D3D12_RESOURCE_STATES initialState = D3D12_RESOURCE_STATE_COMMON;
     D3D12_RESOURCE_STATES currentState = D3D12_RESOURCE_STATE_COMMON;
@@ -187,8 +200,22 @@ struct RDGBuffer
     bool external = false;
     bool externalOutput = false;
     uint32_t lastProducer = UINT32_MAX;
+    uint32_t firstUsePass = UINT32_MAX;
+    uint32_t lastUsePass = UINT32_MAX;
     std::vector<uint32_t> lastReaders;
     std::string name;
+};
+
+struct RDGTextureExtraction
+{
+    RDGTextureHandle texture;
+    Microsoft::WRL::ComPtr<ID3D12Resource>* output = nullptr;
+};
+
+struct RDGBufferExtraction
+{
+    RDGBufferHandle buffer;
+    Microsoft::WRL::ComPtr<ID3D12Resource>* output = nullptr;
 };
 
 class RDGBuilder
@@ -202,7 +229,10 @@ public:
 
     RDGBuilder(RenderDevice* deviceContext, const char* debugName)
         : m_deviceContext(deviceContext), m_debugName(debugName ? debugName : "RDG")
-    {}
+    {
+        CreateTransientRTVHeap();
+        CreateTransientDSVHeap();
+    }
 
     RDGTextureHandle RegisterExternalTexture(
         ID3D12Resource* resource,
@@ -220,6 +250,18 @@ public:
 
         RDGTexture texture;
         texture.resource = resource;
+
+        if (resource != nullptr)
+        {
+            const D3D12_RESOURCE_DESC resourceDesc = resource->GetDesc();
+            texture.desc.width = static_cast<uint32_t>(resourceDesc.Width);
+            texture.desc.height = static_cast<uint32_t>(resourceDesc.Height);
+            texture.desc.arraySize = static_cast<uint16_t>(resourceDesc.DepthOrArraySize);
+            texture.desc.mipLevels = static_cast<uint16_t>(resourceDesc.MipLevels);
+            texture.desc.format = resourceDesc.Format;
+            texture.desc.flags = resourceDesc.Flags;
+        }
+
         texture.initialState = initialState;
         texture.currentState = initialState;
         texture.finalState = finalState;
@@ -258,6 +300,7 @@ public:
         CD3DX12_HEAP_PROPERTIES heapProps(D3D12_HEAP_TYPE_DEFAULT);
 
         RDGTexture texture;
+        texture.desc = desc;
         texture.initialState = initialState;
         texture.currentState = initialState;
         texture.finalState = finalState;
@@ -302,6 +345,15 @@ public:
 
         RDGBuffer buffer;
         buffer.resource = resource;
+
+        if (resource != nullptr)
+        {
+            const D3D12_RESOURCE_DESC resourceDesc = resource->GetDesc();
+            buffer.desc.sizeInBytes = resourceDesc.Width;
+            buffer.desc.alignment = resourceDesc.Alignment;
+            buffer.desc.flags = resourceDesc.Flags;
+        }
+
         buffer.initialState = initialState;
         buffer.currentState = initialState;
         buffer.finalState = finalState;
@@ -311,6 +363,56 @@ public:
         RDGBufferHandle handle;
         handle.index = static_cast<uint32_t>(m_buffers.size());
         m_buffers.push_back(buffer);
+        return handle;
+    }
+
+    RDGBufferHandle CreateBuffer(
+        const RDGBufferDesc& desc,
+        D3D12_RESOURCE_STATES initialState,
+        D3D12_RESOURCE_STATES finalState,
+        const char* name)
+    {
+        RDGBufferHandle handle;
+
+        if (desc.sizeInBytes == 0 ||
+            m_deviceContext == nullptr ||
+            m_deviceContext->GetDevice() == nullptr)
+        {
+            return handle;
+        }
+
+        D3D12_RESOURCE_DESC resourceDesc = CD3DX12_RESOURCE_DESC::Buffer(
+            desc.sizeInBytes,
+            desc.flags,
+            desc.alignment);
+
+        CD3DX12_HEAP_PROPERTIES heapProps(D3D12_HEAP_TYPE_DEFAULT);
+
+        RDGBuffer buffer;
+        buffer.desc = desc;
+        buffer.initialState = initialState;
+        buffer.currentState = initialState;
+        buffer.finalState = finalState;
+        buffer.external = false;
+        buffer.name = name ? name : "TransientBuffer";
+
+        HRESULT hr = m_deviceContext->GetDevice()->CreateCommittedResource(
+            &heapProps,
+            D3D12_HEAP_FLAG_NONE,
+            &resourceDesc,
+            initialState,
+            nullptr,
+            IID_PPV_ARGS(&buffer.ownedResource));
+
+        if (FAILED(hr))
+        {
+            return handle;
+        }
+
+        buffer.resource = buffer.ownedResource.Get();
+
+        handle.index = static_cast<uint32_t>(m_buffers.size());
+        m_buffers.push_back(std::move(buffer));
         return handle;
     }
 
@@ -332,6 +434,417 @@ public:
         }
 
         m_buffers[buffer.index].externalOutput = true;
+    }
+
+    void QueueTextureExtraction(
+        RDGTextureHandle texture,
+        Microsoft::WRL::ComPtr<ID3D12Resource>* output)
+    {
+        if (!texture.IsValid() || texture.index >= m_textures.size() || output == nullptr)
+        {
+            return;
+        }
+
+        MarkTextureAsOutput(texture);
+        m_textureExtractions.push_back({ texture, output });
+    }
+
+    void QueueBufferExtraction(
+        RDGBufferHandle buffer,
+        Microsoft::WRL::ComPtr<ID3D12Resource>* output)
+    {
+        if (!buffer.IsValid() || buffer.index >= m_buffers.size() || output == nullptr)
+        {
+            return;
+        }
+
+        MarkBufferAsOutput(buffer);
+        m_bufferExtractions.push_back({ buffer, output });
+    }
+
+    ID3D12Resource* GetTextureResource(RDGTextureHandle texture) const
+    {
+        if (!texture.IsValid() || texture.index >= m_textures.size())
+        {
+            return nullptr;
+        }
+
+        return m_textures[texture.index].resource;
+    }
+
+    const RDGTextureDesc* GetTextureDesc(RDGTextureHandle texture) const
+    {
+        if (!texture.IsValid() || texture.index >= m_textures.size())
+        {
+            return nullptr;
+        }
+
+        return &m_textures[texture.index].desc;
+    }
+
+    ID3D12Resource* GetBufferResource(RDGBufferHandle buffer) const
+    {
+        if (!buffer.IsValid() || buffer.index >= m_buffers.size())
+        {
+            return nullptr;
+        }
+
+        return m_buffers[buffer.index].resource;
+    }
+
+    const RDGBufferDesc* GetBufferDesc(RDGBufferHandle buffer) const
+    {
+        if (!buffer.IsValid() || buffer.index >= m_buffers.size())
+        {
+            return nullptr;
+        }
+
+        return &m_buffers[buffer.index].desc;
+    }
+
+    bool CreateTextureSRV(
+        RDGTextureHandle texture,
+        D3D12_CPU_DESCRIPTOR_HANDLE cpuHandle,
+        const D3D12_SHADER_RESOURCE_VIEW_DESC* overrideDesc = nullptr) const
+    {
+        if (m_deviceContext == nullptr ||
+            m_deviceContext->GetDevice() == nullptr ||
+            !texture.IsValid() ||
+            texture.index >= m_textures.size())
+        {
+            return false;
+        }
+
+        ID3D12Resource* resource = m_textures[texture.index].resource;
+        if (resource == nullptr)
+        {
+            return false;
+        }
+
+        D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
+        if (overrideDesc != nullptr)
+        {
+            srvDesc = *overrideDesc;
+        }
+        else
+        {
+            srvDesc = BuildDefaultTextureSRVDesc(m_textures[texture.index].desc);
+        }
+
+        m_deviceContext->GetDevice()->CreateShaderResourceView(resource, &srvDesc, cpuHandle);
+        return true;
+    }
+
+    bool CreateTextureUAV(
+        RDGTextureHandle texture,
+        D3D12_CPU_DESCRIPTOR_HANDLE cpuHandle,
+        const D3D12_UNORDERED_ACCESS_VIEW_DESC* overrideDesc = nullptr) const
+    {
+        if (m_deviceContext == nullptr ||
+            m_deviceContext->GetDevice() == nullptr ||
+            !texture.IsValid() ||
+            texture.index >= m_textures.size())
+        {
+            return false;
+        }
+
+        const RDGTexture& rdgTexture = m_textures[texture.index];
+        if (rdgTexture.resource == nullptr ||
+            (rdgTexture.desc.flags & D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS) == 0)
+        {
+            return false;
+        }
+
+        D3D12_UNORDERED_ACCESS_VIEW_DESC uavDesc = {};
+        if (overrideDesc != nullptr)
+        {
+            uavDesc = *overrideDesc;
+        }
+        else
+        {
+            uavDesc = BuildDefaultTextureUAVDesc(rdgTexture.desc);
+        }
+
+        m_deviceContext->GetDevice()->CreateUnorderedAccessView(
+            rdgTexture.resource,
+            nullptr,
+            &uavDesc,
+            cpuHandle);
+
+        return true;
+    }
+
+    bool CreateBufferSRV(
+        RDGBufferHandle buffer,
+        D3D12_CPU_DESCRIPTOR_HANDLE cpuHandle,
+        const D3D12_SHADER_RESOURCE_VIEW_DESC* overrideDesc = nullptr) const
+    {
+        if (m_deviceContext == nullptr ||
+            m_deviceContext->GetDevice() == nullptr ||
+            !buffer.IsValid() ||
+            buffer.index >= m_buffers.size())
+        {
+            return false;
+        }
+
+        const RDGBuffer& rdgBuffer = m_buffers[buffer.index];
+        if (rdgBuffer.resource == nullptr)
+        {
+            return false;
+        }
+
+        D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
+        if (overrideDesc != nullptr)
+        {
+            srvDesc = *overrideDesc;
+        }
+        else
+        {
+            if (rdgBuffer.desc.structureByteStride == 0)
+            {
+                return false;
+            }
+
+            srvDesc = BuildDefaultBufferSRVDesc(rdgBuffer.desc);
+        }
+
+        m_deviceContext->GetDevice()->CreateShaderResourceView(rdgBuffer.resource, &srvDesc, cpuHandle);
+        return true;
+    }
+
+    bool CreateBufferUAV(
+        RDGBufferHandle buffer,
+        D3D12_CPU_DESCRIPTOR_HANDLE cpuHandle,
+        const D3D12_UNORDERED_ACCESS_VIEW_DESC* overrideDesc = nullptr,
+        ID3D12Resource* counterResource = nullptr) const
+    {
+        if (m_deviceContext == nullptr ||
+            m_deviceContext->GetDevice() == nullptr ||
+            !buffer.IsValid() ||
+            buffer.index >= m_buffers.size())
+        {
+            return false;
+        }
+
+        const RDGBuffer& rdgBuffer = m_buffers[buffer.index];
+        if (rdgBuffer.resource == nullptr ||
+            (rdgBuffer.desc.flags & D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS) == 0)
+        {
+            return false;
+        }
+
+        D3D12_UNORDERED_ACCESS_VIEW_DESC uavDesc = {};
+        if (overrideDesc != nullptr)
+        {
+            uavDesc = *overrideDesc;
+        }
+        else
+        {
+            if (rdgBuffer.desc.structureByteStride == 0)
+            {
+                return false;
+            }
+
+            uavDesc = BuildDefaultBufferUAVDesc(rdgBuffer.desc);
+        }
+
+        m_deviceContext->GetDevice()->CreateUnorderedAccessView(
+            rdgBuffer.resource,
+            counterResource,
+            &uavDesc,
+            cpuHandle);
+
+        return true;
+    }
+
+    bool CreateTextureRTV(
+        RDGTextureHandle texture,
+        D3D12_CPU_DESCRIPTOR_HANDLE cpuHandle,
+        const D3D12_RENDER_TARGET_VIEW_DESC* overrideDesc = nullptr) const
+    {
+        if (m_deviceContext == nullptr ||
+            m_deviceContext->GetDevice() == nullptr ||
+            !texture.IsValid() ||
+            texture.index >= m_textures.size())
+        {
+            return false;
+        }
+
+        const RDGTexture& rdgTexture = m_textures[texture.index];
+        if (rdgTexture.resource == nullptr ||
+            (rdgTexture.desc.flags & D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET) == 0)
+        {
+            return false;
+        }
+
+        D3D12_RENDER_TARGET_VIEW_DESC rtvDesc = {};
+        if (overrideDesc != nullptr)
+        {
+            rtvDesc = *overrideDesc;
+        }
+        else
+        {
+            rtvDesc = BuildDefaultTextureRTVDesc(rdgTexture.desc);
+        }
+
+        m_deviceContext->GetDevice()->CreateRenderTargetView(
+            rdgTexture.resource,
+            &rtvDesc,
+            cpuHandle);
+
+        return true;
+    }
+
+    bool AllocateTransientRTV(D3D12_CPU_DESCRIPTOR_HANDLE* outHandle)
+    {
+        if (outHandle == nullptr || !m_transientRTVHeap)
+        {
+            return false;
+        }
+
+        if (m_transientRTVCount >= MaxTransientRTVDescriptors)
+        {
+            return false;
+        }
+
+        *outHandle = CD3DX12_CPU_DESCRIPTOR_HANDLE(
+            m_transientRTVHeap->GetCPUDescriptorHandleForHeapStart(),
+            m_transientRTVCount,
+            m_transientRTVDescriptorSize);
+
+        ++m_transientRTVCount;
+        return true;
+    }
+
+    bool CreateTransientTextureRTV(
+        RDGTextureHandle texture,
+        D3D12_CPU_DESCRIPTOR_HANDLE* outHandle,
+        const D3D12_RENDER_TARGET_VIEW_DESC* overrideDesc = nullptr)
+    {
+        if (outHandle == nullptr ||
+            m_deviceContext == nullptr ||
+            m_deviceContext->GetDevice() == nullptr ||
+            !texture.IsValid() ||
+            texture.index >= m_textures.size())
+        {
+            return false;
+        }
+
+        const RDGTexture& rdgTexture = m_textures[texture.index];
+        if (rdgTexture.resource == nullptr ||
+            (rdgTexture.desc.flags & D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET) == 0)
+        {
+            return false;
+        }
+
+        D3D12_CPU_DESCRIPTOR_HANDLE rtvHandle = {};
+        if (!AllocateTransientRTV(&rtvHandle))
+        {
+            return false;
+        }
+
+        if (!CreateTextureRTV(texture, rtvHandle, overrideDesc))
+        {
+            return false;
+        }
+
+        *outHandle = rtvHandle;
+        return true;
+    }
+
+    bool AllocateTransientDSV(D3D12_CPU_DESCRIPTOR_HANDLE* outHandle)
+    {
+        if (outHandle == nullptr || !m_transientDSVHeap)
+        {
+            return false;
+        }
+
+        if (m_transientDSVCount >= MaxTransientDSVDescriptors)
+        {
+            return false;
+        }
+
+        *outHandle = CD3DX12_CPU_DESCRIPTOR_HANDLE(
+            m_transientDSVHeap->GetCPUDescriptorHandleForHeapStart(),
+            m_transientDSVCount,
+            m_transientDSVDescriptorSize);
+
+        ++m_transientDSVCount;
+        return true;
+    }
+
+    bool CreateTextureDSV(
+        RDGTextureHandle texture,
+        D3D12_CPU_DESCRIPTOR_HANDLE cpuHandle,
+        const D3D12_DEPTH_STENCIL_VIEW_DESC* overrideDesc = nullptr) const
+    {
+        if (m_deviceContext == nullptr ||
+            m_deviceContext->GetDevice() == nullptr ||
+            !texture.IsValid() ||
+            texture.index >= m_textures.size())
+        {
+            return false;
+        }
+
+        const RDGTexture& rdgTexture = m_textures[texture.index];
+        if (rdgTexture.resource == nullptr ||
+            (rdgTexture.desc.flags & D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL) == 0)
+        {
+            return false;
+        }
+
+        D3D12_DEPTH_STENCIL_VIEW_DESC dsvDesc = {};
+        if (overrideDesc != nullptr)
+        {
+            dsvDesc = *overrideDesc;
+        }
+        else
+        {
+            dsvDesc = BuildDefaultTextureDSVDesc(rdgTexture.desc);
+        }
+
+        m_deviceContext->GetDevice()->CreateDepthStencilView(
+            rdgTexture.resource,
+            &dsvDesc,
+            cpuHandle);
+
+        return true;
+    }
+
+    bool CreateTransientTextureDSV(
+        RDGTextureHandle texture,
+        D3D12_CPU_DESCRIPTOR_HANDLE* outHandle,
+        const D3D12_DEPTH_STENCIL_VIEW_DESC* overrideDesc = nullptr)
+    {
+        if (outHandle == nullptr ||
+            m_deviceContext == nullptr ||
+            m_deviceContext->GetDevice() == nullptr ||
+            !texture.IsValid() ||
+            texture.index >= m_textures.size())
+        {
+            return false;
+        }
+
+        const RDGTexture& rdgTexture = m_textures[texture.index];
+        if (rdgTexture.resource == nullptr ||
+            (rdgTexture.desc.flags & D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL) == 0)
+        {
+            return false;
+        }
+
+        D3D12_CPU_DESCRIPTOR_HANDLE dsvHandle = {};
+        if (!AllocateTransientDSV(&dsvHandle))
+        {
+            return false;
+        }
+
+        if (!CreateTextureDSV(texture, dsvHandle, overrideDesc))
+        {
+            return false;
+        }
+
+        *outHandle = dsvHandle;
+        return true;
     }
 
     void AddPass(
@@ -453,6 +966,7 @@ public:
 #endif
 
         CompileGraph();
+        BuildResourceLifetimes();
         BuildBarrierPlan();
 
 #if defined(_DEBUG)
@@ -480,15 +994,199 @@ public:
         }
 
         SubmitBarriers(cmdList, m_finalBarriers);
+        ExtractResources();
 
         m_finalBarriers.clear();
         m_passBarriers.clear();
         m_livePasses.clear();
         m_compiledPassOrder.clear();
         m_passes.clear();
+        m_textureExtractions.clear();
+        m_bufferExtractions.clear();
     }
 
 private:
+    void CreateTransientRTVHeap()
+    {
+        if (m_deviceContext == nullptr || m_deviceContext->GetDevice() == nullptr)
+        {
+            return;
+        }
+
+        D3D12_DESCRIPTOR_HEAP_DESC heapDesc = {};
+        heapDesc.NumDescriptors = MaxTransientRTVDescriptors;
+        heapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
+        heapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
+
+        if (FAILED(m_deviceContext->GetDevice()->CreateDescriptorHeap(
+            &heapDesc,
+            IID_PPV_ARGS(&m_transientRTVHeap))))
+        {
+            m_transientRTVHeap.Reset();
+            return;
+        }
+
+        m_transientRTVDescriptorSize =
+            m_deviceContext->GetDevice()->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
+    }
+
+    void CreateTransientDSVHeap()
+    {
+        if (m_deviceContext == nullptr || m_deviceContext->GetDevice() == nullptr)
+        {
+            return;
+        }
+
+        D3D12_DESCRIPTOR_HEAP_DESC heapDesc = {};
+        heapDesc.NumDescriptors = MaxTransientDSVDescriptors;
+        heapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_DSV;
+        heapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
+
+        if (FAILED(m_deviceContext->GetDevice()->CreateDescriptorHeap(
+            &heapDesc,
+            IID_PPV_ARGS(&m_transientDSVHeap))))
+        {
+            m_transientDSVHeap.Reset();
+            return;
+        }
+
+        m_transientDSVDescriptorSize =
+            m_deviceContext->GetDevice()->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_DSV);
+    }
+
+    static D3D12_SHADER_RESOURCE_VIEW_DESC BuildDefaultTextureSRVDesc(const RDGTextureDesc& desc)
+    {
+        D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
+        srvDesc.Format = desc.format;
+        srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+        srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+        srvDesc.Texture2D.MostDetailedMip = 0;
+        srvDesc.Texture2D.MipLevels = desc.mipLevels;
+        srvDesc.Texture2D.PlaneSlice = 0;
+        srvDesc.Texture2D.ResourceMinLODClamp = 0.0f;
+        return srvDesc;
+    }
+
+    static D3D12_UNORDERED_ACCESS_VIEW_DESC BuildDefaultTextureUAVDesc(const RDGTextureDesc& desc)
+    {
+        D3D12_UNORDERED_ACCESS_VIEW_DESC uavDesc = {};
+        uavDesc.Format = desc.format;
+        uavDesc.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
+        uavDesc.Texture2D.MipSlice = 0;
+        uavDesc.Texture2D.PlaneSlice = 0;
+        return uavDesc;
+    }
+
+    static D3D12_SHADER_RESOURCE_VIEW_DESC BuildDefaultBufferSRVDesc(const RDGBufferDesc& desc)
+    {
+        D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
+        srvDesc.Format = DXGI_FORMAT_UNKNOWN;
+        srvDesc.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
+        srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+        srvDesc.Buffer.FirstElement = 0;
+        srvDesc.Buffer.NumElements = static_cast<UINT>(desc.sizeInBytes / desc.structureByteStride);
+        srvDesc.Buffer.StructureByteStride = desc.structureByteStride;
+        srvDesc.Buffer.Flags = D3D12_BUFFER_SRV_FLAG_NONE;
+        return srvDesc;
+    }
+
+    static D3D12_UNORDERED_ACCESS_VIEW_DESC BuildDefaultBufferUAVDesc(const RDGBufferDesc& desc)
+    {
+        D3D12_UNORDERED_ACCESS_VIEW_DESC uavDesc = {};
+        uavDesc.Format = DXGI_FORMAT_UNKNOWN;
+        uavDesc.ViewDimension = D3D12_UAV_DIMENSION_BUFFER;
+        uavDesc.Buffer.FirstElement = 0;
+        uavDesc.Buffer.NumElements = static_cast<UINT>(desc.sizeInBytes / desc.structureByteStride);
+        uavDesc.Buffer.StructureByteStride = desc.structureByteStride;
+        uavDesc.Buffer.CounterOffsetInBytes = 0;
+        uavDesc.Buffer.Flags = D3D12_BUFFER_UAV_FLAG_NONE;
+        return uavDesc;
+    }
+
+    static D3D12_RENDER_TARGET_VIEW_DESC BuildDefaultTextureRTVDesc(const RDGTextureDesc& desc)
+    {
+        D3D12_RENDER_TARGET_VIEW_DESC rtvDesc = {};
+        rtvDesc.Format = desc.format;
+        rtvDesc.ViewDimension = D3D12_RTV_DIMENSION_TEXTURE2D;
+        rtvDesc.Texture2D.MipSlice = 0;
+        rtvDesc.Texture2D.PlaneSlice = 0;
+        return rtvDesc;
+    }
+
+    static D3D12_DEPTH_STENCIL_VIEW_DESC BuildDefaultTextureDSVDesc(const RDGTextureDesc& desc)
+    {
+        D3D12_DEPTH_STENCIL_VIEW_DESC dsvDesc = {};
+        dsvDesc.Format = ToDefaultDSVFormat(desc.format);
+        dsvDesc.Flags = D3D12_DSV_FLAG_NONE;
+
+        if (desc.arraySize > 1)
+        {
+            dsvDesc.ViewDimension = D3D12_DSV_DIMENSION_TEXTURE2DARRAY;
+            dsvDesc.Texture2DArray.MipSlice = 0;
+            dsvDesc.Texture2DArray.FirstArraySlice = 0;
+            dsvDesc.Texture2DArray.ArraySize = desc.arraySize;
+        }
+        else
+        {
+            dsvDesc.ViewDimension = D3D12_DSV_DIMENSION_TEXTURE2D;
+            dsvDesc.Texture2D.MipSlice = 0;
+        }
+
+        return dsvDesc;
+    }
+
+    static DXGI_FORMAT ToDefaultDSVFormat(DXGI_FORMAT format)
+    {
+        switch (format)
+        {
+        case DXGI_FORMAT_R32_TYPELESS:
+            return DXGI_FORMAT_D32_FLOAT;
+        case DXGI_FORMAT_R24G8_TYPELESS:
+            return DXGI_FORMAT_D24_UNORM_S8_UINT;
+        case DXGI_FORMAT_R16_TYPELESS:
+            return DXGI_FORMAT_D16_UNORM;
+        default:
+            return format;
+        }
+    }
+
+    void ExtractResources()
+    {
+        for (const RDGTextureExtraction& extraction : m_textureExtractions)
+        {
+            if (extraction.output == nullptr ||
+                !extraction.texture.IsValid() ||
+                extraction.texture.index >= m_textures.size())
+            {
+                continue;
+            }
+
+            const RDGTexture& texture = m_textures[extraction.texture.index];
+
+            if (texture.ownedResource)
+            {
+                *extraction.output = texture.ownedResource;
+            }
+        }
+
+        for (const RDGBufferExtraction& extraction : m_bufferExtractions)
+        {
+            if (extraction.output == nullptr ||
+                !extraction.buffer.IsValid() ||
+                extraction.buffer.index >= m_buffers.size())
+            {
+                continue;
+            }
+
+            const RDGBuffer& buffer = m_buffers[extraction.buffer.index];
+
+            if (buffer.ownedResource)
+            {
+                *extraction.output = buffer.ownedResource;
+            }
+        }
+    }
+
     bool CompileGraph()
     {
         m_livePasses.clear();
@@ -794,6 +1492,117 @@ private:
                 buffer.currentState = buffer.finalState;
             }
         }
+    }
+
+    void BuildResourceLifetimes()
+    {
+        for (RDGTexture& texture : m_textures)
+        {
+            texture.firstUsePass = UINT32_MAX;
+            texture.lastUsePass = UINT32_MAX;
+        }
+
+        for (RDGBuffer& buffer : m_buffers)
+        {
+            buffer.firstUsePass = UINT32_MAX;
+            buffer.lastUsePass = UINT32_MAX;
+        }
+
+        for (uint32_t passIndex : m_compiledPassOrder)
+        {
+            if (passIndex >= m_passes.size())
+            {
+                continue;
+            }
+
+            const RDGPass& pass = m_passes[passIndex];
+
+            for (const RDGTextureAccess& access : pass.parameters.textures)
+            {
+                if (!access.texture.IsValid() || access.texture.index >= m_textures.size())
+                {
+                    continue;
+                }
+
+                RDGTexture& texture = m_textures[access.texture.index];
+
+                if (texture.firstUsePass == UINT32_MAX)
+                {
+                    texture.firstUsePass = passIndex;
+                }
+
+                texture.lastUsePass = passIndex;
+            }
+
+            for (const RDGBufferAccess& access : pass.parameters.buffers)
+            {
+                if (!access.buffer.IsValid() || access.buffer.index >= m_buffers.size())
+                {
+                    continue;
+                }
+
+                RDGBuffer& buffer = m_buffers[access.buffer.index];
+
+                if (buffer.firstUsePass == UINT32_MAX)
+                {
+                    buffer.firstUsePass = passIndex;
+                }
+
+                buffer.lastUsePass = passIndex;
+            }
+        }
+    }
+
+    bool AreLifetimesDisjoint(
+        uint32_t firstA,
+        uint32_t lastA,
+        uint32_t firstB,
+        uint32_t lastB) const
+    {
+        if (firstA == UINT32_MAX || lastA == UINT32_MAX ||
+            firstB == UINT32_MAX || lastB == UINT32_MAX)
+        {
+            return false;
+        }
+
+        return lastA < firstB || lastB < firstA;
+    }
+
+    bool CanAliasTextures(const RDGTexture& a, const RDGTexture& b) const
+    {
+        if (a.external || b.external)
+        {
+            return false;
+        }
+
+        if (!AreLifetimesDisjoint(a.firstUsePass, a.lastUsePass, b.firstUsePass, b.lastUsePass))
+        {
+            return false;
+        }
+
+        return a.desc.width == b.desc.width &&
+            a.desc.height == b.desc.height &&
+            a.desc.arraySize == b.desc.arraySize &&
+            a.desc.mipLevels == b.desc.mipLevels &&
+            a.desc.format == b.desc.format &&
+            a.desc.flags == b.desc.flags;
+    }
+
+    bool CanAliasBuffers(const RDGBuffer& a, const RDGBuffer& b) const
+    {
+        if (a.external || b.external)
+        {
+            return false;
+        }
+
+        if (!AreLifetimesDisjoint(a.firstUsePass, a.lastUsePass, b.firstUsePass, b.lastUsePass))
+        {
+            return false;
+        }
+
+        return a.desc.sizeInBytes == b.desc.sizeInBytes &&
+            a.desc.alignment == b.desc.alignment &&
+            a.desc.flags == b.desc.flags;
     }
 
     void SubmitBarriers(
@@ -1193,6 +2002,56 @@ private:
             }
         }
 
+        for (size_t textureIndex = 0; textureIndex < m_textures.size(); ++textureIndex)
+        {
+            const RDGTexture& texture = m_textures[textureIndex];
+
+            if (texture.firstUsePass != UINT32_MAX)
+            {
+                oss << "  TextureLifetime " << textureIndex
+                    << "(" << texture.name << "): "
+                    << texture.firstUsePass << " -> " << texture.lastUsePass << "\n";
+            }
+        }
+
+        for (size_t bufferIndex = 0; bufferIndex < m_buffers.size(); ++bufferIndex)
+        {
+            const RDGBuffer& buffer = m_buffers[bufferIndex];
+
+            if (buffer.firstUsePass != UINT32_MAX)
+            {
+                oss << "  BufferLifetime " << bufferIndex
+                    << "(" << buffer.name << "): "
+                    << buffer.firstUsePass << " -> " << buffer.lastUsePass << "\n";
+            }
+        }
+
+        for (size_t a = 0; a < m_textures.size(); ++a)
+        {
+            for (size_t b = a + 1; b < m_textures.size(); ++b)
+            {
+                if (CanAliasTextures(m_textures[a], m_textures[b]))
+                {
+                    oss << "  TextureAliasCandidate "
+                        << a << "(" << m_textures[a].name << ") <-> "
+                        << b << "(" << m_textures[b].name << ")\n";
+                }
+            }
+        }
+
+        for (size_t a = 0; a < m_buffers.size(); ++a)
+        {
+            for (size_t b = a + 1; b < m_buffers.size(); ++b)
+            {
+                if (CanAliasBuffers(m_buffers[a], m_buffers[b]))
+                {
+                    oss << "  BufferAliasCandidate "
+                        << a << "(" << m_buffers[a].name << ") <-> "
+                        << b << "(" << m_buffers[b].name << ")\n";
+                }
+            }
+        }
+
         if (!m_finalBarriers.empty())
         {
             oss << "  FinalBarriers: " << m_finalBarriers.size() << "\n";
@@ -1228,6 +2087,17 @@ private:
 
     RenderDevice* m_deviceContext = nullptr;
     std::string m_debugName;
+
+    static constexpr UINT MaxTransientRTVDescriptors = 64;
+    Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> m_transientRTVHeap;
+    UINT m_transientRTVDescriptorSize = 0;
+    UINT m_transientRTVCount = 0;
+
+    static constexpr UINT MaxTransientDSVDescriptors = 64;
+    Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> m_transientDSVHeap;
+    UINT m_transientDSVDescriptorSize = 0;
+    UINT m_transientDSVCount = 0;
+
     std::vector<RDGTexture> m_textures;
     std::vector<RDGBuffer> m_buffers;
     std::vector<RDGPass> m_passes;
@@ -1235,6 +2105,8 @@ private:
     std::vector<D3D12_RESOURCE_BARRIER> m_finalBarriers;
     std::vector<bool> m_livePasses;
     std::vector<uint32_t> m_compiledPassOrder;
+    std::vector<RDGTextureExtraction> m_textureExtractions;
+    std::vector<RDGBufferExtraction> m_bufferExtractions;
 };
 
 #endif

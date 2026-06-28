@@ -711,6 +711,27 @@ public:
         return mainDescriptorHeap.Get();
     }
 
+    UINT AllocateSrvUavDescriptor()
+    {
+        return srvIdx++;
+    }
+
+    CD3DX12_CPU_DESCRIPTOR_HANDLE GetSrvUavCPUHandle(UINT descriptorIndex)
+    {
+        return CD3DX12_CPU_DESCRIPTOR_HANDLE(
+            mainDescriptorHeap->GetCPUDescriptorHandleForHeapStart(),
+            descriptorIndex,
+            srvDescriptorSize);
+    }
+
+    CD3DX12_GPU_DESCRIPTOR_HANDLE GetSrvUavGPUHandle(UINT descriptorIndex)
+    {
+        return CD3DX12_GPU_DESCRIPTOR_HANDLE(
+            mainDescriptorHeap->GetGPUDescriptorHandleForHeapStart(),
+            descriptorIndex,
+            srvDescriptorSize);
+    }
+
     std::vector<ModelInstance>& GetSceneInstances()
     {
         return m_sceneInstances;

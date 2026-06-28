@@ -37,7 +37,7 @@ D:\项目\LearnDirectX\GBufferPass.h(149,47): warning C4267: “=”: 从“size
   
   正在生成代码
   Previous IPDB and IOBJ mismatch, fall back to full compilation.
-  All 6922 functions were compiled because no usable IPDB/IOBJ from previous compilation was found.
+  All 6958 functions were compiled because no usable IPDB/IOBJ from previous compilation was found.
   已完成代码的生成
   LearnDirectX.vcxproj -> D:\项目\LearnDirectX\x64\Release\LearnDirectX.exe
   'pwsh.exe' 不是内部或外部命令，也不是可运行的程序
