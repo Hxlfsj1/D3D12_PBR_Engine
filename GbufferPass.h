@@ -199,58 +199,28 @@ public:
         const std::vector<ModelInstance*>& visibleInstances,
         size_t& transparentStartIndex)
     {
-        const uint32_t width = viewport.Width > 0.0f ? static_cast<uint32_t>(viewport.Width) : 1;
-        const uint32_t height = viewport.Height > 0.0f ? static_cast<uint32_t>(viewport.Height) : 1;
-
-        auto createGBufferTexture = [&](DXGI_FORMAT format, const char* transientName, ID3D12Resource* fallbackResource, const char* fallbackName)
+        auto registerGBufferTexture = [&](ID3D12Resource* resource, const char* name)
             {
-                RDGTextureDesc desc = {};
-                desc.width = width;
-                desc.height = height;
-                desc.format = format;
-                desc.flags = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
-                desc.hasClearValue = true;
-                desc.clearValue.Format = format;
-
-                RDGTextureHandle texture = graph.CreateTexture(
-                    desc,
+                return graph.RegisterExternalTexture(
+                    resource,
                     D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
                     D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
-                    transientName);
-
-                if (!texture.IsValid())
-                {
-                    texture = graph.RegisterExternalTexture(
-                        fallbackResource,
-                        D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
-                        D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
-                        fallbackName);
-                }
-
-                return texture;
+                    name);
             };
 
-        RDGTextureHandle gbufferAlbedo = createGBufferTexture(
-            DXGI_FORMAT_R8G8B8A8_UNORM,
-            "GBufferAlbedoTransient",
+        RDGTextureHandle gbufferAlbedo = registerGBufferTexture(
             resourceManager->GetGBufferAlbedo(),
             "GBufferAlbedo");
 
-        RDGTextureHandle gbufferNormal = createGBufferTexture(
-            DXGI_FORMAT_R16G16B16A16_FLOAT,
-            "GBufferNormalTransient",
+        RDGTextureHandle gbufferNormal = registerGBufferTexture(
             resourceManager->GetGBufferNormal(),
             "GBufferNormal");
 
-        RDGTextureHandle gbufferORM = createGBufferTexture(
-            DXGI_FORMAT_R8G8B8A8_UNORM,
-            "GBufferORMTransient",
+        RDGTextureHandle gbufferORM = registerGBufferTexture(
             resourceManager->GetGBufferORM(),
             "GBufferORM");
 
-        RDGTextureHandle gbufferEmissive = createGBufferTexture(
-            DXGI_FORMAT_R8G8B8A8_UNORM,
-            "GBufferEmissiveTransient",
+        RDGTextureHandle gbufferEmissive = registerGBufferTexture(
             resourceManager->GetGBufferEmissive(),
             "GBufferEmissive");
 
@@ -267,27 +237,6 @@ public:
             resourceManager->GetGBufferORMRtvHandle(),
             resourceManager->GetGBufferEmissiveRtvHandle()
         };
-
-        D3D12_CPU_DESCRIPTOR_HANDLE transientRtv = {};
-        if (graph.CreateTransientTextureRTV(gbufferAlbedo, &transientRtv))
-        {
-            rtvHandles.albedo = transientRtv;
-        }
-
-        if (graph.CreateTransientTextureRTV(gbufferNormal, &transientRtv))
-        {
-            rtvHandles.normal = transientRtv;
-        }
-
-        if (graph.CreateTransientTextureRTV(gbufferORM, &transientRtv))
-        {
-            rtvHandles.orm = transientRtv;
-        }
-
-        if (graph.CreateTransientTextureRTV(gbufferEmissive, &transientRtv))
-        {
-            rtvHandles.emissive = transientRtv;
-        }
 
         RDGPassParameters params;
         params.WriteRTV(gbufferAlbedo);

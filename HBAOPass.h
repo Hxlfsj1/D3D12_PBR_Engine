@@ -194,88 +194,24 @@ public:
                 "GBufferNormal");
         }
 
-        RDGTextureDesc hbaoDesc = {};
-        hbaoDesc.width = static_cast<uint32_t>(width);
-        hbaoDesc.height = static_cast<uint32_t>(height);
-        hbaoDesc.format = DXGI_FORMAT_R16_FLOAT;
-        hbaoDesc.flags = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
-        hbaoDesc.hasClearValue = true;
-        hbaoDesc.clearValue.Format = DXGI_FORMAT_R16_FLOAT;
-        hbaoDesc.clearValue.Color[0] = 1.0f;
-
-        RDGTextureHandle hbaoRaw = graph.CreateTexture(
-            hbaoDesc,
+        RDGTextureHandle hbaoRaw = graph.RegisterExternalTexture(
+            resourceManager->GetHBAORawRT(),
             D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
             D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
-            "HBAORawTransient");
+            "HBAORaw");
 
-        if (!hbaoRaw.IsValid())
-        {
-            hbaoRaw = graph.RegisterExternalTexture(
-                resourceManager->GetHBAORawRT(),
-                D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
-                D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
-                "HBAORaw");
-        }
-
-        RDGTextureHandle hbaoBlurred = graph.CreateTexture(
-            hbaoDesc,
+        RDGTextureHandle hbaoBlurred = graph.RegisterExternalTexture(
+            resourceManager->GetHBAOBlurredRT(),
             D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
             D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
-            "HBAOBlurredTransient");
-
-        if (!hbaoBlurred.IsValid())
-        {
-            hbaoBlurred = graph.RegisterExternalTexture(
-                resourceManager->GetHBAOBlurredRT(),
-                D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
-                D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
-                "HBAOBlurred");
-        }
+            "HBAOBlurred");
 
         UINT hbaoRawSrvIdx = resourceManager->GetHBAORawSrvIdx();
-        UINT transientHbaoRawSrvIdx = resourceManager->AllocateTransientSrvUavDescriptor();
-        if (transientHbaoRawSrvIdx != UINT_MAX &&
-            graph.CreateTextureSRV(hbaoRaw, resourceManager->GetSrvUavCPUHandle(transientHbaoRawSrvIdx)))
-        {
-            hbaoRawSrvIdx = transientHbaoRawSrvIdx;
-        }
-
-        D3D12_SHADER_RESOURCE_VIEW_DESC depthSrvDesc = {};
-        depthSrvDesc.Format = DXGI_FORMAT_R32_FLOAT;
-        depthSrvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
-        depthSrvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-        depthSrvDesc.Texture2D.MipLevels = 1;
-
         UINT depthSrvIdx = resourceManager->GetDepthBufferSrvIdx();
-        UINT transientDepthSrvIdx = resourceManager->AllocateTransientSrvUavDescriptor();
-        if (transientDepthSrvIdx != UINT_MAX &&
-            graph.CreateTextureSRV(depth, resourceManager->GetSrvUavCPUHandle(transientDepthSrvIdx), &depthSrvDesc))
-        {
-            depthSrvIdx = transientDepthSrvIdx;
-        }
-
         UINT gbufferNormalSrvIdx = resourceManager->GetGBufferNormalSrvIdx();
-        UINT transientGBufferNormalSrvIdx = resourceManager->AllocateTransientSrvUavDescriptor();
-        if (transientGBufferNormalSrvIdx != UINT_MAX &&
-            graph.CreateTextureSRV(gbufferNormal, resourceManager->GetSrvUavCPUHandle(transientGBufferNormalSrvIdx)))
-        {
-            gbufferNormalSrvIdx = transientGBufferNormalSrvIdx;
-        }
 
         D3D12_CPU_DESCRIPTOR_HANDLE hbaoRawRtv = resourceManager->GetHBAORawRtvHandle();
-        D3D12_CPU_DESCRIPTOR_HANDLE transientHbaoRawRtv = {};
-        if (graph.CreateTransientTextureRTV(hbaoRaw, &transientHbaoRawRtv))
-        {
-            hbaoRawRtv = transientHbaoRawRtv;
-        }
-
         D3D12_CPU_DESCRIPTOR_HANDLE hbaoBlurredRtv = resourceManager->GetHBAOBlurredRtvHandle();
-        D3D12_CPU_DESCRIPTOR_HANDLE transientHbaoBlurredRtv = {};
-        if (graph.CreateTransientTextureRTV(hbaoBlurred, &transientHbaoBlurredRtv))
-        {
-            hbaoBlurredRtv = transientHbaoBlurredRtv;
-        }
 
         RDGPassParameters rawParams;
         rawParams.ReadSRV(depth);

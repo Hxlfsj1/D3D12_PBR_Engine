@@ -214,6 +214,8 @@ bool D3D12App::InitD3D()
 // Data is streamed directly from the Upload Heap to the GPU, utilizing a Ring Buffer mechanism (with a count of 3 to align with the Triple Buffering scheme)
 void D3D12App::Update()
 {
+    auto& instances = m_resourceManager.GetSceneInstances();
+
     // ====================================================================================================
     // Handle FPS
     // ====================================================================================================
@@ -234,6 +236,7 @@ void D3D12App::Update()
         std::wstring windowText = std::wstring(WindowTitle) +
             L"    |    FPS: " + fpsStr +
             L"    |    ms/frame: " + mspfStr +
+            L"    |    Visible: " + std::to_wstring(g_visibleInstances.size()) + L"/" + std::to_wstring(instances.size()) +
             L"    |    Hz: 300";
 
         SetWindowText(hwnd, windowText.c_str());
@@ -241,6 +244,9 @@ void D3D12App::Update()
         frameCount = 0;
         timeElapsed -= 1.0f;
     }
+
+    // Continuous keyboard movement must update the camera before building frame matrices and culling volumes.
+    m_inputManager.Update(deltaTime, camera);
 
     // ====================================================================================================
     // Calculate V * P matrix
@@ -297,11 +303,8 @@ void D3D12App::Update()
     XMStoreFloat4x4(&m_invProjMat, XMMatrixTranspose(invProj));
 
     // ====================================================================================================
-    // Input polling and environment setup
+    // Environment setup
     // ====================================================================================================
-    m_inputManager.Update(deltaTime, camera);
-
-    auto& instances = m_resourceManager.GetSceneInstances();
     // Get the world-space view frustum of the current frame's camera
     BoundingFrustum frustum = camera.GetWorldSpaceFrustum((float)Width / Height, 0.1f, 1000.0f);
     // Bind CBVs to prepare for subsequent data updates to the GPU

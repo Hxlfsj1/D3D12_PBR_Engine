@@ -272,15 +272,13 @@ class RDGBuilder
 public:
 #if defined(_DEBUG)
     static constexpr bool EnableValidation = true;
-    static constexpr bool EnableGraphDump = true;
-    static constexpr bool EnableBarrierDump = true;
+    static constexpr bool EnableGraphDump = false;
+    static constexpr bool EnableBarrierDump = false;
 #endif
 
     RDGBuilder(RenderDevice* deviceContext, const char* debugName)
         : m_deviceContext(deviceContext), m_debugName(debugName ? debugName : "RDG")
     {
-        CreateTransientRTVHeap();
-        CreateTransientDSVHeap();
     }
 
     RDGTextureHandle RegisterExternalTexture(
@@ -794,7 +792,17 @@ public:
 
     bool AllocateTransientRTV(D3D12_CPU_DESCRIPTOR_HANDLE* outHandle)
     {
-        if (outHandle == nullptr || !m_transientRTVHeap)
+        if (outHandle == nullptr)
+        {
+            return false;
+        }
+
+        if (!m_transientRTVHeap)
+        {
+            CreateTransientRTVHeap();
+        }
+
+        if (!m_transientRTVHeap)
         {
             return false;
         }
@@ -851,7 +859,17 @@ public:
 
     bool AllocateTransientDSV(D3D12_CPU_DESCRIPTOR_HANDLE* outHandle)
     {
-        if (outHandle == nullptr || !m_transientDSVHeap)
+        if (outHandle == nullptr)
+        {
+            return false;
+        }
+
+        if (!m_transientDSVHeap)
+        {
+            CreateTransientDSVHeap();
+        }
+
+        if (!m_transientDSVHeap)
         {
             return false;
         }
