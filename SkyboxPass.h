@@ -6,10 +6,17 @@
 #include "ResourceManager.h"
 #include "PipelineManager.h"
 #include "Camera.h"
+#include "RDG.h"
 
 class SkyboxPass
 {
 public:
+    struct Input
+    {
+        RDGTextureHandle sceneColor;
+        RDGTextureHandle depth;
+    };
+
     static void Execute(
         RenderDevice* deviceContext,
         ResourceManager* resourceManager,
@@ -20,10 +27,36 @@ public:
         int width,
         int height)
     {
-        auto cmdList = deviceContext->GetCommandList();
-
         CD3DX12_CPU_DESCRIPTOR_HANDLE rtv = resourceManager->GetPostProcessRtvHandle();
         CD3DX12_CPU_DESCRIPTOR_HANDLE dsv = deviceContext->GetDSVHandle();
+
+        ExecuteNoBarrier(
+            deviceContext,
+            resourceManager,
+            pipelineManager,
+            camera,
+            viewport,
+            scissorRect,
+            width,
+            height,
+            rtv,
+            dsv);
+    }
+
+    static void ExecuteNoBarrier(
+        RenderDevice* deviceContext,
+        ResourceManager* resourceManager,
+        PipelineManager* pipelineManager,
+        Camera& camera,
+        const D3D12_VIEWPORT& viewport,
+        const D3D12_RECT& scissorRect,
+        int width,
+        int height,
+        D3D12_CPU_DESCRIPTOR_HANDLE rtv,
+        D3D12_CPU_DESCRIPTOR_HANDLE dsv)
+    {
+        auto cmdList = deviceContext->GetCommandList();
+
         cmdList->OMSetRenderTargets(1, &rtv, FALSE, &dsv);
 
         cmdList->RSSetViewports(1, &viewport);
@@ -54,6 +87,63 @@ public:
         cmdList->SetGraphicsRoot32BitConstants(4, 1, &skyboxTexIdx, 16);
 
         cmdList->DrawInstanced(36, 1, 0, 0);
+    }
+
+    static void AddToGraph(
+        RDGBuilder& graph,
+        RenderDevice* deviceContext,
+        ResourceManager* resourceManager,
+        PipelineManager* pipelineManager,
+        Camera& camera,
+        const D3D12_VIEWPORT& viewport,
+        const D3D12_RECT& scissorRect,
+        int width,
+        int height,
+        const Input& input = {})
+    {
+        RDGTextureHandle sceneColor = input.sceneColor;
+        if (!sceneColor.IsValid())
+        {
+            sceneColor = graph.RegisterExternalTexture(
+                resourceManager->GetPostProcessRT(),
+                D3D12_RESOURCE_STATE_RENDER_TARGET,
+                D3D12_RESOURCE_STATE_RENDER_TARGET,
+                "PostProcessRT");
+        }
+        graph.MarkTextureAsOutput(sceneColor);
+
+        RDGTextureHandle depth = input.depth;
+        if (!depth.IsValid())
+        {
+            depth = graph.RegisterExternalTexture(
+                deviceContext->GetDepthStencilBuffer(),
+                D3D12_RESOURCE_STATE_DEPTH_WRITE,
+                D3D12_RESOURCE_STATE_DEPTH_WRITE,
+                "SceneDepth");
+        }
+
+        RDGPassParameters params;
+        params.WriteRTV(sceneColor);
+        params.WriteDSV(depth);
+
+        graph.AddPass(
+            "Skybox",
+            ERDGPassFlags::Graphics,
+            params,
+            [=, &camera](ID3D12GraphicsCommandList* cmdList)
+            {
+                ExecuteNoBarrier(
+                    deviceContext,
+                    resourceManager,
+                    pipelineManager,
+                    camera,
+                    viewport,
+                    scissorRect,
+                    width,
+                    height,
+                    resourceManager->GetPostProcessRtvHandle(),
+                    deviceContext->GetDSVHandle());
+            });
     }
 };
 

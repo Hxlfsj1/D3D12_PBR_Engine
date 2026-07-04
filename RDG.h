@@ -502,6 +502,33 @@ public:
         return &m_buffers[buffer.index].desc;
     }
 
+    void CollectOwnedResources(std::vector<Microsoft::WRL::ComPtr<ID3D12Resource>>& outResources) const
+    {
+        for (const RDGTexture& texture : m_textures)
+        {
+            if (texture.ownedResource)
+            {
+                outResources.push_back(texture.ownedResource);
+            }
+        }
+
+        for (const RDGBuffer& buffer : m_buffers)
+        {
+            if (buffer.ownedResource)
+            {
+                outResources.push_back(buffer.ownedResource);
+            }
+        }
+    }
+
+    void ExecuteAndCollectOwnedResources(
+        ID3D12GraphicsCommandList* cmdList,
+        std::vector<Microsoft::WRL::ComPtr<ID3D12Resource>>& outResources)
+    {
+        Execute(cmdList);
+        CollectOwnedResources(outResources);
+    }
+
     bool CreateTextureSRV(
         RDGTextureHandle texture,
         D3D12_CPU_DESCRIPTOR_HANDLE cpuHandle,

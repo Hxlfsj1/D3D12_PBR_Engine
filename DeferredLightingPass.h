@@ -12,6 +12,31 @@
 class DeferredLightingPass
 {
 public:
+    struct Output
+    {
+        RDGTextureHandle sceneColor;
+    };
+
+    struct Input
+    {
+        RDGTextureHandle gbufferAlbedo;
+        RDGTextureHandle gbufferNormal;
+        RDGTextureHandle gbufferORM;
+        RDGTextureHandle gbufferEmissive;
+        RDGTextureHandle depth;
+        RDGTextureHandle hbaoBlurred;
+    };
+
+    struct SrvIndices
+    {
+        UINT gbufferAlbedo;
+        UINT gbufferNormal;
+        UINT gbufferORM;
+        UINT depthBuffer;
+        UINT hbao;
+        UINT gbufferEmissive;
+    };
+
     static void Execute(
         RenderDevice* deviceContext,
         ResourceManager* resourceManager,
@@ -30,7 +55,15 @@ public:
             invViewProjMat,
             width,
             height,
-            frameIndex);
+            frameIndex,
+            {
+                resourceManager->GetGBufferAlbedoSrvIdx(),
+                resourceManager->GetGBufferNormalSrvIdx(),
+                resourceManager->GetGBufferORMSrvIdx(),
+                resourceManager->GetDepthBufferSrvIdx(),
+                resourceManager->GetHBAOBlurredSrvIdx(),
+                resourceManager->GetGBufferEmissiveSrvIdx()
+            });
 
         CD3DX12_RESOURCE_BARRIER depthToWrite = CD3DX12_RESOURCE_BARRIER::Transition(
             deviceContext->GetDepthStencilBuffer(),
@@ -46,7 +79,8 @@ public:
         const DirectX::XMFLOAT4X4& invViewProjMat,
         int width,
         int height,
-        int frameIndex)
+        int frameIndex,
+        const SrvIndices& srvIndices)
     {
         auto cmdList = deviceContext->GetCommandList();
 
@@ -64,12 +98,12 @@ public:
 
         DeferredConstants deferredCb = {};
         deferredCb.invViewProj = invViewProjMat;
-        deferredCb.gbufferAlbedoIdx = resourceManager->GetGBufferAlbedoSrvIdx();
-        deferredCb.gbufferNormalIdx = resourceManager->GetGBufferNormalSrvIdx();
-        deferredCb.gbufferORMIdx = resourceManager->GetGBufferORMSrvIdx();
-        deferredCb.depthBufferIdx = resourceManager->GetDepthBufferSrvIdx();
-        deferredCb.hbaoIdx = resourceManager->GetHBAOBlurredSrvIdx();
-        deferredCb.gbufferEmissiveIdx = resourceManager->GetGBufferEmissiveSrvIdx();
+        deferredCb.gbufferAlbedoIdx = srvIndices.gbufferAlbedo;
+        deferredCb.gbufferNormalIdx = srvIndices.gbufferNormal;
+        deferredCb.gbufferORMIdx = srvIndices.gbufferORM;
+        deferredCb.depthBufferIdx = srvIndices.depthBuffer;
+        deferredCb.hbaoIdx = srvIndices.hbao;
+        deferredCb.gbufferEmissiveIdx = srvIndices.gbufferEmissive;
 
         memcpy(cbvCpuAddress, &deferredCb, sizeof(DeferredConstants));
 
@@ -87,7 +121,7 @@ public:
         cmdList->DrawInstanced(3, 1, 0, 0);
     }
 
-    static void AddToGraph(
+    static Output AddToGraph(
         RDGBuilder& graph,
         RenderDevice* deviceContext,
         ResourceManager* resourceManager,
@@ -95,43 +129,126 @@ public:
         const DirectX::XMFLOAT4X4& invViewProjMat,
         int width,
         int height,
-        int frameIndex)
+        int frameIndex,
+        const Input& input = {})
     {
-        RDGTextureHandle gbufferAlbedo = graph.RegisterExternalTexture(
-            resourceManager->GetGBufferAlbedo(),
-            D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
-            D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
-            "GBufferAlbedo");
+        RDGTextureHandle gbufferAlbedo = input.gbufferAlbedo;
+        if (!gbufferAlbedo.IsValid())
+        {
+            gbufferAlbedo = graph.RegisterExternalTexture(
+                resourceManager->GetGBufferAlbedo(),
+                D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+                D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+                "GBufferAlbedo");
+        }
 
-        RDGTextureHandle gbufferNormal = graph.RegisterExternalTexture(
-            resourceManager->GetGBufferNormal(),
-            D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
-            D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
-            "GBufferNormal");
+        RDGTextureHandle gbufferNormal = input.gbufferNormal;
+        if (!gbufferNormal.IsValid())
+        {
+            gbufferNormal = graph.RegisterExternalTexture(
+                resourceManager->GetGBufferNormal(),
+                D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+                D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+                "GBufferNormal");
+        }
 
-        RDGTextureHandle gbufferORM = graph.RegisterExternalTexture(
-            resourceManager->GetGBufferORM(),
-            D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
-            D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
-            "GBufferORM");
+        RDGTextureHandle gbufferORM = input.gbufferORM;
+        if (!gbufferORM.IsValid())
+        {
+            gbufferORM = graph.RegisterExternalTexture(
+                resourceManager->GetGBufferORM(),
+                D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+                D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+                "GBufferORM");
+        }
 
-        RDGTextureHandle gbufferEmissive = graph.RegisterExternalTexture(
-            resourceManager->GetGBufferEmissive(),
-            D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
-            D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
-            "GBufferEmissive");
+        RDGTextureHandle gbufferEmissive = input.gbufferEmissive;
+        if (!gbufferEmissive.IsValid())
+        {
+            gbufferEmissive = graph.RegisterExternalTexture(
+                resourceManager->GetGBufferEmissive(),
+                D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+                D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+                "GBufferEmissive");
+        }
 
-        RDGTextureHandle depth = graph.RegisterExternalTexture(
-            deviceContext->GetDepthStencilBuffer(),
-            D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
-            D3D12_RESOURCE_STATE_DEPTH_WRITE,
-            "SceneDepth");
+        RDGTextureHandle depth = input.depth;
+        if (!depth.IsValid())
+        {
+            depth = graph.RegisterExternalTexture(
+                deviceContext->GetDepthStencilBuffer(),
+                D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+                D3D12_RESOURCE_STATE_DEPTH_WRITE,
+                "SceneDepth");
+        }
 
-        RDGTextureHandle hbaoBlurred = graph.RegisterExternalTexture(
-            resourceManager->GetHBAOBlurredRT(),
-            D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
-            D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
-            "HBAOBlurred");
+        RDGTextureHandle hbaoBlurred = input.hbaoBlurred;
+        if (!hbaoBlurred.IsValid())
+        {
+            hbaoBlurred = graph.RegisterExternalTexture(
+                resourceManager->GetHBAOBlurredRT(),
+                D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+                D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+                "HBAOBlurred");
+        }
+
+        SrvIndices srvIndices =
+        {
+            resourceManager->GetGBufferAlbedoSrvIdx(),
+            resourceManager->GetGBufferNormalSrvIdx(),
+            resourceManager->GetGBufferORMSrvIdx(),
+            resourceManager->GetDepthBufferSrvIdx(),
+            resourceManager->GetHBAOBlurredSrvIdx(),
+            resourceManager->GetGBufferEmissiveSrvIdx()
+        };
+
+        UINT transientGBufferAlbedoSrvIdx = resourceManager->AllocateTransientSrvUavDescriptor();
+        if (transientGBufferAlbedoSrvIdx != UINT_MAX &&
+            graph.CreateTextureSRV(gbufferAlbedo, resourceManager->GetSrvUavCPUHandle(transientGBufferAlbedoSrvIdx)))
+        {
+            srvIndices.gbufferAlbedo = transientGBufferAlbedoSrvIdx;
+        }
+
+        UINT transientGBufferNormalSrvIdx = resourceManager->AllocateTransientSrvUavDescriptor();
+        if (transientGBufferNormalSrvIdx != UINT_MAX &&
+            graph.CreateTextureSRV(gbufferNormal, resourceManager->GetSrvUavCPUHandle(transientGBufferNormalSrvIdx)))
+        {
+            srvIndices.gbufferNormal = transientGBufferNormalSrvIdx;
+        }
+
+        UINT transientGBufferORMSrvIdx = resourceManager->AllocateTransientSrvUavDescriptor();
+        if (transientGBufferORMSrvIdx != UINT_MAX &&
+            graph.CreateTextureSRV(gbufferORM, resourceManager->GetSrvUavCPUHandle(transientGBufferORMSrvIdx)))
+        {
+            srvIndices.gbufferORM = transientGBufferORMSrvIdx;
+        }
+
+        UINT transientGBufferEmissiveSrvIdx = resourceManager->AllocateTransientSrvUavDescriptor();
+        if (transientGBufferEmissiveSrvIdx != UINT_MAX &&
+            graph.CreateTextureSRV(gbufferEmissive, resourceManager->GetSrvUavCPUHandle(transientGBufferEmissiveSrvIdx)))
+        {
+            srvIndices.gbufferEmissive = transientGBufferEmissiveSrvIdx;
+        }
+
+        D3D12_SHADER_RESOURCE_VIEW_DESC depthSrvDesc = {};
+        depthSrvDesc.Format = DXGI_FORMAT_R32_FLOAT;
+        depthSrvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+        depthSrvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+        depthSrvDesc.Texture2D.MipLevels = 1;
+
+        UINT transientDepthSrvIdx = resourceManager->AllocateTransientSrvUavDescriptor();
+        if (transientDepthSrvIdx != UINT_MAX &&
+            graph.CreateTextureSRV(depth, resourceManager->GetSrvUavCPUHandle(transientDepthSrvIdx), &depthSrvDesc))
+        {
+            srvIndices.depthBuffer = transientDepthSrvIdx;
+        }
+
+        UINT transientHbaoBlurredSrvIdx = resourceManager->AllocateTransientSrvUavDescriptor();
+        if (transientHbaoBlurredSrvIdx != UINT_MAX &&
+            graph.CreateTextureSRV(hbaoBlurred, resourceManager->GetSrvUavCPUHandle(transientHbaoBlurredSrvIdx)))
+        {
+            srvIndices.hbao = transientHbaoBlurredSrvIdx;
+        }
 
         RDGTextureHandle shadowMap = graph.RegisterExternalTexture(
             resourceManager->GetShadowMap(),
@@ -169,8 +286,11 @@ public:
                     invViewProjMat,
                     width,
                     height,
-                    frameIndex);
+                    frameIndex,
+                    srvIndices);
             });
+
+        return { sceneColor };
     }
 
     static void ExecuteRDG(

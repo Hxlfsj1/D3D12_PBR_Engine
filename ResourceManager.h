@@ -46,7 +46,7 @@ public:
     bool LoadAssets(RenderDevice* dc, const std::vector<InstanceDesc>& sceneConfig, int frameBufferCount)
     {
         D3D12_DESCRIPTOR_HEAP_DESC srvHeapDesc = {};
-        srvHeapDesc.NumDescriptors = 1024;
+        srvHeapDesc.NumDescriptors = MaxSrvUavDescriptors;
         srvHeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
         srvHeapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
 
@@ -60,6 +60,7 @@ public:
         srvDescriptorSize = dc->GetDevice()->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
 
         srvIdx = 0;
+        m_srvFrameBufferCount = frameBufferCount > 0 ? static_cast<UINT>(frameBufferCount) : 1;
 
         unsigned char colorWhite[] = { 255, 255, 255, 255 };
         unsigned char colorFlatNormal[] = { 128, 128, 255, 255 };
@@ -145,6 +146,7 @@ public:
 
         constantBufferUploadHeap.resize(frameBufferCount);
         cbvGPUAddress.resize(frameBufferCount);
+        m_rdgTransientResources.resize(frameBufferCount);
 
         for (int i = 0; i < frameBufferCount; ++i)
         {
@@ -716,6 +718,66 @@ public:
         return srvIdx++;
     }
 
+    void SealPersistentSrvUavDescriptors()
+    {
+        persistentSrvUavDescriptorCount = srvIdx;
+    }
+
+    void ResetTransientSrvUavDescriptors(int frameIndex)
+    {
+        if (persistentSrvUavDescriptorCount == 0)
+        {
+            persistentSrvUavDescriptorCount = srvIdx;
+        }
+
+        const UINT transientCapacity = MaxSrvUavDescriptors - persistentSrvUavDescriptorCount;
+        const UINT transientCapacityPerFrame = transientCapacity / m_srvFrameBufferCount;
+        const UINT frameSlot = frameIndex >= 0 ? static_cast<UINT>(frameIndex) % m_srvFrameBufferCount : 0;
+
+        srvIdx = persistentSrvUavDescriptorCount + frameSlot * transientCapacityPerFrame;
+        transientSrvUavDescriptorEnd = (frameSlot + 1 == m_srvFrameBufferCount)
+            ? MaxSrvUavDescriptors
+            : srvIdx + transientCapacityPerFrame;
+    }
+
+    UINT AllocateTransientSrvUavDescriptor()
+    {
+        if (srvIdx >= transientSrvUavDescriptorEnd)
+        {
+            return UINT_MAX;
+        }
+
+        return srvIdx++;
+    }
+
+    void ResetRDGTransientResources(int frameIndex)
+    {
+        if (frameIndex < 0 || frameIndex >= static_cast<int>(m_rdgTransientResources.size()))
+        {
+            return;
+        }
+
+        m_rdgTransientResources[frameIndex].clear();
+    }
+
+    void KeepRDGResourceAlive(int frameIndex, const ComPtr<ID3D12Resource>& resource)
+    {
+        if (!resource || frameIndex < 0 || frameIndex >= static_cast<int>(m_rdgTransientResources.size()))
+        {
+            return;
+        }
+
+        m_rdgTransientResources[frameIndex].push_back(resource);
+    }
+
+    void KeepRDGResourcesAlive(int frameIndex, const std::vector<ComPtr<ID3D12Resource>>& resources)
+    {
+        for (const ComPtr<ID3D12Resource>& resource : resources)
+        {
+            KeepRDGResourceAlive(frameIndex, resource);
+        }
+    }
+
     CD3DX12_CPU_DESCRIPTOR_HANDLE GetSrvUavCPUHandle(UINT descriptorIndex)
     {
         return CD3DX12_CPU_DESCRIPTOR_HANDLE(
@@ -943,8 +1005,13 @@ public:
     }
 
 private:
+    static constexpr UINT MaxSrvUavDescriptors = 1024;
+    UINT persistentSrvUavDescriptorCount = 0;
+    UINT transientSrvUavDescriptorEnd = MaxSrvUavDescriptors;
+    UINT m_srvFrameBufferCount = 1;
     UINT srvIdx;
     UINT srvDescriptorSize;
+    std::vector<std::vector<ComPtr<ID3D12Resource>>> m_rdgTransientResources;
 
     ComPtr<ID3D12DescriptorHeap> mainDescriptorHeap;
 

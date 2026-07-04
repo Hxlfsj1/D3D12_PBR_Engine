@@ -203,6 +203,8 @@ bool D3D12App::InitD3D()
 
     if (!m_resourceManager.InitHBAO(&m_deviceContext, Width, Height)) return false;
 
+    m_resourceManager.SealPersistentSrvUavDescriptors();
+
     viewport = CD3DX12_VIEWPORT(0.0f, 0.0f, (float)Width, (float)Height);
     scissorRect = CD3DX12_RECT(0, 0, Width, Height);
 
@@ -549,6 +551,9 @@ void D3D12App::Update()
 
 void D3D12App::BeginFrame()
 {
+    m_resourceManager.ResetTransientSrvUavDescriptors(frameIndex);
+    m_resourceManager.ResetRDGTransientResources(frameIndex);
+
     // Reset the command sequence from the previous frame
     m_deviceContext.GetCommandAllocator(frameIndex)->Reset();
     m_deviceContext.GetCommandList()->Reset(m_deviceContext.GetCommandAllocator(frameIndex), m_pipelineManager.GetPBR_PSO());
@@ -605,7 +610,7 @@ void D3D12App::Render()
 
         size_t transparentStartIndex = g_visibleInstances.size();
 
-        GBufferPass::AddToGraph(
+        GBufferPass::Output gbufferOutput = GBufferPass::AddToGraph(
             deferredGraph,
             &m_deviceContext,
             &m_resourceManager,
@@ -616,7 +621,7 @@ void D3D12App::Render()
             g_visibleInstances,
             transparentStartIndex);
 
-        HBAOPass::AddToGraph(
+        HBAOPass::Output hbaoOutput = HBAOPass::AddToGraph(
             deferredGraph,
             &m_deviceContext,
             &m_resourceManager,
@@ -626,9 +631,18 @@ void D3D12App::Render()
             m_invProjMat,
             Width,
             Height,
-            frameIndex);
+            frameIndex,
+            { gbufferOutput.depth, gbufferOutput.normal });
 
-        DeferredLightingPass::AddToGraph(
+        DeferredLightingPass::Input deferredInput = {};
+        deferredInput.gbufferAlbedo = gbufferOutput.albedo;
+        deferredInput.gbufferNormal = gbufferOutput.normal;
+        deferredInput.gbufferORM = gbufferOutput.orm;
+        deferredInput.gbufferEmissive = gbufferOutput.emissive;
+        deferredInput.depth = gbufferOutput.depth;
+        deferredInput.hbaoBlurred = hbaoOutput.blurredTexture;
+
+        DeferredLightingPass::Output deferredOutput = DeferredLightingPass::AddToGraph(
             deferredGraph,
             &m_deviceContext,
             &m_resourceManager,
@@ -636,14 +650,32 @@ void D3D12App::Render()
             m_invViewProjMat,
             Width,
             Height,
-            frameIndex);
+            frameIndex,
+            deferredInput);
 
-        deferredGraph.Execute(m_deviceContext.GetCommandList());
+        SkyboxPass::AddToGraph(
+            deferredGraph,
+            &m_deviceContext,
+            &m_resourceManager,
+            &m_pipelineManager,
+            camera,
+            viewport,
+            scissorRect,
+            Width,
+            Height,
+            { deferredOutput.sceneColor, gbufferOutput.depth });
+
+        std::vector<ComPtr<ID3D12Resource>> rdgTransientResources;
+        deferredGraph.ExecuteAndCollectOwnedResources(m_deviceContext.GetCommandList(), rdgTransientResources);
+        m_resourceManager.KeepRDGResourcesAlive(frameIndex, rdgTransientResources);
 
         transparentIdx = transparentStartIndex;
     }
 
-    SkyboxPass::Execute(&m_deviceContext, &m_resourceManager, &m_pipelineManager, camera, viewport, scissorRect, Width, Height);
+    if (!m_settingsManager.pipeline.useDeferred)
+    {
+        SkyboxPass::Execute(&m_deviceContext, &m_resourceManager, &m_pipelineManager, camera, viewport, scissorRect, Width, Height);
+    }
 
     PBRPass::ExecuteTransparent(&m_deviceContext, &m_resourceManager, &m_pipelineManager, frameIndex, viewport, scissorRect, g_visibleInstances, transparentIdx);
 
