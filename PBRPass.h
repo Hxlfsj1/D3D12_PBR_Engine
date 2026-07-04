@@ -8,11 +8,18 @@
 #include "RenderStructs.h"
 #include "SceneObject.h"
 #include "PBR_Model.h"
+#include "RDG.h"
 #include <vector>
 
 class PBRPass
 {
 public:
+    struct TransparentInput
+    {
+        RDGTextureHandle sceneColor;
+        RDGTextureHandle depth;
+    };
+
     static size_t ExecuteOpaque(
         RenderDevice* deviceContext,
         ResourceManager* resourceManager,
@@ -173,6 +180,34 @@ public:
         const std::vector<ModelInstance*>& visibleInstances,
         size_t transparentStartIndex)
     {
+        CD3DX12_CPU_DESCRIPTOR_HANDLE rtv = resourceManager->GetPostProcessRtvHandle();
+        CD3DX12_CPU_DESCRIPTOR_HANDLE dsv = deviceContext->GetDSVHandle();
+
+        ExecuteTransparentNoBarrier(
+            deviceContext,
+            resourceManager,
+            pipelineManager,
+            frameIndex,
+            viewport,
+            scissorRect,
+            visibleInstances,
+            transparentStartIndex,
+            rtv,
+            dsv);
+    }
+
+    static void ExecuteTransparentNoBarrier(
+        RenderDevice* deviceContext,
+        ResourceManager* resourceManager,
+        PipelineManager* pipelineManager,
+        int frameIndex,
+        const D3D12_VIEWPORT& viewport,
+        const D3D12_RECT& scissorRect,
+        const std::vector<ModelInstance*>& visibleInstances,
+        size_t transparentStartIndex,
+        D3D12_CPU_DESCRIPTOR_HANDLE rtv,
+        D3D12_CPU_DESCRIPTOR_HANDLE dsv)
+    {
         // ====================================================================================================
         // Transparent Object Pass (Only if visible)
         // ====================================================================================================
@@ -184,8 +219,6 @@ public:
 
         auto cmdList = deviceContext->GetCommandList();
 
-        CD3DX12_CPU_DESCRIPTOR_HANDLE rtv = resourceManager->GetPostProcessRtvHandle();
-        CD3DX12_CPU_DESCRIPTOR_HANDLE dsv = deviceContext->GetDSVHandle();
         cmdList->OMSetRenderTargets(1, &rtv, FALSE, &dsv);
         cmdList->RSSetViewports(1, &viewport);
         cmdList->RSSetScissorRects(1, &scissorRect);
@@ -222,6 +255,63 @@ public:
             BindAndDrawSingleInstance(pipelineManager->GetTransparentPSO_DepthOnly(), false);
             BindAndDrawSingleInstance(pipelineManager->GetTransparentPSO_Color(), true);
         }
+    }
+
+    static RDGPassHandle AddTransparentToGraph(
+        RDGBuilder& graph,
+        RenderDevice* deviceContext,
+        ResourceManager* resourceManager,
+        PipelineManager* pipelineManager,
+        int frameIndex,
+        const D3D12_VIEWPORT& viewport,
+        const D3D12_RECT& scissorRect,
+        const std::vector<ModelInstance*>& visibleInstances,
+        size_t& transparentStartIndex,
+        const TransparentInput& input = {})
+    {
+        RDGTextureHandle sceneColor = input.sceneColor;
+        if (!sceneColor.IsValid())
+        {
+            sceneColor = graph.RegisterExternalTexture(
+                resourceManager->GetPostProcessRT(),
+                D3D12_RESOURCE_STATE_RENDER_TARGET,
+                D3D12_RESOURCE_STATE_RENDER_TARGET,
+                "PostProcessRT");
+        }
+        graph.MarkTextureAsOutput(sceneColor);
+
+        RDGTextureHandle depth = input.depth;
+        if (!depth.IsValid())
+        {
+            depth = graph.RegisterExternalTexture(
+                deviceContext->GetDepthStencilBuffer(),
+                D3D12_RESOURCE_STATE_DEPTH_WRITE,
+                D3D12_RESOURCE_STATE_DEPTH_WRITE,
+                "SceneDepth");
+        }
+
+        RDGPassParameters params;
+        params.WriteRTV(sceneColor);
+        params.WriteDSV(depth);
+
+        return graph.AddPass(
+            "Transparent",
+            ERDGPassFlags::Graphics,
+            params,
+            [=, &transparentStartIndex](ID3D12GraphicsCommandList* cmdList)
+            {
+                ExecuteTransparentNoBarrier(
+                    deviceContext,
+                    resourceManager,
+                    pipelineManager,
+                    frameIndex,
+                    viewport,
+                    scissorRect,
+                    visibleInstances,
+                    transparentStartIndex,
+                    resourceManager->GetPostProcessRtvHandle(),
+                    deviceContext->GetDSVHandle());
+            });
     }
 };
 

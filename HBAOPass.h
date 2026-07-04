@@ -15,6 +15,8 @@ public:
     struct Output
     {
         RDGTextureHandle blurredTexture;
+        RDGPassHandle rawPass;
+        RDGPassHandle blurPass;
     };
 
     struct Input
@@ -280,7 +282,7 @@ public:
         rawParams.ReadSRV(gbufferNormal);
         rawParams.WriteRTV(hbaoRaw);
 
-        graph.AddPass(
+        RDGPassHandle rawPass = graph.AddPass(
             "HBAORaw",
             ERDGPassFlags::Graphics,
             rawParams,
@@ -307,7 +309,7 @@ public:
         blurParams.ReadSRV(gbufferNormal);
         blurParams.WriteRTV(hbaoBlurred);
 
-        graph.AddPass(
+        RDGPassHandle blurPass = graph.AddPass(
             "HBAOBlur",
             ERDGPassFlags::Graphics,
             blurParams,
@@ -323,7 +325,7 @@ public:
                     gbufferNormalSrvIdx);
             });
 
-        return { hbaoBlurred };
+        return { hbaoBlurred, rawPass, blurPass };
     }
 
     static void ExecuteRDG(

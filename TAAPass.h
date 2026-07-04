@@ -11,6 +11,20 @@
 class TAAPass
 {
 public:
+    struct Input
+    {
+        RDGTextureHandle color;
+        RDGTextureHandle depth;
+    };
+
+    struct Output
+    {
+        RDGTextureHandle historyTexture;
+        UINT historySrvIdx = 0;
+        int historyIndex = 0;
+        RDGPassHandle pass;
+    };
+
     static UINT Execute(
         RenderDevice* deviceContext,
         ResourceManager* resourceManager,
@@ -181,6 +195,83 @@ public:
         resourceManager->FlipTAAHistoryIndex();
 
         return resourceManager->GetTAAHistorySrvIdx(taaCurrentIdx);
+    }
+
+    static Output AddToGraph(
+        RDGBuilder& graph,
+        RenderDevice* deviceContext,
+        ResourceManager* resourceManager,
+        PipelineManager* pipelineManager,
+        const DirectX::XMFLOAT4X4& currentInvViewProj,
+        const DirectX::XMFLOAT4X4& prevViewProj,
+        float jitterX, float jitterY,
+        int frameIndex, int width, int height,
+        bool historyValid,
+        const Input& input = {})
+    {
+        int taaCurrentIdx = resourceManager->GetTAACurrentHistoryIdx();
+
+        RDGTextureHandle color = input.color;
+        if (!color.IsValid())
+        {
+            color = graph.RegisterExternalTexture(
+                resourceManager->GetPostProcessRT(),
+                D3D12_RESOURCE_STATE_RENDER_TARGET,
+                D3D12_RESOURCE_STATE_RENDER_TARGET,
+                "PostProcessRT");
+        }
+
+        RDGTextureHandle currentHistoryTarget = graph.RegisterExternalTexture(
+            resourceManager->GetTAAHistoryRT(taaCurrentIdx),
+            D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+            D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+            "TAACurrentHistory");
+        graph.MarkTextureAsOutput(currentHistoryTarget);
+
+        RDGTextureHandle previousHistory = graph.RegisterExternalTexture(
+            resourceManager->GetTAAHistoryRT(1 - taaCurrentIdx),
+            D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+            D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+            "TAAPreviousHistory");
+
+        RDGTextureHandle depth = input.depth;
+        if (!depth.IsValid())
+        {
+            depth = graph.RegisterExternalTexture(
+                deviceContext->GetDepthStencilBuffer(),
+                D3D12_RESOURCE_STATE_DEPTH_WRITE,
+                D3D12_RESOURCE_STATE_DEPTH_WRITE,
+                "SceneDepth");
+        }
+
+        RDGPassParameters params;
+        params.ReadSRV(color);
+        params.ReadSRV(previousHistory);
+        params.ReadSRV(depth);
+        params.WriteRTV(currentHistoryTarget);
+
+        RDGPassHandle pass = graph.AddPass(
+            "TAA",
+            ERDGPassFlags::Graphics,
+            params,
+            [=](ID3D12GraphicsCommandList* cmdList)
+            {
+                ExecuteNoBarrier(
+                    deviceContext,
+                    resourceManager,
+                    pipelineManager,
+                    currentInvViewProj,
+                    prevViewProj,
+                    jitterX,
+                    jitterY,
+                    frameIndex,
+                    width,
+                    height,
+                    historyValid,
+                    taaCurrentIdx);
+            });
+
+        return { currentHistoryTarget, resourceManager->GetTAAHistorySrvIdx(taaCurrentIdx), taaCurrentIdx, pass };
     }
 };
 

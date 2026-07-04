@@ -549,7 +549,7 @@ void D3D12App::Update()
     }
 }
 
-void D3D12App::BeginFrame()
+void D3D12App::BeginFrame(bool backBufferHandledByFrameGraph)
 {
     m_resourceManager.ResetTransientSrvUavDescriptors(frameIndex);
     m_resourceManager.ResetRDGTransientResources(frameIndex);
@@ -558,11 +558,14 @@ void D3D12App::BeginFrame()
     m_deviceContext.GetCommandAllocator(frameIndex)->Reset();
     m_deviceContext.GetCommandList()->Reset(m_deviceContext.GetCommandAllocator(frameIndex), m_pipelineManager.GetPBR_PSO());
 
-    ID3D12Resource* currentBuffer = m_deviceContext.GetRenderTarget(frameIndex);
+    if (!backBufferHandledByFrameGraph)
+    {
+        ID3D12Resource* currentBuffer = m_deviceContext.GetRenderTarget(frameIndex);
 
-    // Define the required framebuffers as 'canvases' rather than 'presentation states'
-    CD3DX12_RESOURCE_BARRIER b = CD3DX12_RESOURCE_BARRIER::Transition(currentBuffer, D3D12_RESOURCE_STATE_PRESENT, D3D12_RESOURCE_STATE_RENDER_TARGET);
-    m_deviceContext.GetCommandList()->ResourceBarrier(1, &b);
+        // Define the required framebuffers as 'canvases' rather than 'presentation states'
+        CD3DX12_RESOURCE_BARRIER b = CD3DX12_RESOURCE_BARRIER::Transition(currentBuffer, D3D12_RESOURCE_STATE_PRESENT, D3D12_RESOURCE_STATE_RENDER_TARGET);
+        m_deviceContext.GetCommandList()->ResourceBarrier(1, &b);
+    }
 
     // Bind the Render Target View (RTV) and Depth Stencil View (DSV) for the current frame
     CD3DX12_CPU_DESCRIPTOR_HANDLE rtv = m_resourceManager.GetPostProcessRtvHandle();
@@ -579,12 +582,15 @@ void D3D12App::BeginFrame()
     m_deviceContext.GetCommandList()->RSSetScissorRects(1, &scissorRect);
 }
 
-void D3D12App::EndFrame()
+void D3D12App::EndFrame(bool backBufferAlreadyPresent)
 {
-    // Define the required framebuffers as 'presentation states' rather than 'canvases'
-    ID3D12Resource* currentBuffer = m_deviceContext.GetRenderTarget(frameIndex);
-    CD3DX12_RESOURCE_BARRIER p = CD3DX12_RESOURCE_BARRIER::Transition(currentBuffer, D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_PRESENT);
-    m_deviceContext.GetCommandList()->ResourceBarrier(1, &p);
+    if (!backBufferAlreadyPresent)
+    {
+        // Define the required framebuffers as 'presentation states' rather than 'canvases'
+        ID3D12Resource* currentBuffer = m_deviceContext.GetRenderTarget(frameIndex);
+        CD3DX12_RESOURCE_BARRIER p = CD3DX12_RESOURCE_BARRIER::Transition(currentBuffer, D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_PRESENT);
+        m_deviceContext.GetCommandList()->ResourceBarrier(1, &p);
+    }
 
     // Close the Command List to finalize recording, no further commands can be added until the next Reset
     // CPU recording is complete, but the GPU has yet to begin execution; therefore
@@ -594,14 +600,17 @@ void D3D12App::EndFrame()
 
 void D3D12App::Render()
 {
-    BeginFrame();
-
-    ShadowPass::ExecuteRDG(&m_deviceContext, &m_resourceManager, &m_pipelineManager, frameIndex, g_shadowVisibleInstances, g_visibleInstances.size());
+    const bool backBufferHandledByFrameGraph = m_settingsManager.pipeline.useDeferred;
+    BeginFrame(backBufferHandledByFrameGraph);
 
     size_t transparentIdx = 0;
+    bool taaHandledByDeferredGraph = false;
+    bool postProcessHandledByDeferredGraph = false;
 
     if (!m_settingsManager.pipeline.useDeferred)
     {
+        ShadowPass::ExecuteRDG(&m_deviceContext, &m_resourceManager, &m_pipelineManager, frameIndex, g_shadowVisibleInstances, g_visibleInstances.size());
+
         transparentIdx = PBRPass::ExecuteOpaque(&m_deviceContext, &m_resourceManager, &m_pipelineManager, frameIndex, viewport, scissorRect, g_visibleInstances);
     }
     else
@@ -609,6 +618,15 @@ void D3D12App::Render()
         RDGBuilder deferredGraph(&m_deviceContext, "DeferredFrameGraph");
 
         size_t transparentStartIndex = g_visibleInstances.size();
+
+        ShadowPass::Output shadowOutput = ShadowPass::AddToGraph(
+            deferredGraph,
+            &m_deviceContext,
+            &m_resourceManager,
+            &m_pipelineManager,
+            frameIndex,
+            g_shadowVisibleInstances,
+            g_visibleInstances.size());
 
         GBufferPass::Output gbufferOutput = GBufferPass::AddToGraph(
             deferredGraph,
@@ -633,6 +651,8 @@ void D3D12App::Render()
             Height,
             frameIndex,
             { gbufferOutput.depth, gbufferOutput.normal });
+        deferredGraph.AddPassDependencies(hbaoOutput.rawPass, { gbufferOutput.pass });
+        deferredGraph.AddPassDependencies(hbaoOutput.blurPass, { hbaoOutput.rawPass });
 
         DeferredLightingPass::Input deferredInput = {};
         deferredInput.gbufferAlbedo = gbufferOutput.albedo;
@@ -641,6 +661,7 @@ void D3D12App::Render()
         deferredInput.gbufferEmissive = gbufferOutput.emissive;
         deferredInput.depth = gbufferOutput.depth;
         deferredInput.hbaoBlurred = hbaoOutput.blurredTexture;
+        deferredInput.shadowMap = shadowOutput.shadowMap;
 
         DeferredLightingPass::Output deferredOutput = DeferredLightingPass::AddToGraph(
             deferredGraph,
@@ -652,8 +673,10 @@ void D3D12App::Render()
             Height,
             frameIndex,
             deferredInput);
+        deferredGraph.AddPassDependencies(deferredOutput.pass, { shadowOutput.pass, hbaoOutput.blurPass });
+        RDGPassHandle sceneColorProducer = deferredOutput.pass;
 
-        SkyboxPass::AddToGraph(
+        RDGPassHandle skyboxPass = SkyboxPass::AddToGraph(
             deferredGraph,
             &m_deviceContext,
             &m_resourceManager,
@@ -664,10 +687,83 @@ void D3D12App::Render()
             Width,
             Height,
             { deferredOutput.sceneColor, gbufferOutput.depth });
+        deferredGraph.AddPassDependencies(skyboxPass, { sceneColorProducer });
+        sceneColorProducer = skyboxPass;
+
+        RDGPassHandle transparentPass = PBRPass::AddTransparentToGraph(
+            deferredGraph,
+            &m_deviceContext,
+            &m_resourceManager,
+            &m_pipelineManager,
+            frameIndex,
+            viewport,
+            scissorRect,
+            g_visibleInstances,
+            transparentStartIndex,
+            { deferredOutput.sceneColor, gbufferOutput.depth });
+        deferredGraph.AddPassDependencies(transparentPass, { sceneColorProducer });
+        sceneColorProducer = transparentPass;
+
+        if (m_useTAA)
+        {
+            TAAPass::Output taaOutput = TAAPass::AddToGraph(
+                deferredGraph,
+                &m_deviceContext,
+                &m_resourceManager,
+                &m_pipelineManager,
+                m_invViewProjMat,
+                m_prevViewProj,
+                m_jitterX,
+                m_jitterY,
+                frameIndex,
+                Width,
+                Height,
+                m_taaHistoryValid,
+                { deferredOutput.sceneColor, gbufferOutput.depth });
+            deferredGraph.AddPassDependencies(taaOutput.pass, { sceneColorProducer });
+            sceneColorProducer = taaOutput.pass;
+
+            RDGPassHandle postProcessPass = PostProcessPass::AddFinalToGraph(
+                deferredGraph,
+                &m_deviceContext,
+                &m_resourceManager,
+                &m_pipelineManager,
+                frameIndex,
+                viewport,
+                scissorRect,
+                taaOutput.historySrvIdx,
+                taaOutput.historyTexture);
+            deferredGraph.AddPassDependencies(postProcessPass, { sceneColorProducer });
+
+            taaHandledByDeferredGraph = true;
+            postProcessHandledByDeferredGraph = true;
+        }
+        else
+        {
+            RDGPassHandle postProcessPass = PostProcessPass::AddFinalToGraph(
+                deferredGraph,
+                &m_deviceContext,
+                &m_resourceManager,
+                &m_pipelineManager,
+                frameIndex,
+                viewport,
+                scissorRect,
+                m_resourceManager.GetPostProcessSrvIdx(),
+                deferredOutput.sceneColor);
+            deferredGraph.AddPassDependencies(postProcessPass, { sceneColorProducer });
+
+            postProcessHandledByDeferredGraph = true;
+        }
 
         std::vector<ComPtr<ID3D12Resource>> rdgTransientResources;
         deferredGraph.ExecuteAndCollectOwnedResources(m_deviceContext.GetCommandList(), rdgTransientResources);
         m_resourceManager.KeepRDGResourcesAlive(frameIndex, rdgTransientResources);
+
+        if (taaHandledByDeferredGraph)
+        {
+            m_resourceManager.FlipTAAHistoryIndex();
+            m_taaHistoryValid = true;
+        }
 
         transparentIdx = transparentStartIndex;
     }
@@ -675,28 +771,31 @@ void D3D12App::Render()
     if (!m_settingsManager.pipeline.useDeferred)
     {
         SkyboxPass::Execute(&m_deviceContext, &m_resourceManager, &m_pipelineManager, camera, viewport, scissorRect, Width, Height);
-    }
 
-    PBRPass::ExecuteTransparent(&m_deviceContext, &m_resourceManager, &m_pipelineManager, frameIndex, viewport, scissorRect, g_visibleInstances, transparentIdx);
+        PBRPass::ExecuteTransparent(&m_deviceContext, &m_resourceManager, &m_pipelineManager, frameIndex, viewport, scissorRect, g_visibleInstances, transparentIdx);
+    }
 
     UINT finalPostInputSRV = m_resourceManager.GetPostProcessSrvIdx();
 
-    if (m_useTAA)
+    if (m_useTAA && !taaHandledByDeferredGraph)
     {
         finalPostInputSRV = TAAPass::ExecuteRDG(&m_deviceContext, &m_resourceManager, &m_pipelineManager, m_invViewProjMat, m_prevViewProj, m_jitterX, m_jitterY, frameIndex, Width, Height, m_taaHistoryValid);
         m_taaHistoryValid = true;
     }
 
-    if (!m_useTAA)
+    if (!postProcessHandledByDeferredGraph)
     {
-        PostProcessPass::ExecuteRDG(&m_deviceContext, &m_resourceManager, &m_pipelineManager, frameIndex, viewport, scissorRect, finalPostInputSRV);
-    }
-    else
-    {
-        PostProcessPass::Execute(&m_deviceContext, &m_resourceManager, &m_pipelineManager, frameIndex, viewport, scissorRect, finalPostInputSRV);
+        if (!m_useTAA)
+        {
+            PostProcessPass::ExecuteRDG(&m_deviceContext, &m_resourceManager, &m_pipelineManager, frameIndex, viewport, scissorRect, finalPostInputSRV);
+        }
+        else
+        {
+            PostProcessPass::Execute(&m_deviceContext, &m_resourceManager, &m_pipelineManager, frameIndex, viewport, scissorRect, finalPostInputSRV);
+        }
     }
 
-    EndFrame();
+    EndFrame(postProcessHandledByDeferredGraph);
 
     ID3D12CommandList* lists[] = { m_deviceContext.GetCommandList() };
     // Submit recorded rendering commands to the GPU for execution

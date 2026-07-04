@@ -26,19 +26,19 @@ D:\项目\LearnDirectX\Settings_Manager.h(211,55): warning C4101: “e”: 未�
 D:\项目\LearnDirectX\Settings_Manager.h(236,55): warning C4101: “e”: 未引用的局部变量
   (编译源文件“PBR_Render.cpp”)
   
-D:\项目\LearnDirectX\ShadowPass.h(123,47): warning C4267: “=”: 从“size_t”转换到“UINT”，可能丢失数据
+D:\项目\LearnDirectX\ShadowPass.h(129,47): warning C4267: “=”: 从“size_t”转换到“UINT”，可能丢失数据
   (编译源文件“PBR_Render.cpp”)
   
-D:\项目\LearnDirectX\PBRPass.h(141,55): warning C4267: “=”: 从“size_t”转换到“UINT”，可能丢失数据
+D:\项目\LearnDirectX\PBRPass.h(148,55): warning C4267: “=”: 从“size_t”转换到“UINT”，可能丢失数据
   (编译源文件“PBR_Render.cpp”)
   
-D:\项目\LearnDirectX\GBufferPass.h(176,47): warning C4267: “=”: 从“size_t”转换到“UINT”，可能丢失数据
+D:\项目\LearnDirectX\GBufferPass.h(177,47): warning C4267: “=”: 从“size_t”转换到“UINT”，可能丢失数据
   (编译源文件“PBR_Render.cpp”)
   
   正在生成代码
-  29 of 7062 functions ( 0.4%) were compiled, the rest were copied from previous compilation.
-    2 functions were new in current compilation
-    154 functions had inline decision re-evaluated but remain unchanged
+  140 of 7255 functions ( 1.9%) were compiled, the rest were copied from previous compilation.
+    90 functions were new in current compilation
+    257 functions had inline decision re-evaluated but remain unchanged
   已完成代码的生成
   LearnDirectX.vcxproj -> D:\项目\LearnDirectX\x64\Release\LearnDirectX.exe
   'pwsh.exe' 不是内部或外部命令，也不是可运行的程序

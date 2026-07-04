@@ -122,6 +122,80 @@ public:
 
         graph.Execute(deviceContext->GetCommandList());
     }
+
+    static RDGPassHandle AddToGraph(
+        RDGBuilder& graph,
+        RenderDevice* deviceContext,
+        ResourceManager* resourceManager,
+        PipelineManager* pipelineManager,
+        int frameIndex,
+        const D3D12_VIEWPORT& viewport,
+        const D3D12_RECT& scissorRect,
+        UINT inputSrvIdx,
+        RDGTextureHandle inputTexture = {},
+        D3D12_RESOURCE_STATES backBufferInitialState = D3D12_RESOURCE_STATE_RENDER_TARGET,
+        D3D12_RESOURCE_STATES backBufferFinalState = D3D12_RESOURCE_STATE_RENDER_TARGET)
+    {
+        if (!inputTexture.IsValid())
+        {
+            inputTexture = graph.RegisterExternalTexture(
+                resourceManager->GetPostProcessRT(),
+                D3D12_RESOURCE_STATE_RENDER_TARGET,
+                D3D12_RESOURCE_STATE_RENDER_TARGET,
+                "PostProcessRT");
+        }
+
+        RDGTextureHandle backBuffer = graph.RegisterExternalTextureOutput(
+            deviceContext->GetRenderTarget(frameIndex),
+            backBufferInitialState,
+            backBufferFinalState,
+            "BackBuffer");
+
+        RDGPassParameters postParams;
+        postParams.ReadSRV(inputTexture);
+        postParams.WriteRTV(backBuffer);
+
+        return graph.AddPass(
+            "PostProcess",
+            ERDGPassFlags::Graphics,
+            postParams,
+            [=](ID3D12GraphicsCommandList* cmdList)
+            {
+                ExecuteNoBarrier(
+                    deviceContext,
+                    resourceManager,
+                    pipelineManager,
+                    frameIndex,
+                    viewport,
+                    scissorRect,
+                    inputSrvIdx);
+            });
+    }
+
+    static RDGPassHandle AddFinalToGraph(
+        RDGBuilder& graph,
+        RenderDevice* deviceContext,
+        ResourceManager* resourceManager,
+        PipelineManager* pipelineManager,
+        int frameIndex,
+        const D3D12_VIEWPORT& viewport,
+        const D3D12_RECT& scissorRect,
+        UINT inputSrvIdx,
+        RDGTextureHandle inputTexture = {})
+    {
+        return AddToGraph(
+            graph,
+            deviceContext,
+            resourceManager,
+            pipelineManager,
+            frameIndex,
+            viewport,
+            scissorRect,
+            inputSrvIdx,
+            inputTexture,
+            D3D12_RESOURCE_STATE_PRESENT,
+            D3D12_RESOURCE_STATE_PRESENT);
+    }
 };
 
 #endif

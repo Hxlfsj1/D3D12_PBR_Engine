@@ -21,6 +21,7 @@ public:
         RDGTextureHandle orm;
         RDGTextureHandle emissive;
         RDGTextureHandle depth;
+        RDGPassHandle pass;
     };
 
     struct RtvHandles
@@ -295,7 +296,7 @@ public:
         params.WriteRTV(gbufferEmissive);
         params.WriteDSV(depth);
 
-        graph.AddPass(
+        RDGPassHandle pass = graph.AddPass(
             "GBuffer",
             ERDGPassFlags::Graphics,
             params,
@@ -312,7 +313,7 @@ public:
                     rtvHandles);
             });
 
-        return { gbufferAlbedo, gbufferNormal, gbufferORM, gbufferEmissive, depth };
+        return { gbufferAlbedo, gbufferNormal, gbufferORM, gbufferEmissive, depth, pass };
     }
 
     static size_t ExecuteRDG(

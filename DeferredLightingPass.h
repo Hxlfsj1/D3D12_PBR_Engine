@@ -15,6 +15,7 @@ public:
     struct Output
     {
         RDGTextureHandle sceneColor;
+        RDGPassHandle pass;
     };
 
     struct Input
@@ -25,6 +26,7 @@ public:
         RDGTextureHandle gbufferEmissive;
         RDGTextureHandle depth;
         RDGTextureHandle hbaoBlurred;
+        RDGTextureHandle shadowMap;
     };
 
     struct SrvIndices
@@ -250,11 +252,15 @@ public:
             srvIndices.hbao = transientHbaoBlurredSrvIdx;
         }
 
-        RDGTextureHandle shadowMap = graph.RegisterExternalTexture(
-            resourceManager->GetShadowMap(),
-            D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
-            D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
-            "ShadowMap");
+        RDGTextureHandle shadowMap = input.shadowMap;
+        if (!shadowMap.IsValid())
+        {
+            shadowMap = graph.RegisterExternalTexture(
+                resourceManager->GetShadowMap(),
+                D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+                D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+                "ShadowMap");
+        }
 
         RDGTextureHandle sceneColor = graph.RegisterExternalTexture(
             resourceManager->GetPostProcessRT(),
@@ -273,7 +279,7 @@ public:
         params.ReadSRV(shadowMap);
         params.WriteRTV(sceneColor);
 
-        graph.AddPass(
+        RDGPassHandle pass = graph.AddPass(
             "DeferredLighting",
             ERDGPassFlags::Graphics,
             params,
@@ -290,7 +296,7 @@ public:
                     srvIndices);
             });
 
-        return { sceneColor };
+        return { sceneColor, pass };
     }
 
     static void ExecuteRDG(

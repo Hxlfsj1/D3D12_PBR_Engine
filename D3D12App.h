@@ -42,12 +42,12 @@ private:
     void Update();
 
     // Render passes
-    void BeginFrame();
+    void BeginFrame(bool backBufferHandledByFrameGraph);
     void DrawShadowMap();
     void DrawPBRModel();
     void DrawSkybox();
     void DrawPostProcess();
-    void EndFrame();
+    void EndFrame(bool backBufferAlreadyPresent);
 
     void Render();
     void WaitForPreviousFrame();

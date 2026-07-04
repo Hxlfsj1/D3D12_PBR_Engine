@@ -5,6 +5,7 @@
 
 #include <cstdint>
 #include <functional>
+#include <initializer_list>
 #include <string>
 #include <vector>
 #include <sstream>
@@ -75,6 +76,16 @@ struct RDGBufferAccess
 {
     RDGBufferHandle buffer;
     ERDGAccess access = ERDGAccess::Unknown;
+};
+
+struct RDGPassHandle
+{
+    uint32_t index = UINT32_MAX;
+
+    bool IsValid() const
+    {
+        return index != UINT32_MAX;
+    }
 };
 
 struct RDGPassParameters
@@ -218,6 +229,44 @@ struct RDGBufferExtraction
     Microsoft::WRL::ComPtr<ID3D12Resource>* output = nullptr;
 };
 
+struct RDGCompileStats
+{
+    uint32_t totalPassCount = 0;
+    uint32_t livePassCount = 0;
+    uint32_t culledPassCount = 0;
+    uint32_t compiledPassCount = 0;
+    uint32_t textureCount = 0;
+    uint32_t bufferCount = 0;
+    uint32_t externalTextureCount = 0;
+    uint32_t externalBufferCount = 0;
+    uint32_t transientTextureCount = 0;
+    uint32_t transientBufferCount = 0;
+    uint32_t passBarrierCount = 0;
+    uint32_t finalBarrierCount = 0;
+    uint32_t transitionBarrierCount = 0;
+    uint32_t uavBarrierCount = 0;
+    uint32_t parallelBatchCount = 0;
+    uint32_t maxParallelBatchSize = 0;
+    bool compileSucceeded = false;
+};
+
+struct RDGCompiledPassInfo
+{
+    uint32_t passIndex = UINT32_MAX;
+    uint32_t dependencyLevel = UINT32_MAX;
+    bool live = false;
+    bool culled = false;
+    std::string name;
+};
+
+struct RDGCompileSnapshot
+{
+    RDGCompileStats stats;
+    std::vector<RDGCompiledPassInfo> passes;
+    std::vector<uint32_t> compiledPassOrder;
+    std::vector<std::vector<uint32_t>> parallelPassBatches;
+};
+
 class RDGBuilder
 {
 public:
@@ -271,6 +320,17 @@ public:
         RDGTextureHandle handle;
         handle.index = static_cast<uint32_t>(m_textures.size());
         m_textures.push_back(texture);
+        return handle;
+    }
+
+    RDGTextureHandle RegisterExternalTextureOutput(
+        ID3D12Resource* resource,
+        D3D12_RESOURCE_STATES initialState,
+        D3D12_RESOURCE_STATES finalState,
+        const char* name)
+    {
+        RDGTextureHandle handle = RegisterExternalTexture(resource, initialState, finalState, name);
+        MarkTextureAsOutput(handle);
         return handle;
     }
 
@@ -500,6 +560,16 @@ public:
         }
 
         return &m_buffers[buffer.index].desc;
+    }
+
+    const RDGCompileStats& GetCompileStats() const
+    {
+        return m_compileStats;
+    }
+
+    const RDGCompileSnapshot& GetLastCompileSnapshot() const
+    {
+        return m_lastCompileSnapshot;
     }
 
     void CollectOwnedResources(std::vector<Microsoft::WRL::ComPtr<ID3D12Resource>>& outResources) const
@@ -874,12 +944,18 @@ public:
         return true;
     }
 
-    void AddPass(
+    RDGPassHandle AddPass(
         const char* name,
         ERDGPassFlags flags,
         const RDGPassParameters& parameters,
         std::function<void(ID3D12GraphicsCommandList*)> execute)
     {
+        if (m_executed)
+        {
+            TraceLifecycleWarning("AddPass called after Execute");
+            return {};
+        }
+
         const uint32_t passIndex = static_cast<uint32_t>(m_passes.size());
 
         RDGPass pass;
@@ -981,10 +1057,64 @@ public:
         }
 
         m_passes.push_back(std::move(pass));
+
+        RDGPassHandle handle;
+        handle.index = passIndex;
+        return handle;
+    }
+
+    void AddPassDependency(RDGPassHandle pass, RDGPassHandle dependency)
+    {
+        if (!pass.IsValid() ||
+            !dependency.IsValid() ||
+            pass.index >= m_passes.size() ||
+            dependency.index >= m_passes.size() ||
+            pass.index == dependency.index)
+        {
+            return;
+        }
+
+        AddPassDependency(m_passes[pass.index], dependency.index);
+    }
+
+    void AddPassDependencies(
+        RDGPassHandle pass,
+        std::initializer_list<RDGPassHandle> dependencies)
+    {
+        for (RDGPassHandle dependency : dependencies)
+        {
+            AddPassDependency(pass, dependency);
+        }
+    }
+
+    RDGPassHandle AddPassAfter(
+        RDGPassHandle dependency,
+        const char* name,
+        ERDGPassFlags flags,
+        const RDGPassParameters& parameters,
+        std::function<void(ID3D12GraphicsCommandList*)> execute)
+    {
+        RDGPassHandle pass = AddPass(name, flags, parameters, execute);
+        AddPassDependency(pass, dependency);
+        return pass;
     }
 
     void Execute(ID3D12GraphicsCommandList* cmdList)
     {
+        if (m_executed)
+        {
+            TraceLifecycleWarning("Execute called more than once");
+            return;
+        }
+
+        if (cmdList == nullptr)
+        {
+            TraceLifecycleWarning("Execute called with null command list");
+            return;
+        }
+
+        m_executed = true;
+
 #if defined(_DEBUG)
         if constexpr (EnableValidation)
         {
@@ -992,9 +1122,11 @@ public:
         }
 #endif
 
-        CompileGraph();
+        const bool compileSucceeded = CompileGraph();
         BuildResourceLifetimes();
         BuildBarrierPlan();
+        BuildCompileStats(compileSucceeded);
+        BuildCompileSnapshot();
 
 #if defined(_DEBUG)
         if constexpr (EnableGraphDump)
@@ -1027,6 +1159,8 @@ public:
         m_passBarriers.clear();
         m_livePasses.clear();
         m_compiledPassOrder.clear();
+        m_passDependencyLevels.clear();
+        m_parallelPassBatches.clear();
         m_passes.clear();
         m_textureExtractions.clear();
         m_bufferExtractions.clear();
@@ -1218,9 +1352,12 @@ private:
     {
         m_livePasses.clear();
         m_compiledPassOrder.clear();
+        m_passDependencyLevels.clear();
+        m_parallelPassBatches.clear();
 
         const uint32_t passCount = static_cast<uint32_t>(m_passes.size());
         const uint32_t livePassCount = CullUnusedPasses(passCount);
+        m_passDependencyLevels.assign(passCount, UINT32_MAX);
 
         std::vector<uint32_t> dependencyCount(passCount, 0);
         std::vector<std::vector<uint32_t>> dependents(passCount);
@@ -1250,6 +1387,7 @@ private:
         {
             if (m_livePasses[passIndex] && dependencyCount[passIndex] == 0)
             {
+                m_passDependencyLevels[passIndex] = 0;
                 readyPasses.push_back(passIndex);
             }
         }
@@ -1258,9 +1396,17 @@ private:
         {
             uint32_t passIndex = readyPasses[readyIndex];
             m_compiledPassOrder.push_back(passIndex);
+            const uint32_t passLevel = m_passDependencyLevels[passIndex] == UINT32_MAX ? 0 : m_passDependencyLevels[passIndex];
 
             for (uint32_t dependentIndex : dependents[passIndex])
             {
+                const uint32_t dependentLevel = passLevel + 1;
+                if (m_passDependencyLevels[dependentIndex] == UINT32_MAX ||
+                    m_passDependencyLevels[dependentIndex] < dependentLevel)
+                {
+                    m_passDependencyLevels[dependentIndex] = dependentLevel;
+                }
+
                 if (dependencyCount[dependentIndex] > 0)
                 {
                     --dependencyCount[dependentIndex];
@@ -1275,15 +1421,18 @@ private:
 
         if (m_compiledPassOrder.size() == livePassCount)
         {
+            BuildParallelPassBatches();
             return true;
         }
 
         m_compiledPassOrder.clear();
+        m_passDependencyLevels.assign(passCount, UINT32_MAX);
 
         for (uint32_t passIndex = 0; passIndex < passCount; ++passIndex)
         {
             if (m_livePasses[passIndex])
             {
+                m_passDependencyLevels[passIndex] = static_cast<uint32_t>(m_compiledPassOrder.size());
                 m_compiledPassOrder.push_back(passIndex);
             }
         }
@@ -1292,7 +1441,139 @@ private:
         OutputDebugStringA("[RDG][Compile] Dependency cycle detected, falling back to AddPass order.\n");
 #endif
 
+        BuildParallelPassBatches();
         return false;
+    }
+
+    void BuildParallelPassBatches()
+    {
+        m_parallelPassBatches.clear();
+
+        for (uint32_t passIndex : m_compiledPassOrder)
+        {
+            if (passIndex >= m_passDependencyLevels.size() ||
+                m_passDependencyLevels[passIndex] == UINT32_MAX)
+            {
+                continue;
+            }
+
+            const uint32_t level = m_passDependencyLevels[passIndex];
+            if (level >= m_parallelPassBatches.size())
+            {
+                m_parallelPassBatches.resize(static_cast<size_t>(level) + 1);
+            }
+
+            m_parallelPassBatches[level].push_back(passIndex);
+        }
+    }
+
+    void BuildCompileStats(bool compileSucceeded)
+    {
+        m_compileStats = {};
+        m_compileStats.compileSucceeded = compileSucceeded;
+        m_compileStats.totalPassCount = static_cast<uint32_t>(m_passes.size());
+        m_compileStats.compiledPassCount = static_cast<uint32_t>(m_compiledPassOrder.size());
+        m_compileStats.textureCount = static_cast<uint32_t>(m_textures.size());
+        m_compileStats.bufferCount = static_cast<uint32_t>(m_buffers.size());
+        m_compileStats.parallelBatchCount = static_cast<uint32_t>(m_parallelPassBatches.size());
+
+        for (bool isLive : m_livePasses)
+        {
+            if (isLive)
+            {
+                ++m_compileStats.livePassCount;
+            }
+        }
+
+        m_compileStats.culledPassCount = m_compileStats.totalPassCount - m_compileStats.livePassCount;
+
+        for (const RDGTexture& texture : m_textures)
+        {
+            if (texture.external)
+            {
+                ++m_compileStats.externalTextureCount;
+            }
+            else
+            {
+                ++m_compileStats.transientTextureCount;
+            }
+        }
+
+        for (const RDGBuffer& buffer : m_buffers)
+        {
+            if (buffer.external)
+            {
+                ++m_compileStats.externalBufferCount;
+            }
+            else
+            {
+                ++m_compileStats.transientBufferCount;
+            }
+        }
+
+        for (const std::vector<D3D12_RESOURCE_BARRIER>& barriers : m_passBarriers)
+        {
+            m_compileStats.passBarrierCount += static_cast<uint32_t>(barriers.size());
+
+            for (const D3D12_RESOURCE_BARRIER& barrier : barriers)
+            {
+                CountBarrierType(barrier, m_compileStats);
+            }
+        }
+
+        m_compileStats.finalBarrierCount = static_cast<uint32_t>(m_finalBarriers.size());
+        for (const D3D12_RESOURCE_BARRIER& barrier : m_finalBarriers)
+        {
+            CountBarrierType(barrier, m_compileStats);
+        }
+
+        for (const std::vector<uint32_t>& batch : m_parallelPassBatches)
+        {
+            const uint32_t batchSize = static_cast<uint32_t>(batch.size());
+            if (m_compileStats.maxParallelBatchSize < batchSize)
+            {
+                m_compileStats.maxParallelBatchSize = batchSize;
+            }
+        }
+    }
+
+    static void CountBarrierType(
+        const D3D12_RESOURCE_BARRIER& barrier,
+        RDGCompileStats& stats)
+    {
+        if (barrier.Type == D3D12_RESOURCE_BARRIER_TYPE_UAV)
+        {
+            ++stats.uavBarrierCount;
+        }
+        else if (barrier.Type == D3D12_RESOURCE_BARRIER_TYPE_TRANSITION)
+        {
+            ++stats.transitionBarrierCount;
+        }
+    }
+
+    void BuildCompileSnapshot()
+    {
+        m_lastCompileSnapshot = {};
+        m_lastCompileSnapshot.stats = m_compileStats;
+        m_lastCompileSnapshot.compiledPassOrder = m_compiledPassOrder;
+        m_lastCompileSnapshot.parallelPassBatches = m_parallelPassBatches;
+        m_lastCompileSnapshot.passes.reserve(m_passes.size());
+
+        for (uint32_t passIndex = 0; passIndex < m_passes.size(); ++passIndex)
+        {
+            RDGCompiledPassInfo passInfo = {};
+            passInfo.passIndex = passIndex;
+            passInfo.name = m_passes[passIndex].name;
+            passInfo.live = passIndex < m_livePasses.size() && m_livePasses[passIndex];
+            passInfo.culled = !passInfo.live;
+
+            if (passIndex < m_passDependencyLevels.size())
+            {
+                passInfo.dependencyLevel = m_passDependencyLevels[passIndex];
+            }
+
+            m_lastCompileSnapshot.passes.push_back(std::move(passInfo));
+        }
     }
 
     uint32_t CullUnusedPasses(uint32_t passCount)
@@ -1399,6 +1680,9 @@ private:
             buffer.currentState = buffer.initialState;
         }
 
+        std::vector<bool> textureHadUAVAccess(m_textures.size(), false);
+        std::vector<bool> bufferHadUAVAccess(m_buffers.size(), false);
+
         for (uint32_t passIndex : m_compiledPassOrder)
         {
             if (passIndex >= m_passes.size())
@@ -1439,6 +1723,22 @@ private:
                     TraceBarrier(pass.name.c_str(), texture.name, texture.currentState, desiredState);
                     texture.currentState = desiredState;
                 }
+                else if (access.access == ERDGAccess::UAV &&
+                    textureHadUAVAccess[access.texture.index])
+                {
+                    D3D12_RESOURCE_BARRIER barrier = {};
+                    barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_UAV;
+                    barrier.Flags = D3D12_RESOURCE_BARRIER_FLAG_NONE;
+                    barrier.UAV.pResource = texture.resource;
+
+                    barriers.push_back(barrier);
+                    TraceUAVBarrier(pass.name.c_str(), texture.name);
+                }
+
+                if (access.access == ERDGAccess::UAV)
+                {
+                    textureHadUAVAccess[access.texture.index] = true;
+                }
             }
 
             for (const RDGBufferAccess& access : pass.parameters.buffers)
@@ -1470,6 +1770,22 @@ private:
                     barriers.push_back(barrier);
                     TraceBarrier(pass.name.c_str(), buffer.name, buffer.currentState, desiredState);
                     buffer.currentState = desiredState;
+                }
+                else if (access.access == ERDGAccess::UAV &&
+                    bufferHadUAVAccess[access.buffer.index])
+                {
+                    D3D12_RESOURCE_BARRIER barrier = {};
+                    barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_UAV;
+                    barrier.Flags = D3D12_RESOURCE_BARRIER_FLAG_NONE;
+                    barrier.UAV.pResource = buffer.resource;
+
+                    barriers.push_back(barrier);
+                    TraceUAVBarrier(pass.name.c_str(), buffer.name);
+                }
+
+                if (access.access == ERDGAccess::UAV)
+                {
+                    bufferHadUAVAccess[access.buffer.index] = true;
                 }
             }
         }
@@ -1791,6 +2107,36 @@ private:
     #endif
     }
 
+    void TraceUAVBarrier(
+        const char* phase,
+        const std::string& resourceName) const
+    {
+    #if defined(_DEBUG)
+        if constexpr (EnableBarrierDump)
+        {
+            std::ostringstream oss;
+            oss << "[RDG][Barrier] Graph '" << m_debugName
+                << "' " << phase
+                << ": UAV barrier for " << resourceName
+                << "\n";
+
+            OutputDebugStringA(oss.str().c_str());
+        }
+    #endif
+    }
+
+    void TraceLifecycleWarning(const char* message) const
+    {
+    #if defined(_DEBUG)
+        std::ostringstream oss;
+        oss << "[RDG][Lifecycle] Graph '" << m_debugName
+            << "': " << (message ? message : "Unknown lifecycle warning")
+            << "\n";
+
+        OutputDebugStringA(oss.str().c_str());
+    #endif
+    }
+
     void ValidateGraph() const
     {
         std::ostringstream oss;
@@ -1953,6 +2299,22 @@ private:
     {
         std::ostringstream oss;
         oss << "[RDG] Graph: " << m_debugName << "\n";
+        oss << "  Stats:"
+            << " passes=" << m_compileStats.totalPassCount
+            << " live=" << m_compileStats.livePassCount
+            << " culled=" << m_compileStats.culledPassCount
+            << " compiled=" << m_compileStats.compiledPassCount
+            << " textures=" << m_compileStats.textureCount
+            << " buffers=" << m_compileStats.bufferCount
+            << " passBarriers=" << m_compileStats.passBarrierCount
+            << " finalBarriers=" << m_compileStats.finalBarrierCount
+            << " transitions=" << m_compileStats.transitionBarrierCount
+            << " uavBarriers=" << m_compileStats.uavBarrierCount
+            << " batches=" << m_compileStats.parallelBatchCount
+            << " maxBatch=" << m_compileStats.maxParallelBatchSize
+            << " compile=" << (m_compileStats.compileSucceeded ? "ok" : "fallback")
+            << "\n";
+
         if (!m_compiledPassOrder.empty())
         {
             oss << "  CompiledOrder:";
@@ -1968,6 +2330,50 @@ private:
             }
 
             oss << "\n";
+        }
+
+        if (!m_passDependencyLevels.empty())
+        {
+            oss << "  DependencyLevels:";
+
+            for (uint32_t passIndex : m_compiledPassOrder)
+            {
+                if (passIndex < m_passDependencyLevels.size() &&
+                    m_passDependencyLevels[passIndex] != UINT32_MAX)
+                {
+                    oss << " " << passIndex << "=" << m_passDependencyLevels[passIndex];
+                }
+            }
+
+            oss << "\n";
+        }
+
+        if (!m_parallelPassBatches.empty())
+        {
+            oss << "  ParallelBatches:\n";
+
+            for (size_t batchIndex = 0; batchIndex < m_parallelPassBatches.size(); ++batchIndex)
+            {
+                const std::vector<uint32_t>& batch = m_parallelPassBatches[batchIndex];
+                if (batch.empty())
+                {
+                    continue;
+                }
+
+                oss << "    Batch " << batchIndex << ":";
+
+                for (uint32_t passIndex : batch)
+                {
+                    oss << " " << passIndex;
+
+                    if (passIndex < m_passes.size())
+                    {
+                        oss << "(" << m_passes[passIndex].name << ")";
+                    }
+                }
+
+                oss << "\n";
+            }
         }
 
         for (size_t passIndex = 0; passIndex < m_passes.size(); ++passIndex)
@@ -2114,6 +2520,7 @@ private:
 
     RenderDevice* m_deviceContext = nullptr;
     std::string m_debugName;
+    bool m_executed = false;
 
     static constexpr UINT MaxTransientRTVDescriptors = 64;
     Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> m_transientRTVHeap;
@@ -2132,6 +2539,10 @@ private:
     std::vector<D3D12_RESOURCE_BARRIER> m_finalBarriers;
     std::vector<bool> m_livePasses;
     std::vector<uint32_t> m_compiledPassOrder;
+    std::vector<uint32_t> m_passDependencyLevels;
+    std::vector<std::vector<uint32_t>> m_parallelPassBatches;
+    RDGCompileStats m_compileStats;
+    RDGCompileSnapshot m_lastCompileSnapshot;
     std::vector<RDGTextureExtraction> m_textureExtractions;
     std::vector<RDGBufferExtraction> m_bufferExtractions;
 };

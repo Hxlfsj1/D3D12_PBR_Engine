@@ -14,6 +14,12 @@
 class ShadowPass
 {
 public:
+    struct Output
+    {
+        RDGTextureHandle shadowMap;
+        RDGPassHandle pass;
+    };
+
     static void Execute(
         RenderDevice* deviceContext,
         ResourceManager* resourceManager,
@@ -132,7 +138,7 @@ public:
         }
     }
 
-    static void AddToGraph(
+    static Output AddToGraph(
         RDGBuilder& graph,
         RenderDevice* deviceContext,
         ResourceManager* resourceManager,
@@ -150,7 +156,7 @@ public:
         RDGPassParameters params;
         params.WriteDSV(shadowMap);
 
-        graph.AddPass(
+        RDGPassHandle pass = graph.AddPass(
             "ShadowMap",
             ERDGPassFlags::Graphics,
             params,
@@ -164,6 +170,8 @@ public:
                     shadowVisibleInstances,
                     visibleInstancesSize);
             });
+
+        return { shadowMap, pass };
     }
 
     static void ExecuteRDG(

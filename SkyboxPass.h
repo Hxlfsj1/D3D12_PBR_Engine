@@ -89,7 +89,7 @@ public:
         cmdList->DrawInstanced(36, 1, 0, 0);
     }
 
-    static void AddToGraph(
+    static RDGPassHandle AddToGraph(
         RDGBuilder& graph,
         RenderDevice* deviceContext,
         ResourceManager* resourceManager,
@@ -126,7 +126,7 @@ public:
         params.WriteRTV(sceneColor);
         params.WriteDSV(depth);
 
-        graph.AddPass(
+        return graph.AddPass(
             "Skybox",
             ERDGPassFlags::Graphics,
             params,
