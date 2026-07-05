@@ -40,6 +40,8 @@ StructuredBuffer<InstanceData> gInstanceData : register(t6);
 StructuredBuffer<MaterialData> gMaterialData : register(t7);
 SamplerState s1 : register(s0);
 
+#include "DepthVisibility.hlsli"
+
 struct VS_INPUT
 {
     float3 pos : POSITION;
@@ -92,15 +94,9 @@ GBufferOutput PSMain(VS_OUTPUT input)
 {
     GBufferOutput output;
     
-    uint instMatID = gInstanceData[input.instanceID].customMaterialID;
-    uint finalMatID = (instMatID != 0xFFFFFFFF) ? instMatID : materialID;
-    
-    Texture2D tAlbedo = ResourceDescriptorHeap[gMaterialData[finalMatID].albedoIdx];
-    float4 albedoSample = tAlbedo.Sample(s1, input.texCoord);
-    
-#ifdef ALPHA_TEST
-    clip(albedoSample.a - 0.5f);
-#endif
+    uint finalMatID = ResolveDepthMaterialID(input.instanceID, materialID);
+    float4 albedoSample = SampleDepthAlbedo(finalMatID, input.texCoord);
+    ApplyDepthAlphaTest(albedoSample.a);
     
     float3 baseAlbedo = pow(abs(albedoSample.rgb), 2.2);
     output.albedo = float4(baseAlbedo, albedoSample.a);

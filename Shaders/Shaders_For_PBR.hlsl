@@ -52,6 +52,8 @@ SamplerComparisonState shadowSampler : register(s1);
 
 StructuredBuffer<MaterialData> gMaterialData : register(t7);
 
+#include "DepthVisibility.hlsli"
+
 #define hasAlbedo 1
 #define hasNormal 1
 #define hasORM 1
@@ -120,8 +122,7 @@ VS_OUTPUT VSMain(VS_INPUT input)
 #if LOD_LEVEL == 0
 float3 getNormalFromMap(VS_OUTPUT input)
 {
-    uint instMatID = gInstanceData[input.instanceID].customMaterialID;
-    uint finalMatID = (instMatID != 0xFFFFFFFF) ? instMatID : materialID;
+    uint finalMatID = ResolveDepthMaterialID(input.instanceID, materialID);
 
     uint normalIdx = gMaterialData[finalMatID].normalIdx;
     Texture2D tNormal = ResourceDescriptorHeap[normalIdx];
@@ -304,18 +305,14 @@ float CalcShadowFactor(float4 lightSpacePos, uint cascadeIndex)
 // PBR pixel Shader
 float4 PSMain(VS_OUTPUT input) : SV_TARGET
 {
-    uint instMatID = gInstanceData[input.instanceID].customMaterialID;
-    uint finalMatID = (instMatID != 0xFFFFFFFF) ? instMatID : materialID;
+    uint finalMatID = ResolveDepthMaterialID(input.instanceID, materialID);
     
     MaterialData mat = gMaterialData[finalMatID];
     
-    Texture2D tAlbedo = ResourceDescriptorHeap[mat.albedoIdx];
     Texture2D tEmissive = ResourceDescriptorHeap[mat.emissiveIdx];
     
-    float4 albedoSample = tAlbedo.Sample(s1, input.texCoord);
-#ifdef ALPHA_TEST
-    clip(albedoSample.a - 0.5f);
-#endif
+    float4 albedoSample = SampleDepthAlbedo(finalMatID, input.texCoord);
+    ApplyDepthAlphaTest(albedoSample.a);
     float3 albedo = pow(abs(albedoSample.rgb), 2.2);
     float finalAlpha = albedoSample.a;
     

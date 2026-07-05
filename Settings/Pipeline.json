@@ -1,4 +1,5 @@
 {
   "use_deferred": true,
+  "use_z_prepass": true,
   "use_taa": false
 }

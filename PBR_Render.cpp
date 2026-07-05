@@ -24,12 +24,15 @@
 #include <ResourceUploadBatch.h>
 #include <WICTextureLoader.h>
 
+#include <array>
+
 using namespace DirectX;
 // std::shared_ptr allocates an external reference counter, whereas ComPtr uses the internal counter of the COM object itself
 using Microsoft::WRL::ComPtr;
 
 static std::vector<ModelInstance*> g_visibleInstances;
-static std::vector<ModelInstance*> g_shadowVisibleInstances;
+static std::array<std::vector<ModelInstance*>, NUM_CASCADES> g_shadowVisibleInstancesByCascade;
+static std::array<size_t, NUM_CASCADES> g_shadowInstanceOffsets;
 
 // Global hook for Win32 message routing
 D3D12App* g_App = nullptr;
@@ -362,6 +365,7 @@ void D3D12App::Update()
     float cascadeSplits[5] = { nearClip, 5.0f, 15.0f, 50.0f, shadowMaxDistance };
     passCb.cascadeSplits = XMFLOAT4(cascadeSplits[1], cascadeSplits[2], cascadeSplits[3], cascadeSplits[4]);
     float orthoWidths[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
+    std::array<BoundingBox, NUM_CASCADES> cascadeShadowAreas = {};
 
     for (int cascadeIdx = 0; cascadeIdx < NUM_CASCADES; ++cascadeIdx)
     {
@@ -405,6 +409,15 @@ void D3D12App::Update()
         float subMinZ = snappedZ - sphereRadius - 50.0f;
         float subMaxZ = snappedZ + sphereRadius;
 
+        cascadeShadowAreas[cascadeIdx].Center = XMFLOAT3(
+            (subMinX + subMaxX) * 0.5f,
+            (subMinY + subMaxY) * 0.5f,
+            (subMinZ + subMaxZ) * 0.5f);
+        cascadeShadowAreas[cascadeIdx].Extents = XMFLOAT3(
+            (subMaxX - subMinX) * 0.5f,
+            (subMaxY - subMinY) * 0.5f,
+            (subMaxZ - subMinZ) * 0.5f);
+
         // Generate orthographic projection matrix and upload all packed data to GPU memory
         XMMATRIX subLightProj = XMMatrixOrthographicOffCenterLH(subMinX, subMaxX, subMinY, subMaxY, subMinZ, subMaxZ);
         XMStoreFloat4x4(&passCb.lightViewProj[cascadeIdx], XMMatrixTranspose(lightView * subLightProj));
@@ -427,7 +440,11 @@ void D3D12App::Update()
     shadowArea.Extents = XMFLOAT3(shadowRadius, shadowRadius, (maxZ - minZ) * 0.5f);
 
     g_visibleInstances.clear();
-    g_shadowVisibleInstances.clear();
+    for (auto& cascadeInstances : g_shadowVisibleInstancesByCascade)
+    {
+        cascadeInstances.clear();
+    }
+    g_shadowInstanceOffsets.fill(0);
 
     for (size_t i = 0; i < instances.size(); ++i)
     {   
@@ -474,9 +491,12 @@ void D3D12App::Update()
         BoundingBox lightSpaceBox;
         worldBox.Transform(lightSpaceBox, lightView);
 
-        if (shadowArea.Intersects(lightSpaceBox))
+        for (UINT cascadeIdx = 0; cascadeIdx < NUM_CASCADES; ++cascadeIdx)
         {
-            g_shadowVisibleInstances.push_back(&instances[i]);
+            if (shadowArea.Intersects(lightSpaceBox) && cascadeShadowAreas[cascadeIdx].Intersects(lightSpaceBox))
+            {
+                g_shadowVisibleInstancesByCascade[cascadeIdx].push_back(&instances[i]);
+            }
         }
     }
 
@@ -516,14 +536,19 @@ void D3D12App::Update()
             return distA > distB;
         });
 
-    std::sort(g_shadowVisibleInstances.begin(), g_shadowVisibleInstances.end(), [](ModelInstance* a, ModelInstance* b)
+    auto shadowSort = [](ModelInstance* a, ModelInstance* b)
         {
             if (a->pModel != b->pModel)
             {
                 return a->pModel < b->pModel;
             }
             return a->currentLodLevel < b->currentLodLevel;
-        });
+        };
+
+    for (auto& cascadeInstances : g_shadowVisibleInstancesByCascade)
+    {
+        std::sort(cascadeInstances.begin(), cascadeInstances.end(), shadowSort);
+    }
 
     // ====================================================================================================
     // Instance data Submission and TAA offset matirx calculating
@@ -542,13 +567,20 @@ void D3D12App::Update()
         mappedInstanceData[i].customMaterialID = g_visibleInstances[i]->customMaterialID;
     }
 
-    size_t shadowOffset = g_visibleInstances.size();
-    for (size_t i = 0; i < g_shadowVisibleInstances.size(); ++i)
+    size_t shadowWriteOffset = g_visibleInstances.size();
+    for (UINT cascadeIdx = 0; cascadeIdx < NUM_CASCADES; ++cascadeIdx)
     {
-        XMMATRIX world = g_shadowVisibleInstances[i]->cachedWorldMat;
-        XMStoreFloat4x4(&mappedInstanceData[shadowOffset + i].worldMat, XMMatrixTranspose(world));
+        g_shadowInstanceOffsets[cascadeIdx] = shadowWriteOffset - g_visibleInstances.size();
 
-        mappedInstanceData[shadowOffset + i].customMaterialID = g_shadowVisibleInstances[i]->customMaterialID;
+        const auto& cascadeInstances = g_shadowVisibleInstancesByCascade[cascadeIdx];
+        for (size_t i = 0; i < cascadeInstances.size(); ++i)
+        {
+            XMMATRIX world = cascadeInstances[i]->cachedWorldMat;
+            XMStoreFloat4x4(&mappedInstanceData[shadowWriteOffset].worldMat, XMMatrixTranspose(world));
+
+            mappedInstanceData[shadowWriteOffset].customMaterialID = cascadeInstances[i]->customMaterialID;
+            ++shadowWriteOffset;
+        }
     }
 }
 
@@ -604,6 +636,7 @@ void D3D12App::EndFrame(bool backBufferAlreadyPresent)
 void D3D12App::Render()
 {
     const bool backBufferHandledByFrameGraph = m_settingsManager.pipeline.useDeferred;
+    const bool useZPrepass = m_settingsManager.pipeline.useZPrepass;
     BeginFrame(backBufferHandledByFrameGraph);
 
     size_t transparentIdx = 0;
@@ -612,9 +645,16 @@ void D3D12App::Render()
 
     if (!m_settingsManager.pipeline.useDeferred)
     {
-        ShadowPass::ExecuteRDG(&m_deviceContext, &m_resourceManager, &m_pipelineManager, frameIndex, g_shadowVisibleInstances, g_visibleInstances.size());
+        ShadowPass::ExecuteRDG(
+            &m_deviceContext,
+            &m_resourceManager,
+            &m_pipelineManager,
+            frameIndex,
+            g_shadowVisibleInstancesByCascade,
+            g_shadowInstanceOffsets,
+            g_visibleInstances.size());
 
-        transparentIdx = PBRPass::ExecuteOpaque(&m_deviceContext, &m_resourceManager, &m_pipelineManager, frameIndex, viewport, scissorRect, g_visibleInstances);
+        transparentIdx = PBRPass::ExecuteOpaque(&m_deviceContext, &m_resourceManager, &m_pipelineManager, frameIndex, viewport, scissorRect, g_visibleInstances, useZPrepass);
     }
     else
     {
@@ -628,8 +668,24 @@ void D3D12App::Render()
             &m_resourceManager,
             &m_pipelineManager,
             frameIndex,
-            g_shadowVisibleInstances,
+            g_shadowVisibleInstancesByCascade,
+            g_shadowInstanceOffsets,
             g_visibleInstances.size());
+
+        PBRPass::ZPrepassOutput zPrepassOutput = {};
+        if (useZPrepass)
+        {
+            zPrepassOutput = PBRPass::AddZPrepassToGraph(
+                deferredGraph,
+                &m_deviceContext,
+                &m_resourceManager,
+                &m_pipelineManager,
+                frameIndex,
+                viewport,
+                scissorRect,
+                g_visibleInstances,
+                transparentStartIndex);
+        }
 
         GBufferPass::Output gbufferOutput = GBufferPass::AddToGraph(
             deferredGraph,
@@ -640,7 +696,9 @@ void D3D12App::Render()
             viewport,
             scissorRect,
             g_visibleInstances,
-            transparentStartIndex);
+            transparentStartIndex,
+            useZPrepass,
+            zPrepassOutput.depth);
 
         HBAOPass::Output hbaoOutput = HBAOPass::AddToGraph(
             deferredGraph,

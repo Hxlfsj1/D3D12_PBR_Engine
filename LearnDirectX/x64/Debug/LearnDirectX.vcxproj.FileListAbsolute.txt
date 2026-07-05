@@ -7,5 +7,5 @@ D:\项目\LearnDirectX\x64\Debug\poly2tri.dll
 D:\项目\LearnDirectX\x64\Debug\minizip.dll
 D:\项目\LearnDirectX\x64\Debug\zlibd1.dll
 D:\项目\LearnDirectX\x64\Debug\pugixml.dll
-D:\项目\LearnDirectX\LearnDirectX\x64\Debug\LearnDir.9A0DDAE3.Up2Date
 D:\项目\LearnDirectX\x64\Debug\kubazip.dll
+D:\项目\LearnDirectX\LearnDirectX\x64\Debug\LearnDir.9A0DDAE3.Up2Date

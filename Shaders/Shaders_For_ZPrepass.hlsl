@@ -27,6 +27,8 @@ StructuredBuffer<InstanceData> gInstanceData : register(t6);
 StructuredBuffer<MaterialData> gMaterialData : register(t7);
 SamplerState s1 : register(s0);
 
+#include "DepthVisibility.hlsli"
+
 struct VS_INPUT
 {
     float3 pos : POSITION;
@@ -59,12 +61,6 @@ VS_OUTPUT VSMain(VS_INPUT input)
 #ifdef ALPHA_TEST
 void PSMain(VS_OUTPUT input)
 {
-    uint instMatID = gInstanceData[input.instanceID].customMaterialID;
-    uint finalMatID = (instMatID != 0xFFFFFFFF) ? instMatID : materialID;
-    
-    Texture2D tAlbedo = ResourceDescriptorHeap[gMaterialData[finalMatID].albedoIdx];
-    float alpha = tAlbedo.Sample(s1, input.texCoord).a;
-    
-    clip(alpha - 0.5f);
+    ClipByDepthVisibility(input.instanceID, materialID, input.texCoord);
 }
 #endif

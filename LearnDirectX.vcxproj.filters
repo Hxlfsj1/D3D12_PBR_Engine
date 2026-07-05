@@ -70,6 +70,9 @@
     <None Include="Shaders\Shaders_For_ZPrepass.hlsl">
       <Filter>源文件\Shaders</Filter>
     </None>
+    <None Include="Shaders\DepthVisibility.hlsli">
+      <Filter>源文件\Shaders</Filter>
+    </None>
     <None Include="Shaders\Shaders_For_GBuffer.hlsl">
       <Filter>源文件\Shaders</Filter>
     </None>
@@ -96,85 +99,85 @@
     </None>
   </ItemGroup>
   <ItemGroup>
-    <ClInclude Include="D3D12App.h">
+    <ClInclude Include="Core\D3D12App.h">
       <Filter>头文件\Core</Filter>
     </ClInclude>
-    <ClInclude Include="Window.h">
+    <ClInclude Include="Core\Window.h">
       <Filter>头文件\Core</Filter>
     </ClInclude>
-    <ClInclude Include="stdafx.h">
+    <ClInclude Include="Core\stdafx.h">
       <Filter>头文件\Core</Filter>
     </ClInclude>
-    <ClInclude Include="PBR_Shader.h">
+    <ClInclude Include="Graphics\PBR_Shader.h">
       <Filter>头文件\Graphics</Filter>
     </ClInclude>
-    <ClInclude Include="PipelineManager.h">
+    <ClInclude Include="Graphics\PipelineManager.h">
       <Filter>头文件\Graphics</Filter>
     </ClInclude>
-    <ClInclude Include="RenderDevice.h">
+    <ClInclude Include="Graphics\RenderDevice.h">
       <Filter>头文件\Graphics</Filter>
     </ClInclude>
-    <ClInclude Include="PBR_Model.h">
+    <ClInclude Include="Resources\PBR_Model.h">
       <Filter>头文件\Resources</Filter>
     </ClInclude>
-    <ClInclude Include="IBLBaker.h">
+    <ClInclude Include="Resources\IBLBaker.h">
       <Filter>头文件\Resources</Filter>
     </ClInclude>
-    <ClInclude Include="ResourceManager.h">
+    <ClInclude Include="Resources\ResourceManager.h">
       <Filter>头文件\Resources</Filter>
     </ClInclude>
-    <ClInclude Include="Camera.h">
+    <ClInclude Include="Logic\Camera.h">
       <Filter>头文件\Logic</Filter>
     </ClInclude>
-    <ClInclude Include="SceneObject.h">
+    <ClInclude Include="Logic\SceneObject.h">
       <Filter>头文件\Logic</Filter>
     </ClInclude>
-    <ClInclude Include="InputManager.h">
+    <ClInclude Include="Logic\InputManager.h">
       <Filter>头文件\Logic</Filter>
     </ClInclude>
-    <ClInclude Include="stb_image.h">
+    <ClInclude Include="ThirdParty\stb_image.h">
       <Filter>头文件\ThirdParty</Filter>
     </ClInclude>
-    <ClInclude Include="tiny_gltf.h">
+    <ClInclude Include="ThirdParty\tiny_gltf.h">
       <Filter>头文件\ThirdParty</Filter>
     </ClInclude>
-    <ClInclude Include="json.hpp">
+    <ClInclude Include="ThirdParty\json.hpp">
       <Filter>头文件\ThirdParty</Filter>
     </ClInclude>
-    <ClInclude Include="RenderStructs.h">
+    <ClInclude Include="Passes\RenderStructs.h">
       <Filter>头文件\Passes</Filter>
     </ClInclude>
-    <ClInclude Include="ShadowPass.h">
+    <ClInclude Include="Passes\ShadowPass.h">
       <Filter>头文件\Passes</Filter>
     </ClInclude>
-    <ClInclude Include="SkyboxPass.h">
+    <ClInclude Include="Passes\SkyboxPass.h">
       <Filter>头文件\Passes</Filter>
     </ClInclude>
-    <ClInclude Include="PostProcessPass.h">
+    <ClInclude Include="Passes\PostProcessPass.h">
       <Filter>头文件\Passes</Filter>
     </ClInclude>
-    <ClInclude Include="PBRPass.h">
+    <ClInclude Include="Passes\PBRPass.h">
       <Filter>头文件\Passes</Filter>
     </ClInclude>
-    <ClInclude Include="meshoptimizer.h">
+    <ClInclude Include="ThirdParty\meshoptimizer.h">
       <Filter>头文件\ThirdParty</Filter>
     </ClInclude>
-    <ClInclude Include="GbufferPass.h">
+    <ClInclude Include="Passes\GbufferPass.h">
       <Filter>头文件\Passes</Filter>
     </ClInclude>
-    <ClInclude Include="DeferredLightingPass.h">
+    <ClInclude Include="Passes\DeferredLightingPass.h">
       <Filter>头文件\Passes</Filter>
     </ClInclude>
-    <ClInclude Include="HBAOPass.h">
+    <ClInclude Include="Passes\HBAOPass.h">
       <Filter>头文件\Passes</Filter>
     </ClInclude>
-    <ClInclude Include="TAAPass.h">
+    <ClInclude Include="Passes\TAAPass.h">
       <Filter>头文件\Passes</Filter>
     </ClInclude>
-    <ClInclude Include="Settings_Manager.h">
+    <ClInclude Include="Resources\Settings_Manager.h">
       <Filter>头文件\Resources</Filter>
     </ClInclude>
-    <ClInclude Include="RDG.h">
+    <ClInclude Include="RDG\RDG.h">
       <Filter>头文件\RDG</Filter>
     </ClInclude>
   </ItemGroup>

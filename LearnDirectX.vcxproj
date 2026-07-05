@@ -78,7 +78,7 @@
       <PreprocessorDefinitions>WIN32;_DEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
       <LanguageStandard>stdcpp20</LanguageStandard>
-      <AdditionalIncludeDirectories>%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>Core;Graphics;Resources;Logic;ThirdParty;Passes;RDG;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ClCompile>
     <Link>
       <SubSystem>Windows</SubSystem>
@@ -96,7 +96,7 @@
       <PreprocessorDefinitions>WIN32;NDEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
       <LanguageStandard>stdcpp20</LanguageStandard>
-      <AdditionalIncludeDirectories>%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>Core;Graphics;Resources;Logic;ThirdParty;Passes;RDG;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ClCompile>
     <Link>
       <SubSystem>Windows</SubSystem>
@@ -112,7 +112,7 @@
       <PreprocessorDefinitions>_DEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
       <LanguageStandard>stdcpp20</LanguageStandard>
-      <AdditionalIncludeDirectories>%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>Core;Graphics;Resources;Logic;ThirdParty;Passes;RDG;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ClCompile>
     <Link>
       <SubSystem>Windows</SubSystem>
@@ -130,7 +130,7 @@
       <PreprocessorDefinitions>NDEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
       <LanguageStandard>stdcpp20</LanguageStandard>
-      <AdditionalIncludeDirectories>%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>Core;Graphics;Resources;Logic;ThirdParty;Passes;RDG;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ClCompile>
     <Link>
       <SubSystem>Windows</SubSystem>
@@ -146,33 +146,33 @@
     <None Include="packages.config" />
   </ItemGroup>
   <ItemGroup>
-    <ClInclude Include="RDG.h" />
-    <ClInclude Include="Settings_Manager.h" />
-    <ClInclude Include="Camera.h" />
-    <ClInclude Include="D3D12App.h" />
-    <ClInclude Include="DeferredLightingPass.h" />
-    <ClInclude Include="GbufferPass.h" />
-    <ClInclude Include="HBAOPass.h" />
-    <ClInclude Include="IBLBaker.h" />
-    <ClInclude Include="InputManager.h" />
-    <ClInclude Include="json.hpp" />
-    <ClInclude Include="meshoptimizer.h" />
-    <ClInclude Include="PBRPass.h" />
-    <ClInclude Include="PBR_Model.h" />
-    <ClInclude Include="PBR_Shader.h" />
-    <ClInclude Include="PipelineManager.h" />
-    <ClInclude Include="PostProcessPass.h" />
-    <ClInclude Include="RenderDevice.h" />
-    <ClInclude Include="RenderStructs.h" />
-    <ClInclude Include="ResourceManager.h" />
-    <ClInclude Include="SceneObject.h" />
-    <ClInclude Include="ShadowPass.h" />
-    <ClInclude Include="SkyboxPass.h" />
-    <ClInclude Include="stb_image.h" />
-    <ClInclude Include="stdafx.h" />
-    <ClInclude Include="TAAPass.h" />
-    <ClInclude Include="tiny_gltf.h" />
-    <ClInclude Include="Window.h" />
+    <ClInclude Include="RDG\RDG.h" />
+    <ClInclude Include="Resources\Settings_Manager.h" />
+    <ClInclude Include="Logic\Camera.h" />
+    <ClInclude Include="Core\D3D12App.h" />
+    <ClInclude Include="Passes\DeferredLightingPass.h" />
+    <ClInclude Include="Passes\GbufferPass.h" />
+    <ClInclude Include="Passes\HBAOPass.h" />
+    <ClInclude Include="Resources\IBLBaker.h" />
+    <ClInclude Include="Logic\InputManager.h" />
+    <ClInclude Include="ThirdParty\json.hpp" />
+    <ClInclude Include="ThirdParty\meshoptimizer.h" />
+    <ClInclude Include="Passes\PBRPass.h" />
+    <ClInclude Include="Resources\PBR_Model.h" />
+    <ClInclude Include="Graphics\PBR_Shader.h" />
+    <ClInclude Include="Graphics\PipelineManager.h" />
+    <ClInclude Include="Passes\PostProcessPass.h" />
+    <ClInclude Include="Graphics\RenderDevice.h" />
+    <ClInclude Include="Passes\RenderStructs.h" />
+    <ClInclude Include="Resources\ResourceManager.h" />
+    <ClInclude Include="Logic\SceneObject.h" />
+    <ClInclude Include="Passes\ShadowPass.h" />
+    <ClInclude Include="Passes\SkyboxPass.h" />
+    <ClInclude Include="ThirdParty\stb_image.h" />
+    <ClInclude Include="Core\stdafx.h" />
+    <ClInclude Include="Passes\TAAPass.h" />
+    <ClInclude Include="ThirdParty\tiny_gltf.h" />
+    <ClInclude Include="Core\Window.h" />
   </ItemGroup>
   <ItemGroup>
     <None Include="Settings\Lighting.json" />
@@ -212,6 +212,9 @@
   </ItemGroup>
   <ItemGroup>
     <None Include="Shaders\Shaders_For_ZPrepass.hlsl">
+      <FileType>Document</FileType>
+    </None>
+    <None Include="Shaders\DepthVisibility.hlsli">
       <FileType>Document</FileType>
     </None>
   </ItemGroup>
