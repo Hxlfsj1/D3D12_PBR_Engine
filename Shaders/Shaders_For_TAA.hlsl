@@ -19,11 +19,13 @@ struct VS_OUTPUT
     float2 uv : TEXCOORD;
 };
 
+#include "FullscreenTriangle.hlsli"
+
 VS_OUTPUT VSMain(uint vertexID : SV_VertexID)
 {
     VS_OUTPUT output;
-    output.uv = float2((vertexID << 1) & 2, vertexID & 2);
-    output.pos = float4(output.uv * float2(2.0f, -2.0f) + float2(-1.0f, 1.0f), 0.0f, 1.0f);
+    output.uv = GetFullscreenTriangleTexCoord(vertexID);
+    output.pos = GetFullscreenTrianglePosition(output.uv);
     return output;
 }
 

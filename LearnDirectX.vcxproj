@@ -217,6 +217,15 @@
     <None Include="Shaders\DepthVisibility.hlsli">
       <FileType>Document</FileType>
     </None>
+    <None Include="Shaders\FullscreenTriangle.hlsli">
+      <FileType>Document</FileType>
+    </None>
+    <None Include="Shaders\LightingCommon.hlsli">
+      <FileType>Document</FileType>
+    </None>
+    <None Include="Shaders\MathCommon.hlsli">
+      <FileType>Document</FileType>
+    </None>
   </ItemGroup>
   <ItemGroup>
     <None Include="Shaders\Shaders_For_GBuffer.hlsl">

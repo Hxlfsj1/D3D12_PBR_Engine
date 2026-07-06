@@ -22,18 +22,22 @@ cbuffer BindlessIndices : register(b1)
 SamplerState sPoint : register(s0);
 SamplerState sLinear : register(s1);
 
+#include "MathCommon.hlsli"
+
 struct VS_OUTPUT
 {
     float4 pos : SV_POSITION;
     float2 uv : TEXCOORD;
 };
 
+#include "FullscreenTriangle.hlsli"
+
 // Draw a bufferless fullscreen triangle (the same as Shaders_For_Deferred.hlsl)
 VS_OUTPUT VSMain(uint vertexID : SV_VertexID)
 {
     VS_OUTPUT output;
-    output.uv = float2((vertexID << 1) & 2, vertexID & 2);
-    output.pos = float4(output.uv * float2(2.0f, -2.0f) + float2(-1.0f, 1.0f), 0.0f, 1.0f);
+    output.uv = GetFullscreenTriangleTexCoord(vertexID);
+    output.pos = GetFullscreenTrianglePosition(output.uv);
     return output;
 }
 
@@ -57,11 +61,6 @@ float3 GetViewPos(float2 uv, uint depthIdx)
     return viewSpace.xyz / viewSpace.w;
 }
 
-float rand(float2 uv)
-{
-    return frac(sin(dot(uv, float2(12.9898f, 78.233f))) * 43758.5453f);
-}
-
 float4 PSMain_HBAO(VS_OUTPUT input) : SV_TARGET
 {
     // Unpack normal data in G-buffer
@@ -72,7 +71,7 @@ float4 PSMain_HBAO(VS_OUTPUT input) : SV_TARGET
     float3 P = GetViewPos(input.uv, texIdx0);
     
     // Apply a random rotation offset to the 4 sampling directions
-    float randomAngle = rand(input.uv) * 3.1415926f * 2.0f;
+    float randomAngle = Rand(input.uv) * 3.1415926f * 2.0f;
     
     // Define ray marching parameters
     int numDirs = 4;

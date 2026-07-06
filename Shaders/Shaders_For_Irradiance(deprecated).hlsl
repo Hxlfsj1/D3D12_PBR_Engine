@@ -25,7 +25,7 @@ VS_OUTPUT VSMain(VS_INPUT input)
 TextureCube environmentMap : register(t0);
 SamplerState s1 : register(s0);
 
-static const float PI = 3.14159265359;
+#include "MathCommon.hlsli"
 
 float4 PSMain(VS_OUTPUT input) : SV_TARGET
 {   
