@@ -193,24 +193,14 @@ public:
 
             D3D12_GPU_VIRTUAL_ADDRESS srvAddress = baseGpuAddress + kPassConstantsAlignedSize + (i * sizeof(InstanceData));
 
-            auto BindAndDrawSingleInstance = [&](ID3D12PipelineState* pso, bool isColorPass)
-                {
-                    cmdList->SetPipelineState(pso);
-                    cmdList->SetGraphicsRootShaderResourceView(1, srvAddress);
+            cmdList->SetPipelineState(pipelineManager->GetTransparentPSO(instance->currentLodLevel));
+            cmdList->SetGraphicsRootShaderResourceView(1, srvAddress);
 
-                    for (auto& mesh : instance->pModel->meshes)
-                    {
-                        if (isColorPass)
-                        {
-                            cmdList->SetGraphicsRoot32BitConstants(4, 1, &mesh.materialID, 0);
-                        }
-
-                        mesh.Draw(cmdList, 1, instance->currentLodLevel);
-                    }
-                };
-
-            BindAndDrawSingleInstance(pipelineManager->GetTransparentPSO_DepthOnly(), false);
-            BindAndDrawSingleInstance(pipelineManager->GetTransparentPSO_Color(), true);
+            for (auto& mesh : instance->pModel->meshes)
+            {
+                cmdList->SetGraphicsRoot32BitConstants(4, 1, &mesh.materialID, 0);
+                mesh.Draw(cmdList, 1, instance->currentLodLevel);
+            }
         }
     }
 

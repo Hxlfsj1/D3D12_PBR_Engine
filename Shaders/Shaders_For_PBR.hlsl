@@ -53,6 +53,7 @@ SamplerComparisonState shadowSampler : register(s1);
 StructuredBuffer<MaterialData> gMaterialData : register(t7);
 
 #include "DepthVisibility.hlsli"
+#include "TangentBasis.hlsli"
 
 #define hasAlbedo 1
 #define hasNormal 1
@@ -118,7 +119,7 @@ VS_OUTPUT VSMain(VS_INPUT input)
 }
 
 #if LOD_LEVEL == 0
-float3 getNormalFromMap(VS_OUTPUT input)
+float3 getNormalFromMap(VS_OUTPUT input, bool isFrontFace)
 {
     uint finalMatID = ResolveDepthMaterialID(input.instanceID, materialID);
 
@@ -127,26 +128,25 @@ float3 getNormalFromMap(VS_OUTPUT input)
     float3 tangentNormal = tNormal.Sample(s1, input.texCoord).xyz * 2.0 - 1.0;
     tangentNormal.y = -tangentNormal.y;
 
-    float3 T = normalize(input.tangent);
-    float3 B = normalize(input.bitangent);
-    float3 N = normalize(input.normal);
-    T = normalize(T - dot(T, N) * N);
+    float3 N;
+    float3 T;
+    float3 B;
+    BuildOrthonormalTangentBasis(input.normal, input.tangent, input.bitangent, N, T, B);
     float3x3 TBN = float3x3(T, B, N);
-    
-    return normalize(mul(tangentNormal, TBN));
+    float3 mappedNormal = normalize(mul(tangentNormal, TBN));
+
+    return isFrontFace ? mappedNormal : -mappedNormal;
 }
 #endif
 
 #include "LightingCommon.hlsli"
 
 // PBR pixel Shader
-float4 PSMain(VS_OUTPUT input) : SV_TARGET
+float4 PSMain(VS_OUTPUT input, bool isFrontFace : SV_IsFrontFace) : SV_TARGET
 {
     uint finalMatID = ResolveDepthMaterialID(input.instanceID, materialID);
     
     MaterialData mat = gMaterialData[finalMatID];
-    
-    Texture2D tEmissive = ResourceDescriptorHeap[mat.emissiveIdx];
     
     float4 albedoSample = SampleDepthAlbedo(finalMatID, input.texCoord);
     ApplyDepthAlphaTest(albedoSample.a);
@@ -155,12 +155,12 @@ float4 PSMain(VS_OUTPUT input) : SV_TARGET
     
     if (mat.isUnlit)
     {
-        float3 unlitColor = hasEmissive ? pow(tEmissive.Sample(s1, input.texCoord).rgb, 2.2) : albedo;
-        return float4(unlitColor * finalAlpha, finalAlpha);
+        return float4(albedo * finalAlpha, finalAlpha);
     }
 
 #if LOD_LEVEL == 2
     float3 N = normalize(input.normal);
+    N = isFrontFace ? N : -N;
     float3 L = normalize(-lightDir);
     float NdotL = max(dot(N, L), 0.0);
     
@@ -179,15 +179,16 @@ float4 PSMain(VS_OUTPUT input) : SV_TARGET
     
     float4 mrSample = tMR.Sample(s1, input.texCoord);
     ao = max(mrSample.r, 0.01);
-    roughness = mrSample.g;
+    roughness = max(mrSample.g, 0.005);
     metallic = mrSample.b;
     
     float3 N;
     
 #if LOD_LEVEL == 1
     N = normalize(input.normal);
+    N = isFrontFace ? N : -N;
 #else
-    N = getNormalFromMap(input);
+    N = getNormalFromMap(input, isFrontFace);
 #endif
 
     float3 V = normalize(camPos - input.worldPos);
@@ -266,7 +267,8 @@ float4 PSMain(VS_OUTPUT input) : SV_TARGET
     float3 ambientSpecular = specular_IBL * ao;
     
     // Add emissive (if applicable)
-    float3 emissive = hasEmissive ? pow(tEmissive.Sample(s1, input.texCoord).rgb, 2.2) : float3(0.0, 0.0, 0.0);
+    Texture2D tEmissive = ResourceDescriptorHeap[mat.emissiveIdx];
+    float3 emissive = hasEmissive ? pow(abs(tEmissive.Sample(s1, input.texCoord).rgb), 2.2) : float3(0.0, 0.0, 0.0);
     
     float3 totalDiffuse = directDiffuse + ambientDiffuse;
     float3 totalSpecular = directSpecular + ambientSpecular;

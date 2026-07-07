@@ -74,13 +74,10 @@ float4 PSMain(VS_OUTPUT input) : SV_TARGET
     float4 ormSample = tORM.SampleLevel(s1, input.texCoord, 0);
     if (ormSample.a < 0.5f)
     {
-        Texture2D tEmissive = ResourceDescriptorHeap[gbufferEmissiveIdx];
-        float3 emissiveColor = tEmissive.SampleLevel(s1, input.texCoord, 0).rgb;
-        
-        return float4(emissiveColor, 1.0f);
+        return float4(albedo, 1.0f);
     }
     float ao = max(ormSample.r, 0.01);
-    float roughness = max(ormSample.g, 0.04);
+    float roughness = max(ormSample.g, 0.005);
     float metallic = ormSample.b;
 
     // Reconstruct world position from NDC coordinates and depth

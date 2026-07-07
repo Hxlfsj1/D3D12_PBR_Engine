@@ -128,14 +128,11 @@ public:
         return shadowCutoutPSO.Get();
     }
 
-    ID3D12PipelineState* GetTransparentPSO_DepthOnly()
+    ID3D12PipelineState* GetTransparentPSO(int lodLevel = 0)
     {
-        return psoTransparent_DepthOnly.Get();
-    }
-
-    ID3D12PipelineState* GetTransparentPSO_Color()
-    {
-        return psoTransparent_Color.Get();
+        if (lodLevel < 0) lodLevel = 0;
+        if (lodLevel > 2) lodLevel = 2;
+        return psoTransparent[lodLevel].Get();
     }
 
     ID3D12RootSignature* GetPostProcessRootSignature()
@@ -506,18 +503,7 @@ private:
         // ====================================================================================================
         // TRANSPARENT PSOs
         // ====================================================================================================
-        D3D12_GRAPHICS_PIPELINE_STATE_DESC depthOnlyDesc = psoDesc;
-        depthOnlyDesc.VS = CD3DX12_SHADER_BYTECODE(vs0->GetBufferPointer(), vs0->GetBufferSize());
-        depthOnlyDesc.PS = { nullptr, 0 };
-        depthOnlyDesc.BlendState.RenderTarget[0].RenderTargetWriteMask = 0;
-        depthOnlyDesc.DepthStencilState.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ALL;
-        depthOnlyDesc.DepthStencilState.DepthEnable = TRUE;
-        depthOnlyDesc.DepthStencilState.DepthFunc = D3D12_COMPARISON_FUNC_LESS;
-        depthOnlyDesc.RasterizerState.CullMode = D3D12_CULL_MODE_BACK;
-
-        if (FAILED(dc->GetDevice()->CreateGraphicsPipelineState(&depthOnlyDesc, IID_PPV_ARGS(&psoTransparent_DepthOnly)))) return false;
-
-        D3D12_GRAPHICS_PIPELINE_STATE_DESC colorDesc = psoDesc;
+        D3D12_GRAPHICS_PIPELINE_STATE_DESC transparentDesc = psoDesc;
         D3D12_RENDER_TARGET_BLEND_DESC transparencyBlendDesc = {};
         transparencyBlendDesc.BlendEnable = TRUE;
         transparencyBlendDesc.LogicOpEnable = FALSE;
@@ -530,14 +516,23 @@ private:
         transparencyBlendDesc.LogicOp = D3D12_LOGIC_OP_NOOP;
         transparencyBlendDesc.RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
 
-        colorDesc.VS = CD3DX12_SHADER_BYTECODE(vs0->GetBufferPointer(), vs0->GetBufferSize());
-        colorDesc.PS = CD3DX12_SHADER_BYTECODE(ps0->GetBufferPointer(), ps0->GetBufferSize());
-        colorDesc.BlendState.RenderTarget[0] = transparencyBlendDesc;
-        colorDesc.DepthStencilState.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ZERO;
-        colorDesc.DepthStencilState.DepthFunc = D3D12_COMPARISON_FUNC_EQUAL;
-        colorDesc.RasterizerState.CullMode = D3D12_CULL_MODE_BACK;
+        transparentDesc.BlendState.RenderTarget[0] = transparencyBlendDesc;
+        transparentDesc.DepthStencilState.DepthEnable = TRUE;
+        transparentDesc.DepthStencilState.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ZERO;
+        transparentDesc.DepthStencilState.DepthFunc = D3D12_COMPARISON_FUNC_LESS_EQUAL;
+        transparentDesc.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
 
-        if (FAILED(dc->GetDevice()->CreateGraphicsPipelineState(&colorDesc, IID_PPV_ARGS(&psoTransparent_Color)))) return false;
+        transparentDesc.VS = CD3DX12_SHADER_BYTECODE(vs0->GetBufferPointer(), vs0->GetBufferSize());
+        transparentDesc.PS = CD3DX12_SHADER_BYTECODE(ps0->GetBufferPointer(), ps0->GetBufferSize());
+        if (FAILED(dc->GetDevice()->CreateGraphicsPipelineState(&transparentDesc, IID_PPV_ARGS(&psoTransparent[0])))) return false;
+
+        transparentDesc.VS = CD3DX12_SHADER_BYTECODE(vs1->GetBufferPointer(), vs1->GetBufferSize());
+        transparentDesc.PS = CD3DX12_SHADER_BYTECODE(ps1->GetBufferPointer(), ps1->GetBufferSize());
+        if (FAILED(dc->GetDevice()->CreateGraphicsPipelineState(&transparentDesc, IID_PPV_ARGS(&psoTransparent[1])))) return false;
+
+        transparentDesc.VS = CD3DX12_SHADER_BYTECODE(vs2->GetBufferPointer(), vs2->GetBufferSize());
+        transparentDesc.PS = CD3DX12_SHADER_BYTECODE(ps2->GetBufferPointer(), ps2->GetBufferSize());
+        if (FAILED(dc->GetDevice()->CreateGraphicsPipelineState(&transparentDesc, IID_PPV_ARGS(&psoTransparent[2])))) return false;
 
         // ====================================================================================================
         // SKYBOX PSO
@@ -888,8 +883,7 @@ private:
     ComPtr<ID3D12PipelineState> shadowPSO;
     ComPtr<ID3D12PipelineState> shadowCutoutPSO;
 
-    ComPtr<ID3D12PipelineState> psoTransparent_DepthOnly;
-    ComPtr<ID3D12PipelineState> psoTransparent_Color;
+    ComPtr<ID3D12PipelineState> psoTransparent[3];
 
     ComPtr<ID3D12RootSignature> postProcessRootSignature;
     ComPtr<ID3D12PipelineState> postProcessPSO;

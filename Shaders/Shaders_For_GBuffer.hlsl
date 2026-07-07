@@ -41,6 +41,7 @@ StructuredBuffer<MaterialData> gMaterialData : register(t7);
 SamplerState s1 : register(s0);
 
 #include "DepthVisibility.hlsli"
+#include "TangentBasis.hlsli"
 
 struct VS_INPUT
 {
@@ -95,22 +96,18 @@ GBufferOutput PSMain(VS_OUTPUT input)
     GBufferOutput output;
     
     uint finalMatID = ResolveDepthMaterialID(input.instanceID, materialID);
+    bool isUnlit = gMaterialData[finalMatID].isUnlit != 0;
     float4 albedoSample = SampleDepthAlbedo(finalMatID, input.texCoord);
     ApplyDepthAlphaTest(albedoSample.a);
     
     float3 baseAlbedo = pow(abs(albedoSample.rgb), 2.2);
     output.albedo = float4(baseAlbedo, albedoSample.a);
-    
-    Texture2D tEmissive = ResourceDescriptorHeap[gMaterialData[finalMatID].emissiveIdx];
-    float3 emissiveSample = tEmissive.Sample(s1, input.texCoord).rgb;
+    output.emissive = float4(0.0f, 0.0f, 0.0f, 1.0f);
 
-    if (gMaterialData[finalMatID].isUnlit != 0)
+    if (!isUnlit)
     {
-        output.emissive = float4(baseAlbedo, 1.0f);
-        output.albedo = float4(0.0f, 0.0f, 0.0f, albedoSample.a);
-    }
-    else
-    {
+        Texture2D tEmissive = ResourceDescriptorHeap[gMaterialData[finalMatID].emissiveIdx];
+        float3 emissiveSample = pow(abs(tEmissive.Sample(s1, input.texCoord).rgb), 2.2);
         output.emissive = float4(emissiveSample, 1.0f);
     }
     
@@ -118,9 +115,10 @@ GBufferOutput PSMain(VS_OUTPUT input)
     Texture2D tNormal = ResourceDescriptorHeap[gMaterialData[finalMatID].normalIdx];
     float3 normalMap = tNormal.Sample(s1, input.texCoord).xyz * 2.0 - 1.0;
     normalMap.y = -normalMap.y;
-    float3 N = normalize(input.worldNormal);
-    float3 T = normalize(input.worldTangent);
-    float3 B = normalize(input.worldBitangent);
+    float3 N;
+    float3 T;
+    float3 B;
+    BuildOrthonormalTangentBasis(input.worldNormal, input.worldTangent, input.worldBitangent, N, T, B);
     float3x3 TBN = float3x3(T, B, N);
     float3 finalNormal = normalize(mul(normalMap, TBN));
     output.normal = float4(finalNormal * 0.5 + 0.5, 1.0);
@@ -132,15 +130,7 @@ GBufferOutput PSMain(VS_OUTPUT input)
     Texture2D tORM = ResourceDescriptorHeap[gMaterialData[finalMatID].ormIdx];
     float3 ormSample = tORM.Sample(s1, input.texCoord).rgb;
     output.orm = float4(ormSample, 1.0f);
-    
-    if (gMaterialData[finalMatID].isUnlit != 0)
-    {
-        output.orm.a = 0.0f;
-    }
-    else
-    {
-        output.orm.a = 1.0f;
-    }
+    output.orm.a = isUnlit ? 0.0f : 1.0f;
     
     return output;
 }

@@ -385,17 +385,6 @@ private:
             {
                 LoadAssimpTexture(device, upload, material, aiTextureType_EMISSIVE, TextureType::Emissive, textures, scene);
             }
-            else if (isUnlit)
-            {
-                if (material->GetTextureCount(aiTextureType_BASE_COLOR) > 0)
-                {
-                    LoadAssimpTexture(device, upload, material, aiTextureType_BASE_COLOR, TextureType::Emissive, textures, scene);
-                }
-                else if (material->GetTextureCount(aiTextureType_DIFFUSE) > 0)
-                {
-                    LoadAssimpTexture(device, upload, material, aiTextureType_DIFFUSE, TextureType::Emissive, textures, scene);
-                }
-            }
         }
 
         return Mesh(device, cmdList, vertices, allLodIndices, textures, isUnlit);
