@@ -2,6 +2,10 @@
 #define LIGHTING_COMMON_HLSLI
 
 #include "MathCommon.hlsli"
+#include "MaterialCommon.hlsli"
+
+static const float3 DIELECTRIC_F0 = float3(0.04f, 0.04f, 0.04f);
+static const float SPECULAR_IBL_MAX_MIP = 4.0f;
 
 float3 EvaluateSH9(float3 N)
 {
@@ -56,6 +60,67 @@ float3 fresnelSchlickRoughness(float cosTheta, float3 F0, float roughness)
 {
     return F0 + (max(float3(1.0 - roughness, 1.0 - roughness, 1.0 - roughness), F0) - F0) *
         pow(clamp(1.0 - cosTheta, 0.0, 1.0), 5.0);
+}
+
+float3 ComputeMaterialF0(float3 albedo, float metallic)
+{
+    return lerp(DIELECTRIC_F0, albedo, metallic);
+}
+
+float3 ComputeDiffuseEnergy(float3 F, float metallic)
+{
+    return (1.0f - F) * (1.0f - metallic);
+}
+
+float3 ComputeCookTorranceSpecular(float3 N, float3 V, float3 L, float3 F, float roughness)
+{
+    float3 H = normalize(V + L);
+    float NDF = DistributionGGX(N, H, roughness);
+    float G = GeometrySmith(N, V, L, roughness);
+    float3 numerator = NDF * G * F;
+    float denominator = 4.0f * max(dot(N, V), 0.0f) * max(dot(N, L), 0.0f) + 0.0001f;
+    return numerator / denominator;
+}
+
+float3 ComputeDirectDiffuse(float3 kD, float3 albedo, float3 radiance, float NdotL, float shadow)
+{
+    return (kD * albedo / PI) * radiance * NdotL * shadow;
+}
+
+float3 ComputeDirectSpecular(float3 specular, float3 radiance, float NdotL, float shadow)
+{
+    return specular * radiance * NdotL * shadow;
+}
+
+float3 ComputeSplitSumSpecularIBL(float3 prefilteredColor, float2 brdf, float3 F_IBL)
+{
+    return prefilteredColor * (F_IBL * brdf.x + brdf.y);
+}
+
+float3 ComputeSimpleSpecularIBL(float3 prefilteredColor, float3 F_IBL)
+{
+    return prefilteredColor * F_IBL;
+}
+
+uint SelectCascadeIndex(float dist)
+{
+    uint cascadeIndex = 0;
+    if (dist > cascadeSplits.x)
+        cascadeIndex = 1;
+    if (dist > cascadeSplits.y)
+        cascadeIndex = 2;
+    if (dist > cascadeSplits.z)
+        cascadeIndex = 3;
+
+    return cascadeIndex;
+}
+
+float FadeCascadeShadow(float shadow, float dist)
+{
+    float fadeDistance = 10.0f;
+    float fadeStart = cascadeSplits.w - fadeDistance;
+    float fadeFactor = saturate((dist - fadeStart) / fadeDistance);
+    return lerp(shadow, 1.0f, fadeFactor);
 }
 
 static const float2 POISSON_DISK[16] =

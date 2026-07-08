@@ -82,6 +82,9 @@
     <None Include="Shaders\MathCommon.hlsli">
       <Filter>源文件\Shaders</Filter>
     </None>
+    <None Include="Shaders\MaterialCommon.hlsli">
+      <Filter>源文件\Shaders</Filter>
+    </None>
     <None Include="Shaders\TangentBasis.hlsli">
       <Filter>源文件\Shaders</Filter>
     </None>

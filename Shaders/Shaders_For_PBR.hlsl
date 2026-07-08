@@ -53,6 +53,7 @@ SamplerComparisonState shadowSampler : register(s1);
 StructuredBuffer<MaterialData> gMaterialData : register(t7);
 
 #include "DepthVisibility.hlsli"
+#include "MaterialCommon.hlsli"
 #include "TangentBasis.hlsli"
 
 #define hasAlbedo 1
@@ -135,7 +136,7 @@ float3 getNormalFromMap(VS_OUTPUT input, bool isFrontFace)
     float3x3 TBN = float3x3(T, B, N);
     float3 mappedNormal = normalize(mul(tangentNormal, TBN));
 
-    return isFrontFace ? mappedNormal : -mappedNormal;
+    return FaceNormalByFrontFace(mappedNormal, isFrontFace);
 }
 #endif
 
@@ -150,7 +151,7 @@ float4 PSMain(VS_OUTPUT input, bool isFrontFace : SV_IsFrontFace) : SV_TARGET
     
     float4 albedoSample = SampleDepthAlbedo(finalMatID, input.texCoord);
     ApplyDepthAlphaTest(albedoSample.a);
-    float3 albedo = pow(abs(albedoSample.rgb), 2.2);
+    float3 albedo = DecodeSRGBColor(albedoSample.rgb);
     float finalAlpha = albedoSample.a;
     
     if (mat.isUnlit)
@@ -160,7 +161,7 @@ float4 PSMain(VS_OUTPUT input, bool isFrontFace : SV_IsFrontFace) : SV_TARGET
 
 #if LOD_LEVEL == 2
     float3 N = normalize(input.normal);
-    N = isFrontFace ? N : -N;
+    N = FaceNormalByFrontFace(N, isFrontFace);
     float3 L = normalize(-lightDir);
     float NdotL = max(dot(N, L), 0.0);
     
@@ -179,67 +180,46 @@ float4 PSMain(VS_OUTPUT input, bool isFrontFace : SV_IsFrontFace) : SV_TARGET
     
     float4 mrSample = tMR.Sample(s1, input.texCoord);
     ao = max(mrSample.r, 0.01);
-    roughness = max(mrSample.g, 0.005);
+    roughness = ClampPerceptualRoughness(mrSample.g);
     metallic = mrSample.b;
     
     float3 N;
     
 #if LOD_LEVEL == 1
     N = normalize(input.normal);
-    N = isFrontFace ? N : -N;
+    N = FaceNormalByFrontFace(N, isFrontFace);
 #else
     N = getNormalFromMap(input, isFrontFace);
 #endif
 
     float3 V = normalize(camPos - input.worldPos);
     float3 R = reflect(-V, N);
-    float3 F0 = float3(0.04, 0.04, 0.04);
-    F0 = lerp(F0, albedo, metallic);
+    float3 F0 = ComputeMaterialF0(albedo, metallic);
     float3 L = normalize(-lightDir);
     float3 H = normalize(V + L);
     float3 radiance = lightColor;
 
-    float NDF = DistributionGGX(N, H, roughness);
-    float G = GeometrySmith(N, V, L, roughness);
     float3 F = fresnelSchlick(max(dot(H, V), 0.0), F0);
-    
-    // Construct the classic Cook-Torrance reflectance equation
-    float3 numerator = NDF * G * F;
-    float denominator = 4.0 * max(dot(N, V), 0.0) * max(dot(N, L), 0.0) + 0.0001;
-    float3 specular = numerator / denominator;
+    float3 specular = ComputeCookTorranceSpecular(N, V, L, F, roughness);
 
-    // kD = (1 - F) * (1 - metallic)
-    float3 kS = F;
-    float3 kD = float3(1.0, 1.0, 1.0) - kS;
-    kD *= 1.0 - metallic;
+    float3 kD = ComputeDiffuseEnergy(F, metallic);
 
     // Use different shadow maps depending on distance
     float dist = distance(camPos, input.worldPos);
-    uint cascadeIndex = 0;
-    if (dist > cascadeSplits.x)
-        cascadeIndex = 1;
-    if (dist > cascadeSplits.y)
-        cascadeIndex = 2;
-    if (dist > cascadeSplits.z)
-        cascadeIndex = 3;
+    uint cascadeIndex = SelectCascadeIndex(dist);
 
     float4 lightSpacePos = mul(float4(input.worldPos, 1.0f), lightViewProj[cascadeIndex]);
     float shadow = CalcShadowFactor(lightSpacePos, cascadeIndex);
-    float fadeDistance = 10.0f;
-    float fadeStart = cascadeSplits.w - fadeDistance;
-    float fadeFactor = saturate((dist - fadeStart) / fadeDistance);
-    shadow = lerp(shadow, 1.0f, fadeFactor);
+    shadow = FadeCascadeShadow(shadow, dist);
     
     // Calculate final light
     float NdotL = max(dot(N, L), 0.0);
-    float3 directDiffuse = (kD * albedo / PI) * radiance * NdotL * shadow;
-    float3 directSpecular = specular * radiance * NdotL * shadow;
+    float3 directDiffuse = ComputeDirectDiffuse(kD, albedo, radiance, NdotL, shadow);
+    float3 directSpecular = ComputeDirectSpecular(specular, radiance, NdotL, shadow);
     
     // Diffuse IBL (SH)
     float3 F_IBL = fresnelSchlickRoughness(max(dot(N, V), 0.0), F0, roughness);
-    float3 kS_IBL = F_IBL;
-    float3 kD_IBL = 1.0 - kS_IBL;
-    kD_IBL *= 1.0 - metallic;
+    float3 kD_IBL = ComputeDiffuseEnergy(F_IBL, metallic);
     float3 irradiance = EvaluateSH9(N);
     float3 diffuse_IBL = irradiance * albedo;
     float3 specular_IBL = float3(0.0, 0.0, 0.0);
@@ -249,16 +229,14 @@ float4 PSMain(VS_OUTPUT input, bool isFrontFace : SV_IsFrontFace) : SV_TARGET
     TextureCube tPrefilter = ResourceDescriptorHeap[iblPrefilterIdx];
     Texture2D tBRDF = ResourceDescriptorHeap[iblBRDFIdx];
     
-    const float MAX_REFLECTION_LOD = 4.0;
-    float3 prefilteredColor = tPrefilter.SampleLevel(s1, R, roughness * MAX_REFLECTION_LOD).rgb;
+    float3 prefilteredColor = tPrefilter.SampleLevel(s1, R, roughness * SPECULAR_IBL_MAX_MIP).rgb;
     float2 brdf = tBRDF.Sample(s1, float2(max(dot(N, V), 0.0), roughness)).rg;
-    specular_IBL = prefilteredColor * (F0 * brdf.x + brdf.y);
+    specular_IBL = ComputeSplitSumSpecularIBL(prefilteredColor, brdf, F_IBL);
 #elif LOD_LEVEL == 1
     TextureCube tPrefilter = ResourceDescriptorHeap[iblPrefilterIdx];
 
-    const float MAX_REFLECTION_LOD = 4.0;
-    float3 prefilteredColor = tPrefilter.SampleLevel(s1, R, roughness * MAX_REFLECTION_LOD).rgb;
-    specular_IBL = prefilteredColor * F_IBL;
+    float3 prefilteredColor = tPrefilter.SampleLevel(s1, R, roughness * SPECULAR_IBL_MAX_MIP).rgb;
+    specular_IBL = ComputeSimpleSpecularIBL(prefilteredColor, F_IBL);
 #endif
     
     // The kD_IBL term is decoupled from the split-sum specular BRDF
@@ -268,7 +246,7 @@ float4 PSMain(VS_OUTPUT input, bool isFrontFace : SV_IsFrontFace) : SV_TARGET
     
     // Add emissive (if applicable)
     Texture2D tEmissive = ResourceDescriptorHeap[mat.emissiveIdx];
-    float3 emissive = hasEmissive ? pow(abs(tEmissive.Sample(s1, input.texCoord).rgb), 2.2) : float3(0.0, 0.0, 0.0);
+    float3 emissive = hasEmissive ? DecodeSRGBColor(tEmissive.Sample(s1, input.texCoord).rgb) : float3(0.0, 0.0, 0.0);
     
     float3 totalDiffuse = directDiffuse + ambientDiffuse;
     float3 totalSpecular = directSpecular + ambientSpecular;

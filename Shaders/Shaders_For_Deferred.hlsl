@@ -70,14 +70,14 @@ float4 PSMain(VS_OUTPUT input) : SV_TARGET
 
     // Unpack G-Buffer data
     float3 albedo = tAlbedo.SampleLevel(s1, input.texCoord, 0).rgb;
-    float3 N = normalize(tNormal.SampleLevel(s1, input.texCoord, 0).xyz * 2.0f - 1.0f);
+    float3 N = normalize(DecodeGBufferNormal(tNormal.SampleLevel(s1, input.texCoord, 0).xyz));
     float4 ormSample = tORM.SampleLevel(s1, input.texCoord, 0);
     if (ormSample.a < 0.5f)
     {
         return float4(albedo, 1.0f);
     }
     float ao = max(ormSample.r, 0.01);
-    float roughness = max(ormSample.g, 0.005);
+    float roughness = ClampPerceptualRoughness(ormSample.g);
     float metallic = ormSample.b;
 
     // Reconstruct world position from NDC coordinates and depth
@@ -89,53 +89,34 @@ float4 PSMain(VS_OUTPUT input) : SV_TARGET
 
     // Use different shadow maps depending on distance
     float dist = distance(camPos, worldPos);
-    uint cascadeIndex = 0;
-    if (dist > cascadeSplits.x)
-        cascadeIndex = 1;
-    if (dist > cascadeSplits.y)
-        cascadeIndex = 2;
-    if (dist > cascadeSplits.z)
-        cascadeIndex = 3;
+    uint cascadeIndex = SelectCascadeIndex(dist);
 
     float4 lightSpacePos = mul(float4(worldPos, 1.0f), lightViewProj[cascadeIndex]);
 
     float3 V = normalize(camPos - worldPos);
     float3 R = reflect(-V, N);
-    float3 F0 = float3(0.04, 0.04, 0.04);
-    F0 = lerp(F0, albedo, metallic);
+    float3 F0 = ComputeMaterialF0(albedo, metallic);
     float3 L = normalize(-lightDir);
     float3 H = normalize(V + L);
     float3 radiance = lightColor;
 
-    float NDF = DistributionGGX(N, H, roughness);
-    float G = GeometrySmith(N, V, L, roughness);
     float3 F = fresnelSchlick(max(dot(H, V), 0.0), F0);
-    
-    float3 numerator = NDF * G * F;
-    float denominator = 4.0 * max(dot(N, V), 0.0) * max(dot(N, L), 0.0) + 0.0001;
-    float3 specular = numerator / denominator;
+    float3 specular = ComputeCookTorranceSpecular(N, V, L, F, roughness);
 
-    float3 kS = F;
-    float3 kD = float3(1.0, 1.0, 1.0) - kS;
-    kD *= 1.0 - metallic;
+    float3 kD = ComputeDiffuseEnergy(F, metallic);
 
     // Shadow with attenuation
     float shadow = CalcShadowFactor(lightSpacePos, cascadeIndex);
-    float fadeDistance = 10.0f;
-    float fadeStart = cascadeSplits.w - fadeDistance;
-    float fadeFactor = saturate((dist - fadeStart) / fadeDistance);
-    shadow = lerp(shadow, 1.0f, fadeFactor);
+    shadow = FadeCascadeShadow(shadow, dist);
     
     float NdotL = max(dot(N, L), 0.0);
-    float3 directDiffuse = (kD * albedo / PI) * radiance * NdotL * shadow;
-    float3 directSpecular = specular * radiance * NdotL * shadow;
+    float3 directDiffuse = ComputeDirectDiffuse(kD, albedo, radiance, NdotL, shadow);
+    float3 directSpecular = ComputeDirectSpecular(specular, radiance, NdotL, shadow);
     
     float3 Lo = directDiffuse + directSpecular;
 
     float3 F_IBL = fresnelSchlickRoughness(max(dot(N, V), 0.0), F0, roughness);
-    float3 kS_IBL = F_IBL;
-    float3 kD_IBL = 1.0 - kS_IBL;
-    kD_IBL *= 1.0 - metallic;
+    float3 kD_IBL = ComputeDiffuseEnergy(F_IBL, metallic);
     
     float3 irradiance = EvaluateSH9(N);
     float3 diffuse_IBL = irradiance * albedo;
@@ -148,10 +129,10 @@ float4 PSMain(VS_OUTPUT input) : SV_TARGET
     float3 ambientDiffuse = kD_IBL * diffuse_IBL * finalAO;
 
     TextureCube tPrefilter = ResourceDescriptorHeap[iblPrefilterIdx];
-    float3 prefilteredColor = tPrefilter.SampleLevel(s1, R, roughness * 4.0).rgb;
+    float3 prefilteredColor = tPrefilter.SampleLevel(s1, R, roughness * SPECULAR_IBL_MAX_MIP).rgb;
     Texture2D tBRDF = ResourceDescriptorHeap[iblBRDFIdx];
     float2 brdf = tBRDF.Sample(s1, float2(max(dot(N, V), 0.0), roughness)).rg;
-    float3 specular_IBL = prefilteredColor * (F_IBL * brdf.x + brdf.y);
+    float3 specular_IBL = ComputeSplitSumSpecularIBL(prefilteredColor, brdf, F_IBL);
     float3 ambientSpecular = specular_IBL * finalAO; 
     float3 ambient = ambientDiffuse + ambientSpecular;
     

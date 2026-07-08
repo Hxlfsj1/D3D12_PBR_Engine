@@ -41,6 +41,7 @@ StructuredBuffer<MaterialData> gMaterialData : register(t7);
 SamplerState s1 : register(s0);
 
 #include "DepthVisibility.hlsli"
+#include "MaterialCommon.hlsli"
 #include "TangentBasis.hlsli"
 
 struct VS_INPUT
@@ -91,7 +92,7 @@ struct GBufferOutput
     float4 emissive : SV_Target3;
 };
 
-GBufferOutput PSMain(VS_OUTPUT input)
+GBufferOutput PSMain(VS_OUTPUT input, bool isFrontFace : SV_IsFrontFace)
 {
     GBufferOutput output;
     
@@ -100,14 +101,14 @@ GBufferOutput PSMain(VS_OUTPUT input)
     float4 albedoSample = SampleDepthAlbedo(finalMatID, input.texCoord);
     ApplyDepthAlphaTest(albedoSample.a);
     
-    float3 baseAlbedo = pow(abs(albedoSample.rgb), 2.2);
+    float3 baseAlbedo = DecodeSRGBColor(albedoSample.rgb);
     output.albedo = float4(baseAlbedo, albedoSample.a);
     output.emissive = float4(0.0f, 0.0f, 0.0f, 1.0f);
 
     if (!isUnlit)
     {
         Texture2D tEmissive = ResourceDescriptorHeap[gMaterialData[finalMatID].emissiveIdx];
-        float3 emissiveSample = pow(abs(tEmissive.Sample(s1, input.texCoord).rgb), 2.2);
+        float3 emissiveSample = DecodeSRGBColor(tEmissive.Sample(s1, input.texCoord).rgb);
         output.emissive = float4(emissiveSample, 1.0f);
     }
     
@@ -121,10 +122,12 @@ GBufferOutput PSMain(VS_OUTPUT input)
     BuildOrthonormalTangentBasis(input.worldNormal, input.worldTangent, input.worldBitangent, N, T, B);
     float3x3 TBN = float3x3(T, B, N);
     float3 finalNormal = normalize(mul(normalMap, TBN));
-    output.normal = float4(finalNormal * 0.5 + 0.5, 1.0);
+    finalNormal = FaceNormalByFrontFace(finalNormal, isFrontFace);
+    output.normal = float4(EncodeGBufferNormal(finalNormal), 1.0);
 #else
     float3 finalNormal = normalize(input.worldNormal);
-    output.normal = float4(finalNormal * 0.5 + 0.5, 1.0);
+    finalNormal = FaceNormalByFrontFace(finalNormal, isFrontFace);
+    output.normal = float4(EncodeGBufferNormal(finalNormal), 1.0);
 #endif
 
     Texture2D tORM = ResourceDescriptorHeap[gMaterialData[finalMatID].ormIdx];

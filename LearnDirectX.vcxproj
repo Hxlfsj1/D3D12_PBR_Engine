@@ -226,6 +226,9 @@
     <None Include="Shaders\MathCommon.hlsli">
       <FileType>Document</FileType>
     </None>
+    <None Include="Shaders\MaterialCommon.hlsli">
+      <FileType>Document</FileType>
+    </None>
     <None Include="Shaders\TangentBasis.hlsli">
       <FileType>Document</FileType>
     </None>

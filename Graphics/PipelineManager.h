@@ -520,7 +520,7 @@ private:
         transparentDesc.DepthStencilState.DepthEnable = TRUE;
         transparentDesc.DepthStencilState.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ZERO;
         transparentDesc.DepthStencilState.DepthFunc = D3D12_COMPARISON_FUNC_LESS_EQUAL;
-        transparentDesc.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
+        transparentDesc.RasterizerState.CullMode = D3D12_CULL_MODE_BACK;
 
         transparentDesc.VS = CD3DX12_SHADER_BYTECODE(vs0->GetBufferPointer(), vs0->GetBufferSize());
         transparentDesc.PS = CD3DX12_SHADER_BYTECODE(ps0->GetBufferPointer(), ps0->GetBufferSize());

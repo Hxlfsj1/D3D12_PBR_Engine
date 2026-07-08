@@ -23,6 +23,7 @@ SamplerState sPoint : register(s0);
 SamplerState sLinear : register(s1);
 
 #include "MathCommon.hlsli"
+#include "MaterialCommon.hlsli"
 
 struct VS_OUTPUT
 {
@@ -65,7 +66,7 @@ float4 PSMain_HBAO(VS_OUTPUT input) : SV_TARGET
 {
     // Unpack normal data in G-buffer
     Texture2D tNormal = ResourceDescriptorHeap[texIdx1];
-    float3 worldNormal = normalize(tNormal.SampleLevel(sPoint, input.uv, 0).xyz * 2.0f - 1.0f);
+    float3 worldNormal = normalize(DecodeGBufferNormal(tNormal.SampleLevel(sPoint, input.uv, 0).xyz));
     float3 viewNormal = normalize(mul(worldNormal, (float3x3) viewMat));
 
     float3 P = GetViewPos(input.uv, texIdx0);
@@ -133,7 +134,7 @@ float4 PSMain_Blur(VS_OUTPUT input) : SV_TARGET
     Texture2D tNormal = ResourceDescriptorHeap[texIdx2];
 
     float centerDepth = tDepth.SampleLevel(sPoint, input.uv, 0).r;
-    float3 centerNormal = normalize(tNormal.SampleLevel(sPoint, input.uv, 0).xyz * 2.0f - 1.0f);
+    float3 centerNormal = normalize(DecodeGBufferNormal(tNormal.SampleLevel(sPoint, input.uv, 0).xyz));
     
     float result = 0.0f;
     float weightSum = 0.0f;
@@ -150,7 +151,7 @@ float4 PSMain_Blur(VS_OUTPUT input) : SV_TARGET
             
             float sampleAO = tRawHBAO.SampleLevel(sLinear, sampleUV, 0).r;
             float sampleDepth = tDepth.SampleLevel(sPoint, sampleUV, 0).r;
-            float3 sampleNormal = normalize(tNormal.SampleLevel(sPoint, sampleUV, 0).xyz * 2.0f - 1.0f);
+            float3 sampleNormal = normalize(DecodeGBufferNormal(tNormal.SampleLevel(sPoint, sampleUV, 0).xyz));
             
             // Spatial weight (Distance falloff)
             float spatialWeight = exp(-(x * x + y * y) / (2.0f * 2.0f));
