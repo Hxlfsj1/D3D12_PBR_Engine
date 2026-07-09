@@ -28,4 +28,13 @@ float3 DecodeGBufferNormal(float3 encodedNormal)
     return encodedNormal * 2.0f - 1.0f;
 }
 
+float4 BuildSurfaceOutput(float3 color, float alpha)
+{
+#ifdef TRANSPARENT_PASS
+    return float4(color * alpha, alpha);
+#else
+    return float4(color, 1.0f);
+#endif
+}
+
 #endif

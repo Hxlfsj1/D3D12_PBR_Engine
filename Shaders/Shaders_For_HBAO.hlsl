@@ -25,6 +25,13 @@ SamplerState sLinear : register(s1);
 #include "MathCommon.hlsli"
 #include "MaterialCommon.hlsli"
 
+static const float HBAO_BACKGROUND_DEPTH = 0.999999f;
+
+bool IsBackgroundDepth(float depth)
+{
+    return depth >= HBAO_BACKGROUND_DEPTH;
+}
+
 struct VS_OUTPUT
 {
     float4 pos : SV_POSITION;
@@ -49,11 +56,8 @@ We compute in View Space for two reasons: First,
 it's completely sufficient since AO doesn't rely on world-space lights.
 Second, it saves 16 expensive inverse view matrix multiplications per pixel during ray marching.
 */
-float3 GetViewPos(float2 uv, uint depthIdx)
+float3 ReconstructViewPos(float2 uv, float depth)
 {
-    Texture2D tDepth = ResourceDescriptorHeap[depthIdx];
-    float depth = tDepth.SampleLevel(sPoint, uv, 0).r;
-    
     float x = uv.x * 2.0f - 1.0f;
     float y = (1.0f - uv.y) * 2.0f - 1.0f;
     float4 clipSpace = float4(x, y, depth, 1.0f);
@@ -64,12 +68,19 @@ float3 GetViewPos(float2 uv, uint depthIdx)
 
 float4 PSMain_HBAO(VS_OUTPUT input) : SV_TARGET
 {
+    Texture2D tDepth = ResourceDescriptorHeap[texIdx0];
+    float centerDepth = tDepth.SampleLevel(sPoint, input.uv, 0).r;
+    if (IsBackgroundDepth(centerDepth))
+    {
+        return float4(1.0f, 1.0f, 1.0f, 1.0f);
+    }
+
     // Unpack normal data in G-buffer
     Texture2D tNormal = ResourceDescriptorHeap[texIdx1];
     float3 worldNormal = normalize(DecodeGBufferNormal(tNormal.SampleLevel(sPoint, input.uv, 0).xyz));
     float3 viewNormal = normalize(mul(worldNormal, (float3x3) viewMat));
 
-    float3 P = GetViewPos(input.uv, texIdx0);
+    float3 P = ReconstructViewPos(input.uv, centerDepth);
     
     // Apply a random rotation offset to the 4 sampling directions
     float randomAngle = Rand(input.uv) * 3.1415926f * 2.0f;
@@ -99,7 +110,11 @@ float4 PSMain_HBAO(VS_OUTPUT input) : SV_TARGET
             if (offsetUV.x < 0.0f || offsetUV.x > 1.0f || offsetUV.y < 0.0f || offsetUV.y > 1.0f)
                 continue;
             
-            float3 S = GetViewPos(offsetUV, texIdx0);
+            float sampleDepth = tDepth.SampleLevel(sPoint, offsetUV, 0).r;
+            if (IsBackgroundDepth(sampleDepth))
+                continue;
+
+            float3 S = ReconstructViewPos(offsetUV, sampleDepth);
             float3 V = S - P;
             float dist = length(V);
             
@@ -134,6 +149,11 @@ float4 PSMain_Blur(VS_OUTPUT input) : SV_TARGET
     Texture2D tNormal = ResourceDescriptorHeap[texIdx2];
 
     float centerDepth = tDepth.SampleLevel(sPoint, input.uv, 0).r;
+    if (IsBackgroundDepth(centerDepth))
+    {
+        return float4(1.0f, 1.0f, 1.0f, 1.0f);
+    }
+
     float3 centerNormal = normalize(DecodeGBufferNormal(tNormal.SampleLevel(sPoint, input.uv, 0).xyz));
     
     float result = 0.0f;
@@ -148,9 +168,14 @@ float4 PSMain_Blur(VS_OUTPUT input) : SV_TARGET
             // Fetch sample data
             float2 offset = float2((float) x, (float) y) * texelSize;
             float2 sampleUV = input.uv + offset;
+            if (sampleUV.x < 0.0f || sampleUV.x > 1.0f || sampleUV.y < 0.0f || sampleUV.y > 1.0f)
+                continue;
             
-            float sampleAO = tRawHBAO.SampleLevel(sLinear, sampleUV, 0).r;
             float sampleDepth = tDepth.SampleLevel(sPoint, sampleUV, 0).r;
+            if (IsBackgroundDepth(sampleDepth))
+                continue;
+
+            float sampleAO = tRawHBAO.SampleLevel(sLinear, sampleUV, 0).r;
             float3 sampleNormal = normalize(DecodeGBufferNormal(tNormal.SampleLevel(sPoint, sampleUV, 0).xyz));
             
             // Spatial weight (Distance falloff)

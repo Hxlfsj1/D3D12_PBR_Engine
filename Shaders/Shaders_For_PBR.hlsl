@@ -156,7 +156,7 @@ float4 PSMain(VS_OUTPUT input, bool isFrontFace : SV_IsFrontFace) : SV_TARGET
     
     if (mat.isUnlit)
     {
-        return float4(albedo * finalAlpha, finalAlpha);
+        return BuildSurfaceOutput(albedo, finalAlpha);
     }
 
 #if LOD_LEVEL == 2
@@ -170,7 +170,7 @@ float4 PSMain(VS_OUTPUT input, bool isFrontFace : SV_IsFrontFace) : SV_TARGET
     float3 directDiffuse = albedo * lightColor * NdotL;
     
     float3 totalDiffuse = diffuse_IBL + directDiffuse;
-    return float4(totalDiffuse * finalAlpha, finalAlpha);
+    return BuildSurfaceOutput(totalDiffuse, finalAlpha);
 #else
     Texture2D tMR = ResourceDescriptorHeap[mat.ormIdx];
     
@@ -251,8 +251,8 @@ float4 PSMain(VS_OUTPUT input, bool isFrontFace : SV_IsFrontFace) : SV_TARGET
     float3 totalDiffuse = directDiffuse + ambientDiffuse;
     float3 totalSpecular = directSpecular + ambientSpecular;
     
-    float3 finalColor = (totalDiffuse * finalAlpha) + totalSpecular + emissive;
+    float3 finalColor = totalDiffuse + totalSpecular + emissive;
 
-    return float4(finalColor, finalAlpha);
+    return BuildSurfaceOutput(finalColor, finalAlpha);
 #endif
 }

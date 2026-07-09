@@ -73,7 +73,10 @@ public:
             resourceManager->GetHBAOBlurredRtvHandle(),
             resourceManager->GetHBAORawSrvIdx(),
             resourceManager->GetDepthBufferSrvIdx(),
-            resourceManager->GetGBufferNormalSrvIdx());
+            resourceManager->GetGBufferNormalSrvIdx(),
+            width,
+            height,
+            frameIndex);
 
         CD3DX12_RESOURCE_BARRIER finalBarrier = CD3DX12_RESOURCE_BARRIER::Transition(
             resourceManager->GetHBAOBlurredRT(),
@@ -145,7 +148,10 @@ public:
         D3D12_CPU_DESCRIPTOR_HANDLE blurRtv,
         UINT hbaoRawSrvIdx,
         UINT depthSrvIdx,
-        UINT gbufferNormalSrvIdx)
+        UINT gbufferNormalSrvIdx,
+        int width,
+        int height,
+        int frameIndex)
     {
         auto cmdList = deviceContext->GetCommandList();
 
@@ -153,11 +159,24 @@ public:
         const float clearAO[] = { 1.0f, 1.0f, 1.0f, 1.0f };
         cmdList->ClearRenderTargetView(blurRtv, clearAO, 0, nullptr);
 
+        D3D12_VIEWPORT viewport = { 0.0f, 0.0f, (float)width, (float)height, 0.0f, 1.0f };
+        D3D12_RECT scissorRect = { 0, 0, width, height };
+        cmdList->RSSetViewports(1, &viewport);
+        cmdList->RSSetScissorRects(1, &scissorRect);
+
+        cmdList->SetGraphicsRootSignature(pipelineManager->GetHBAORootSignature());
         cmdList->SetPipelineState(pipelineManager->GetHBAOBlurPSO());
+
+        ID3D12DescriptorHeap* heaps[] = { resourceManager->GetMainDescriptorHeap() };
+        cmdList->SetDescriptorHeaps(1, heaps);
+
+        const UINT64 hbaoConstantsOffset = 1024 * 1024 * 9;
+        cmdList->SetGraphicsRootConstantBufferView(0, resourceManager->GetCBVGPUAddress(frameIndex) + hbaoConstantsOffset);
 
         UINT bindlessIndices2[4] = { hbaoRawSrvIdx, depthSrvIdx, gbufferNormalSrvIdx, 0 };
         cmdList->SetGraphicsRoot32BitConstants(1, 4, bindlessIndices2, 0);
 
+        cmdList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
         cmdList->DrawInstanced(3, 1, 0, 0);
     }
 
@@ -258,7 +277,10 @@ public:
                     hbaoBlurredRtv,
                     hbaoRawSrvIdx,
                     depthSrvIdx,
-                    gbufferNormalSrvIdx);
+                    gbufferNormalSrvIdx,
+                    width,
+                    height,
+                    frameIndex);
             });
 
         return { hbaoBlurred, rawPass, blurPass };

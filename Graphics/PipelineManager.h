@@ -260,6 +260,10 @@ private:
         std::vector<std::wstring> lod1Cutout = { L"LOD_LEVEL=1", L"ALPHA_TEST=1" };
         std::vector<std::wstring> lod2Cutout = { L"LOD_LEVEL=2", L"ALPHA_TEST=1" };
 
+        std::vector<std::wstring> lod0Transparent = { L"LOD_LEVEL=0", L"TRANSPARENT_PASS=1" };
+        std::vector<std::wstring> lod1Transparent = { L"LOD_LEVEL=1", L"TRANSPARENT_PASS=1" };
+        std::vector<std::wstring> lod2Transparent = { L"LOD_LEVEL=2", L"TRANSPARENT_PASS=1" };
+
         std::vector<std::wstring> cutoutMacros = { L"ALPHA_TEST=1" };
 
         D3D12_INPUT_ELEMENT_DESC layout[] =
@@ -292,6 +296,10 @@ private:
         auto psPBRCutout0 = ShaderCompiler::CompileFromFile(L"Shaders/Shaders_For_PBR.hlsl", L"PSMain", L"ps_6_6", lod0Cutout);
         auto psPBRCutout1 = ShaderCompiler::CompileFromFile(L"Shaders/Shaders_For_PBR.hlsl", L"PSMain", L"ps_6_6", lod1Cutout);
         auto psPBRCutout2 = ShaderCompiler::CompileFromFile(L"Shaders/Shaders_For_PBR.hlsl", L"PSMain", L"ps_6_6", lod2Cutout);
+
+        auto psTransparent0 = ShaderCompiler::CompileFromFile(L"Shaders/Shaders_For_PBR.hlsl", L"PSMain", L"ps_6_6", lod0Transparent);
+        auto psTransparent1 = ShaderCompiler::CompileFromFile(L"Shaders/Shaders_For_PBR.hlsl", L"PSMain", L"ps_6_6", lod1Transparent);
+        auto psTransparent2 = ShaderCompiler::CompileFromFile(L"Shaders/Shaders_For_PBR.hlsl", L"PSMain", L"ps_6_6", lod2Transparent);
 
         auto vsGBuffer0 = ShaderCompiler::CompileFromFile(L"Shaders/Shaders_For_GBuffer.hlsl", L"VSMain", L"vs_6_6", lod0Macros);
         auto vsGBuffer1 = ShaderCompiler::CompileFromFile(L"Shaders/Shaders_For_GBuffer.hlsl", L"VSMain", L"vs_6_6", lod1Macros);
@@ -523,15 +531,15 @@ private:
         transparentDesc.RasterizerState.CullMode = D3D12_CULL_MODE_BACK;
 
         transparentDesc.VS = CD3DX12_SHADER_BYTECODE(vs0->GetBufferPointer(), vs0->GetBufferSize());
-        transparentDesc.PS = CD3DX12_SHADER_BYTECODE(ps0->GetBufferPointer(), ps0->GetBufferSize());
+        transparentDesc.PS = CD3DX12_SHADER_BYTECODE(psTransparent0->GetBufferPointer(), psTransparent0->GetBufferSize());
         if (FAILED(dc->GetDevice()->CreateGraphicsPipelineState(&transparentDesc, IID_PPV_ARGS(&psoTransparent[0])))) return false;
 
         transparentDesc.VS = CD3DX12_SHADER_BYTECODE(vs1->GetBufferPointer(), vs1->GetBufferSize());
-        transparentDesc.PS = CD3DX12_SHADER_BYTECODE(ps1->GetBufferPointer(), ps1->GetBufferSize());
+        transparentDesc.PS = CD3DX12_SHADER_BYTECODE(psTransparent1->GetBufferPointer(), psTransparent1->GetBufferSize());
         if (FAILED(dc->GetDevice()->CreateGraphicsPipelineState(&transparentDesc, IID_PPV_ARGS(&psoTransparent[1])))) return false;
 
         transparentDesc.VS = CD3DX12_SHADER_BYTECODE(vs2->GetBufferPointer(), vs2->GetBufferSize());
-        transparentDesc.PS = CD3DX12_SHADER_BYTECODE(ps2->GetBufferPointer(), ps2->GetBufferSize());
+        transparentDesc.PS = CD3DX12_SHADER_BYTECODE(psTransparent2->GetBufferPointer(), psTransparent2->GetBufferSize());
         if (FAILED(dc->GetDevice()->CreateGraphicsPipelineState(&transparentDesc, IID_PPV_ARGS(&psoTransparent[2])))) return false;
 
         // ====================================================================================================
@@ -744,10 +752,20 @@ private:
 
         D3D12_STATIC_SAMPLER_DESC samplers[2];
 
-        samplers[0] = CD3DX12_STATIC_SAMPLER_DESC(0, D3D12_FILTER_MIN_MAG_MIP_POINT);
+        samplers[0] = CD3DX12_STATIC_SAMPLER_DESC(
+            0,
+            D3D12_FILTER_MIN_MAG_MIP_POINT,
+            D3D12_TEXTURE_ADDRESS_MODE_CLAMP,
+            D3D12_TEXTURE_ADDRESS_MODE_CLAMP,
+            D3D12_TEXTURE_ADDRESS_MODE_CLAMP);
         samplers[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
 
-        samplers[1] = CD3DX12_STATIC_SAMPLER_DESC(1, D3D12_FILTER_MIN_MAG_MIP_LINEAR);
+        samplers[1] = CD3DX12_STATIC_SAMPLER_DESC(
+            1,
+            D3D12_FILTER_MIN_MAG_MIP_LINEAR,
+            D3D12_TEXTURE_ADDRESS_MODE_CLAMP,
+            D3D12_TEXTURE_ADDRESS_MODE_CLAMP,
+            D3D12_TEXTURE_ADDRESS_MODE_CLAMP);
         samplers[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
 
         CD3DX12_ROOT_SIGNATURE_DESC rsDesc;
