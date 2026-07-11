@@ -26,6 +26,7 @@ struct MaterialData
     uint normalIdx;
     uint ormIdx;
     uint emissiveIdx;
+    float4 baseColorFactor;
     uint isUnlit;
     uint3 pad;
 };
@@ -43,6 +44,7 @@ struct InstanceData
 cbuffer MeshConstants : register(b1)
 {
     uint materialID;
+    uint transparentSceneColorIdx;
 };
 
 StructuredBuffer<InstanceData> gInstanceData : register(t6);
@@ -142,6 +144,44 @@ float3 getNormalFromMap(VS_OUTPUT input, bool isFrontFace)
 
 #include "LightingCommon.hlsli"
 
+static const float TRANSPARENT_FRESNEL_POWER = 5.0f;
+static const float TRANSPARENT_FRESNEL_DARKEN_STRENGTH = 0.35f;
+
+static const float TRANSPARENT_REFRACTION_STRENGTH = 0.015f;
+static const float TRANSPARENT_REFRACTION_SURFACE_WEIGHT = 0.35f;
+
+float3 ApplyTransparentFresnelDarkening(float3 color, float3 normal, float3 viewDir)
+{
+#ifdef TRANSPARENT_PASS
+    float ndotv = saturate(dot(normalize(normal), normalize(viewDir)));
+    float edge = pow(1.0f - ndotv, TRANSPARENT_FRESNEL_POWER);
+    float transmittance = lerp(1.0f, 1.0f - TRANSPARENT_FRESNEL_DARKEN_STRENGTH, edge);
+    return color * transmittance;
+#else
+    return color;
+#endif
+}
+
+float3 ApplyTransparentSceneRefraction(float3 surfaceColor, float alpha, float4 screenPos, float3 normal, float3 albedo)
+{
+#ifdef TRANSPARENT_PASS
+    Texture2D sceneColorTexture = ResourceDescriptorHeap[transparentSceneColorIdx];
+
+    uint sceneWidth;
+    uint sceneHeight;
+    sceneColorTexture.GetDimensions(sceneWidth, sceneHeight);
+
+    float2 sceneUv = screenPos.xy / float2(sceneWidth, sceneHeight);
+    float2 refractedUv = saturate(sceneUv + normal.xy * TRANSPARENT_REFRACTION_STRENGTH);
+    float3 refractedColor = sceneColorTexture.Sample(s1, refractedUv).rgb;
+
+    float surfaceWeight = saturate(max(alpha, TRANSPARENT_REFRACTION_SURFACE_WEIGHT));
+    return lerp(refractedColor * albedo, surfaceColor, surfaceWeight);
+#else
+    return surfaceColor;
+#endif
+}
+
 // PBR pixel Shader
 float4 PSMain(VS_OUTPUT input, bool isFrontFace : SV_IsFrontFace) : SV_TARGET
 {
@@ -151,12 +191,16 @@ float4 PSMain(VS_OUTPUT input, bool isFrontFace : SV_IsFrontFace) : SV_TARGET
     
     float4 albedoSample = SampleDepthAlbedo(finalMatID, input.texCoord);
     ApplyDepthAlphaTest(albedoSample.a);
-    float3 albedo = DecodeSRGBColor(albedoSample.rgb);
+    float3 albedo = DecodeSRGBColor(albedoSample.rgb) * mat.baseColorFactor.rgb;
     float finalAlpha = albedoSample.a;
     
     if (mat.isUnlit)
     {
-        return BuildSurfaceOutput(albedo, finalAlpha);
+        float3 N = FaceNormalByFrontFace(normalize(input.normal), isFrontFace);
+        float3 V = normalize(camPos - input.worldPos);
+        float3 transparentColor = ApplyTransparentSceneRefraction(albedo, finalAlpha, input.pos, N, albedo);
+        transparentColor = ApplyTransparentFresnelDarkening(transparentColor, N, V);
+        return BuildSurfaceOutput(transparentColor, finalAlpha);
     }
 
 #if LOD_LEVEL == 2
@@ -170,6 +214,9 @@ float4 PSMain(VS_OUTPUT input, bool isFrontFace : SV_IsFrontFace) : SV_TARGET
     float3 directDiffuse = albedo * lightColor * NdotL;
     
     float3 totalDiffuse = diffuse_IBL + directDiffuse;
+    float3 V = normalize(camPos - input.worldPos);
+    totalDiffuse = ApplyTransparentSceneRefraction(totalDiffuse, finalAlpha, input.pos, N, albedo);
+    totalDiffuse = ApplyTransparentFresnelDarkening(totalDiffuse, N, V);
     return BuildSurfaceOutput(totalDiffuse, finalAlpha);
 #else
     Texture2D tMR = ResourceDescriptorHeap[mat.ormIdx];
@@ -252,6 +299,8 @@ float4 PSMain(VS_OUTPUT input, bool isFrontFace : SV_IsFrontFace) : SV_TARGET
     float3 totalSpecular = directSpecular + ambientSpecular;
     
     float3 finalColor = totalDiffuse + totalSpecular + emissive;
+    finalColor = ApplyTransparentSceneRefraction(finalColor, finalAlpha, input.pos, N, albedo);
+    finalColor = ApplyTransparentFresnelDarkening(finalColor, N, V);
 
     return BuildSurfaceOutput(finalColor, finalAlpha);
 #endif

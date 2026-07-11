@@ -36,6 +36,7 @@ struct MaterialData
     uint normalIdx;
     uint ormIdx;
     uint emissiveIdx;
+    float4 baseColorFactor;
     uint isUnlit;
     uint3 pad;
 };

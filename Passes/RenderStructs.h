@@ -40,6 +40,7 @@ struct MaterialData
     UINT normalIdx;
     UINT ormIdx;
     UINT emissiveIdx;
+    DirectX::XMFLOAT4 baseColorFactor;
     UINT isUnlit;
 
     UINT pad[3];

@@ -17,6 +17,7 @@ struct MaterialData
     uint normalIdx;
     uint ormIdx;
     uint emissiveIdx;
+    float4 baseColorFactor;
     uint isUnlit;
     uint3 pad;
 };
@@ -97,23 +98,24 @@ GBufferOutput PSMain(VS_OUTPUT input, bool isFrontFace : SV_IsFrontFace)
     GBufferOutput output;
     
     uint finalMatID = ResolveDepthMaterialID(input.instanceID, materialID);
-    bool isUnlit = gMaterialData[finalMatID].isUnlit != 0;
+    MaterialData mat = gMaterialData[finalMatID];
+    bool isUnlit = mat.isUnlit != 0;
     float4 albedoSample = SampleDepthAlbedo(finalMatID, input.texCoord);
     ApplyDepthAlphaTest(albedoSample.a);
     
-    float3 baseAlbedo = DecodeSRGBColor(albedoSample.rgb);
+    float3 baseAlbedo = DecodeSRGBColor(albedoSample.rgb) * mat.baseColorFactor.rgb;
     output.albedo = float4(baseAlbedo, albedoSample.a);
     output.emissive = float4(0.0f, 0.0f, 0.0f, 1.0f);
 
     if (!isUnlit)
     {
-        Texture2D tEmissive = ResourceDescriptorHeap[gMaterialData[finalMatID].emissiveIdx];
+        Texture2D tEmissive = ResourceDescriptorHeap[mat.emissiveIdx];
         float3 emissiveSample = DecodeSRGBColor(tEmissive.Sample(s1, input.texCoord).rgb);
         output.emissive = float4(emissiveSample, 1.0f);
     }
     
 #if LOD_LEVEL == 0
-    Texture2D tNormal = ResourceDescriptorHeap[gMaterialData[finalMatID].normalIdx];
+    Texture2D tNormal = ResourceDescriptorHeap[mat.normalIdx];
     float3 normalMap = tNormal.Sample(s1, input.texCoord).xyz * 2.0 - 1.0;
     normalMap.y = -normalMap.y;
     float3 N;
@@ -130,7 +132,7 @@ GBufferOutput PSMain(VS_OUTPUT input, bool isFrontFace : SV_IsFrontFace)
     output.normal = float4(EncodeGBufferNormal(finalNormal), 1.0);
 #endif
 
-    Texture2D tORM = ResourceDescriptorHeap[gMaterialData[finalMatID].ormIdx];
+    Texture2D tORM = ResourceDescriptorHeap[mat.ormIdx];
     float3 ormSample = tORM.Sample(s1, input.texCoord).rgb;
     output.orm = float4(ormSample, 1.0f);
     output.orm.a = isUnlit ? 0.0f : 1.0f;

@@ -10,7 +10,9 @@ uint ResolveDepthMaterialID(uint instanceID, uint meshMaterialID)
 float4 SampleDepthAlbedo(uint resolvedMaterialID, float2 texCoord)
 {
     Texture2D tAlbedo = ResourceDescriptorHeap[gMaterialData[resolvedMaterialID].albedoIdx];
-    return tAlbedo.Sample(s1, texCoord);
+    float4 albedo = tAlbedo.Sample(s1, texCoord);
+    albedo.a *= gMaterialData[resolvedMaterialID].baseColorFactor.a;
+    return albedo;
 }
 
 void ApplyDepthAlphaTest(float alpha)

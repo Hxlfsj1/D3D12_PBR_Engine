@@ -176,12 +176,38 @@ public:
 
         auto cmdList = deviceContext->GetCommandList();
 
+        ID3D12Resource* sceneColor = resourceManager->GetPostProcessRT();
+        ID3D12Resource* sceneColorCopy = resourceManager->GetTransparentSceneColorCopy();
+
+        D3D12_RESOURCE_BARRIER copyBarriers[] =
+        {
+            CD3DX12_RESOURCE_BARRIER::Transition(sceneColor, D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_COPY_SOURCE),
+            CD3DX12_RESOURCE_BARRIER::Transition(sceneColorCopy, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COPY_DEST)
+        };
+        cmdList->ResourceBarrier(_countof(copyBarriers), copyBarriers);
+
+        cmdList->CopyResource(sceneColorCopy, sceneColor);
+
+        D3D12_RESOURCE_BARRIER restoreBarriers[] =
+        {
+            CD3DX12_RESOURCE_BARRIER::Transition(sceneColor, D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_RENDER_TARGET),
+            CD3DX12_RESOURCE_BARRIER::Transition(sceneColorCopy, D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE)
+        };
+        cmdList->ResourceBarrier(_countof(restoreBarriers), restoreBarriers);
+
         cmdList->OMSetRenderTargets(1, &rtv, FALSE, &dsv);
         cmdList->RSSetViewports(1, &viewport);
         cmdList->RSSetScissorRects(1, &scissorRect);
-        D3D12_GPU_VIRTUAL_ADDRESS baseGpuAddress = resourceManager->GetCBVGPUAddress(frameIndex);
 
+        cmdList->SetGraphicsRootSignature(pipelineManager->GetRootSignature());
+        ID3D12DescriptorHeap* heaps[] = { resourceManager->GetMainDescriptorHeap() };
+        cmdList->SetDescriptorHeaps(1, heaps);
+
+        D3D12_GPU_VIRTUAL_ADDRESS baseGpuAddress = resourceManager->GetCBVGPUAddress(frameIndex);
+        cmdList->SetGraphicsRootConstantBufferView(0, baseGpuAddress);
+        cmdList->SetGraphicsRootConstantBufferView(2, resourceManager->GetSHBufferGPUAddress());
         cmdList->SetGraphicsRootShaderResourceView(3, resourceManager->GetMaterialBufferGPUAddress());
+        cmdList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
 
         for (size_t i = transparentStartIndex; i < visibleInstances.size(); ++i)
         {
@@ -198,7 +224,13 @@ public:
 
             for (auto& mesh : instance->pModel->meshes)
             {
-                cmdList->SetGraphicsRoot32BitConstants(4, 1, &mesh.materialID, 0);
+                UINT transparentConstants[] =
+                {
+                    mesh.materialID,
+                    resourceManager->GetTransparentSceneColorSrvIdx()
+                };
+
+                cmdList->SetGraphicsRoot32BitConstants(4, _countof(transparentConstants), transparentConstants, 0);
                 mesh.Draw(cmdList, 1, instance->currentLodLevel);
             }
         }

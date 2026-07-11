@@ -71,17 +71,19 @@ public:
     std::vector<Vertex> vertices;
     std::vector<std::vector<unsigned int>> lodIndices;
     std::vector<Texture> textures;
+    XMFLOAT4 baseColorFactor;
     bool isUnlit;
     UINT materialID = 0;
 
     ComPtr<ID3D12Resource> vertexBufferUploader;
     std::vector<ComPtr<ID3D12Resource>> indexBufferUploaders;
 
-    Mesh(ID3D12Device* device, ID3D12GraphicsCommandList* cmdList, std::vector<Vertex>& vertices, std::vector<std::vector<unsigned int>>& lodIndices, std::vector<Texture>& textures, bool _isUnlit = false)
+    Mesh(ID3D12Device* device, ID3D12GraphicsCommandList* cmdList, std::vector<Vertex>& vertices, std::vector<std::vector<unsigned int>>& lodIndices, std::vector<Texture>& textures, XMFLOAT4 _baseColorFactor = { 1.0f, 1.0f, 1.0f, 1.0f }, bool _isUnlit = false)
     {
         this->vertices = std::move(vertices);
         this->lodIndices = std::move(lodIndices);
         this->textures = std::move(textures);
+        this->baseColorFactor = _baseColorFactor;
         this->isUnlit = _isUnlit;
         setupMesh(device, cmdList);
     }
@@ -254,6 +256,7 @@ private:
         std::vector<Vertex> vertices;
         std::vector<unsigned int> indices;
         std::vector<Texture> textures;
+        XMFLOAT4 baseColorFactor = { 1.0f, 1.0f, 1.0f, 1.0f };
         bool isUnlit = false;
 
         DirectX::XMMATRIX invTranspose = DirectX::XMMatrixTranspose(DirectX::XMMatrixInverse(nullptr, nodeTransform));
@@ -368,13 +371,51 @@ private:
             aiString matName;
             material->Get(AI_MATKEY_NAME, matName);
 
-            for (size_t k = 0; k < gltfModel.materials.size(); k++)
+            bool foundGltfMaterial = false;
+            auto applyGltfMaterial = [&](const tinygltf::Material& gltfMaterial)
+                {
+                    const std::vector<double>& factor = gltfMaterial.pbrMetallicRoughness.baseColorFactor;
+                    if (factor.size() >= 4)
+                    {
+                        baseColorFactor = {
+                            static_cast<float>(factor[0]),
+                            static_cast<float>(factor[1]),
+                            static_cast<float>(factor[2]),
+                            static_cast<float>(factor[3])
+                        };
+                    }
+
+                    isUnlit = gltfMaterial.extensions.find("KHR_materials_unlit") != gltfMaterial.extensions.end();
+                    foundGltfMaterial = true;
+                };
+
+            for (size_t k = 0; !foundGltfMaterial && k < gltfModel.materials.size(); k++)
             {
                 if (gltfModel.materials[k].name == matName.C_Str())
                 {
-                    isUnlit = gltfModel.materials[k].extensions.find("KHR_materials_unlit") != gltfModel.materials[k].extensions.end();
+                    applyGltfMaterial(gltfModel.materials[k]);
                     break;
                 }
+            }
+
+            if (!foundGltfMaterial && mesh->mMaterialIndex < gltfModel.materials.size())
+            {
+                applyGltfMaterial(gltfModel.materials[mesh->mMaterialIndex]);
+            }
+
+            aiColor4D assimpBaseColor;
+            if (!foundGltfMaterial && material->Get(AI_MATKEY_BASE_COLOR, assimpBaseColor) == AI_SUCCESS)
+            {
+                baseColorFactor.x = assimpBaseColor.r;
+                baseColorFactor.y = assimpBaseColor.g;
+                baseColorFactor.z = assimpBaseColor.b;
+                baseColorFactor.w = assimpBaseColor.a;
+            }
+
+            float opacity = 1.0f;
+            if (!foundGltfMaterial && material->Get(AI_MATKEY_OPACITY, opacity) == AI_SUCCESS)
+            {
+                baseColorFactor.w = opacity;
             }
 
             if (material->GetTextureCount(aiTextureType_EMISSION_COLOR) > 0)
@@ -387,7 +428,7 @@ private:
             }
         }
 
-        return Mesh(device, cmdList, vertices, allLodIndices, textures, isUnlit);
+        return Mesh(device, cmdList, vertices, allLodIndices, textures, baseColorFactor, isUnlit);
     }
 
     void LoadAssimpTexture(ID3D12Device* device, DirectX::ResourceUploadBatch& upload, aiMaterial* mat, aiTextureType type, TextureType typeEnum, std::vector<Texture>& textures, const aiScene* scene)

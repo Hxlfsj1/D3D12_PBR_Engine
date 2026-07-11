@@ -220,6 +220,7 @@ public:
                 mat.normalIdx = dummyNormalIdx;
                 mat.ormIdx = dummyORMIdx;
                 mat.emissiveIdx = dummyEmissiveIdx;
+                mat.baseColorFactor = mesh.baseColorFactor;
                 mat.isUnlit = mesh.isUnlit;
 
                 for (auto& tex : mesh.textures)
@@ -483,6 +484,31 @@ public:
 
         CD3DX12_CPU_DESCRIPTOR_HANDLE hSrv(mainDescriptorHeap->GetCPUDescriptorHandleForHeapStart(), m_offscreenSrvIdx, srvDescriptorSize);
         dc->GetDevice()->CreateShaderResourceView(m_offscreenRT.Get(), &srvDesc, hSrv);
+
+        D3D12_RESOURCE_DESC transparentCopyDesc = CD3DX12_RESOURCE_DESC::Tex2D(
+            DXGI_FORMAT_R16G16B16A16_FLOAT,
+            (UINT64)width, (UINT)height,
+            1, 1, 1, 0,
+            D3D12_RESOURCE_FLAG_NONE);
+
+        if (FAILED(dc->GetDevice()->CreateCommittedResource(
+            &defHeapProps,
+            D3D12_HEAP_FLAG_NONE,
+            &transparentCopyDesc,
+            D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+            nullptr,
+            IID_PPV_ARGS(&m_transparentSceneColorCopy))))
+        {
+            return false;
+        }
+
+        m_transparentSceneColorSrvIdx = srvIdx++;
+        CD3DX12_CPU_DESCRIPTOR_HANDLE hTransparentCopySrv(
+            mainDescriptorHeap->GetCPUDescriptorHandleForHeapStart(),
+            m_transparentSceneColorSrvIdx,
+            srvDescriptorSize);
+
+        dc->GetDevice()->CreateShaderResourceView(m_transparentSceneColorCopy.Get(), &srvDesc, hTransparentCopySrv);
 
         D3D12_DESCRIPTOR_HEAP_DESC taaRtvHeapDesc = {};
         taaRtvHeapDesc.NumDescriptors = 2;
@@ -889,6 +915,16 @@ public:
         return m_offscreenSrvIdx;
     }
 
+    ID3D12Resource* GetTransparentSceneColorCopy()
+    {
+        return m_transparentSceneColorCopy.Get();
+    }
+
+    UINT GetTransparentSceneColorSrvIdx()
+    {
+        return m_transparentSceneColorSrvIdx;
+    }
+
     D3D12_GPU_VIRTUAL_ADDRESS GetMaterialBufferGPUAddress()
     {
         return m_materialBuffer->GetGPUVirtualAddress();
@@ -1058,6 +1094,9 @@ private:
     Microsoft::WRL::ComPtr<ID3D12Resource> m_offscreenRT;
     Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> m_postRtvHeap;
     UINT m_offscreenSrvIdx;
+
+    Microsoft::WRL::ComPtr<ID3D12Resource> m_transparentSceneColorCopy;
+    UINT m_transparentSceneColorSrvIdx = 0;
 
     ComPtr<ID3D12Resource> m_materialBuffer;
     ComPtr<ID3D12Resource> m_materialUploadBuffer;
