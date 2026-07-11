@@ -225,17 +225,31 @@ public:
             D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
             "HBAOBlurred");
 
-        UINT hbaoRawSrvIdx = resourceManager->GetHBAORawSrvIdx();
-        UINT depthSrvIdx = resourceManager->GetDepthBufferSrvIdx();
-        UINT gbufferNormalSrvIdx = resourceManager->GetGBufferNormalSrvIdx();
+        D3D12_SHADER_RESOURCE_VIEW_DESC depthSrvDesc = {};
+        depthSrvDesc.Format = DXGI_FORMAT_R32_FLOAT;
+        depthSrvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+        depthSrvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+        depthSrvDesc.Texture2D.MipLevels = 1;
 
-        D3D12_CPU_DESCRIPTOR_HANDLE hbaoRawRtv = resourceManager->GetHBAORawRtvHandle();
-        D3D12_CPU_DESCRIPTOR_HANDLE hbaoBlurredRtv = resourceManager->GetHBAOBlurredRtvHandle();
+        RDGTextureSRVHandle depthSrv = graph.CreateTextureSRVView(depth, &depthSrvDesc);
+        RDGTextureSRVHandle gbufferNormalSrv = graph.CreateTextureSRVView(gbufferNormal);
+        RDGTextureSRVHandle hbaoRawSrv = graph.CreateTextureSRVView(hbaoRaw);
+        RDGTextureRTVHandle hbaoRawRtv = graph.CreateTextureRTVView(hbaoRaw);
+        RDGTextureRTVHandle hbaoBlurredRtv = graph.CreateTextureRTVView(hbaoBlurred);
+
+        if (!depthSrv.IsValid() ||
+            !gbufferNormalSrv.IsValid() ||
+            !hbaoRawSrv.IsValid() ||
+            !hbaoRawRtv.IsValid() ||
+            !hbaoBlurredRtv.IsValid())
+        {
+            return {};
+        }
 
         RDGPassParameters rawParams;
-        rawParams.ReadSRV(depth);
-        rawParams.ReadSRV(gbufferNormal);
-        rawParams.WriteRTV(hbaoRaw);
+        rawParams.ReadSRV(depthSrv);
+        rawParams.ReadSRV(gbufferNormalSrv);
+        rawParams.WriteRTV(hbaoRawRtv);
 
         RDGPassHandle rawPass = graph.AddPass(
             "HBAORaw",
@@ -253,16 +267,16 @@ public:
                     width,
                     height,
                     frameIndex,
-                    hbaoRawRtv,
-                    depthSrvIdx,
-                    gbufferNormalSrvIdx);
+                    hbaoRawRtv.cpuHandle,
+                    depthSrv.descriptorIndex,
+                    gbufferNormalSrv.descriptorIndex);
             });
 
         RDGPassParameters blurParams;
-        blurParams.ReadSRV(hbaoRaw);
-        blurParams.ReadSRV(depth);
-        blurParams.ReadSRV(gbufferNormal);
-        blurParams.WriteRTV(hbaoBlurred);
+        blurParams.ReadSRV(hbaoRawSrv);
+        blurParams.ReadSRV(depthSrv);
+        blurParams.ReadSRV(gbufferNormalSrv);
+        blurParams.WriteRTV(hbaoBlurredRtv);
 
         RDGPassHandle blurPass = graph.AddPass(
             "HBAOBlur",
@@ -274,10 +288,10 @@ public:
                     deviceContext,
                     resourceManager,
                     pipelineManager,
-                    hbaoBlurredRtv,
-                    hbaoRawSrvIdx,
-                    depthSrvIdx,
-                    gbufferNormalSrvIdx,
+                    hbaoBlurredRtv.cpuHandle,
+                    hbaoRawSrv.descriptorIndex,
+                    depthSrv.descriptorIndex,
+                    gbufferNormalSrv.descriptorIndex,
                     width,
                     height,
                     frameIndex);
@@ -298,6 +312,11 @@ public:
         int frameIndex)
     {
         RDGBuilder graph(deviceContext, "HBAOGraph");
+        graph.SetTransientSrvUavDescriptorAllocator(
+            [resourceManager](UINT* descriptorIndex, D3D12_CPU_DESCRIPTOR_HANDLE* cpuHandle)
+            {
+                return resourceManager->AllocateTransientSrvUavDescriptor(descriptorIndex, cpuHandle);
+            });
 
         AddToGraph(
             graph,

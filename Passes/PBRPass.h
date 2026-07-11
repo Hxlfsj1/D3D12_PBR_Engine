@@ -26,6 +26,7 @@ public:
     {
         RDGTextureHandle sceneColor;
         RDGTextureHandle depth;
+        RDGTextureSRVHandle shadowMap;
     };
 
     struct ZPrepassOutput
@@ -104,8 +105,14 @@ public:
             D3D12_RESOURCE_STATE_DEPTH_WRITE,
             "SceneDepth");
 
+        RDGTextureDSVHandle depthDsv = graph.CreateTextureDSVView(depth);
+        if (!depthDsv.IsValid())
+        {
+            return {};
+        }
+
         RDGPassParameters params;
-        params.WriteDSV(depth);
+        params.WriteDSV(depthDsv);
 
         RDGPassHandle pass = graph.AddPass(
             "ZPrepass",
@@ -121,7 +128,7 @@ public:
                     viewport,
                     scissorRect,
                     visibleInstances,
-                    deviceContext->GetDSVHandle());
+                    depthDsv.cpuHandle);
             });
 
         return { depth, pass };
@@ -137,10 +144,34 @@ public:
         const std::vector<ModelInstance*>& visibleInstances,
         size_t transparentStartIndex)
     {
+        if (visibleInstances.empty() || transparentStartIndex >= visibleInstances.size())
+        {
+            return;
+        }
+
+        auto cmdList = deviceContext->GetCommandList();
+        ID3D12Resource* sceneColor = resourceManager->GetPostProcessRT();
+        ID3D12Resource* sceneColorCopy = resourceManager->GetTransparentSceneColorCopy();
+
+        D3D12_RESOURCE_BARRIER copyBarriers[] =
+        {
+            CD3DX12_RESOURCE_BARRIER::Transition(sceneColor, D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_COPY_SOURCE),
+            CD3DX12_RESOURCE_BARRIER::Transition(sceneColorCopy, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COPY_DEST)
+        };
+        cmdList->ResourceBarrier(_countof(copyBarriers), copyBarriers);
+        cmdList->CopyResource(sceneColorCopy, sceneColor);
+
+        D3D12_RESOURCE_BARRIER restoreBarriers[] =
+        {
+            CD3DX12_RESOURCE_BARRIER::Transition(sceneColor, D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_RENDER_TARGET),
+            CD3DX12_RESOURCE_BARRIER::Transition(sceneColorCopy, D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE)
+        };
+        cmdList->ResourceBarrier(_countof(restoreBarriers), restoreBarriers);
+
         CD3DX12_CPU_DESCRIPTOR_HANDLE rtv = resourceManager->GetPostProcessRtvHandle();
         CD3DX12_CPU_DESCRIPTOR_HANDLE dsv = deviceContext->GetDSVHandle();
 
-        ExecuteTransparentNoBarrier(
+        ExecuteTransparentDrawNoBarrier(
             deviceContext,
             resourceManager,
             pipelineManager,
@@ -149,11 +180,13 @@ public:
             scissorRect,
             visibleInstances,
             transparentStartIndex,
+            resourceManager->GetTransparentSceneColorSrvIdx(),
+            resourceManager->GetShadowSrvIdx(),
             rtv,
             dsv);
     }
 
-    static void ExecuteTransparentNoBarrier(
+    static void ExecuteTransparentDrawNoBarrier(
         RenderDevice* deviceContext,
         ResourceManager* resourceManager,
         PipelineManager* pipelineManager,
@@ -162,6 +195,8 @@ public:
         const D3D12_RECT& scissorRect,
         const std::vector<ModelInstance*>& visibleInstances,
         size_t transparentStartIndex,
+        UINT sceneColorCopySrvIdx,
+        UINT shadowMapSrvIdx,
         D3D12_CPU_DESCRIPTOR_HANDLE rtv,
         D3D12_CPU_DESCRIPTOR_HANDLE dsv)
     {
@@ -176,24 +211,9 @@ public:
 
         auto cmdList = deviceContext->GetCommandList();
 
-        ID3D12Resource* sceneColor = resourceManager->GetPostProcessRT();
-        ID3D12Resource* sceneColorCopy = resourceManager->GetTransparentSceneColorCopy();
-
-        D3D12_RESOURCE_BARRIER copyBarriers[] =
-        {
-            CD3DX12_RESOURCE_BARRIER::Transition(sceneColor, D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_COPY_SOURCE),
-            CD3DX12_RESOURCE_BARRIER::Transition(sceneColorCopy, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COPY_DEST)
-        };
-        cmdList->ResourceBarrier(_countof(copyBarriers), copyBarriers);
-
-        cmdList->CopyResource(sceneColorCopy, sceneColor);
-
-        D3D12_RESOURCE_BARRIER restoreBarriers[] =
-        {
-            CD3DX12_RESOURCE_BARRIER::Transition(sceneColor, D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_RENDER_TARGET),
-            CD3DX12_RESOURCE_BARRIER::Transition(sceneColorCopy, D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE)
-        };
-        cmdList->ResourceBarrier(_countof(restoreBarriers), restoreBarriers);
+        PassConstants* passConstants = reinterpret_cast<PassConstants*>(
+            resourceManager->GetCBVAddress(frameIndex));
+        passConstants->shadowMapIdx = shadowMapSrvIdx;
 
         cmdList->OMSetRenderTargets(1, &rtv, FALSE, &dsv);
         cmdList->RSSetViewports(1, &viewport);
@@ -227,7 +247,7 @@ public:
                 UINT transparentConstants[] =
                 {
                     mesh.materialID,
-                    resourceManager->GetTransparentSceneColorSrvIdx()
+                    sceneColorCopySrvIdx
                 };
 
                 cmdList->SetGraphicsRoot32BitConstants(4, _countof(transparentConstants), transparentConstants, 0);
@@ -259,6 +279,12 @@ public:
         }
         graph.MarkTextureAsOutput(sceneColor);
 
+        RDGTextureHandle sceneColorCopy = graph.RegisterExternalTexture(
+            resourceManager->GetTransparentSceneColorCopy(),
+            D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+            D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+            "TransparentSceneColorCopy");
+
         RDGTextureHandle depth = input.depth;
         if (!depth.IsValid())
         {
@@ -269,17 +295,69 @@ public:
                 "SceneDepth");
         }
 
-        RDGPassParameters params;
-        params.WriteRTV(sceneColor);
-        params.WriteDSV(depth);
+        RDGTextureSRVHandle shadowMapSrv = input.shadowMap;
+        if (!shadowMapSrv.IsValid())
+        {
+            RDGTextureHandle shadowMap = graph.RegisterExternalTexture(
+                resourceManager->GetShadowMap(),
+                D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+                D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+                "ShadowMap");
+
+            D3D12_SHADER_RESOURCE_VIEW_DESC shadowSrvDesc = {};
+            shadowSrvDesc.Format = DXGI_FORMAT_R32_FLOAT;
+            shadowSrvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2DARRAY;
+            shadowSrvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+            shadowSrvDesc.Texture2DArray.MipLevels = 1;
+            shadowSrvDesc.Texture2DArray.ArraySize = NUM_CASCADES;
+            shadowMapSrv = graph.CreateTextureSRVView(shadowMap, &shadowSrvDesc);
+        }
+
+        ID3D12Resource* sceneColorResource = graph.GetTextureResource(sceneColor);
+        ID3D12Resource* sceneColorCopyResource = graph.GetTextureResource(sceneColorCopy);
+
+        RDGTextureSRVHandle sceneColorCopySrv = graph.CreateTextureSRVView(sceneColorCopy);
+        RDGTextureRTVHandle sceneColorRtv = graph.CreateTextureRTVView(sceneColor);
+        RDGTextureDSVHandle depthDsv = graph.CreateTextureDSVView(depth);
+        if (!sceneColorCopySrv.IsValid() ||
+            !shadowMapSrv.IsValid() ||
+            !sceneColorRtv.IsValid() ||
+            !depthDsv.IsValid())
+        {
+            return {};
+        }
+
+        RDGPassParameters copyParams;
+        copyParams.ReadCopySrc(sceneColor);
+        copyParams.WriteCopyDst(sceneColorCopy);
+
+        graph.AddPass(
+            "TransparentSceneColorCopy",
+            ERDGPassFlags::Copy,
+            copyParams,
+            [=, &transparentStartIndex](ID3D12GraphicsCommandList* cmdList)
+            {
+                if (visibleInstances.empty() || transparentStartIndex >= visibleInstances.size())
+                {
+                    return;
+                }
+
+                cmdList->CopyResource(sceneColorCopyResource, sceneColorResource);
+            });
+
+        RDGPassParameters drawParams;
+        drawParams.ReadSRV(sceneColorCopySrv);
+        drawParams.ReadSRV(shadowMapSrv);
+        drawParams.WriteRTV(sceneColorRtv);
+        drawParams.WriteDSV(depthDsv);
 
         return graph.AddPass(
             "Transparent",
             ERDGPassFlags::Graphics,
-            params,
+            drawParams,
             [=, &transparentStartIndex](ID3D12GraphicsCommandList* cmdList)
             {
-                ExecuteTransparentNoBarrier(
+                ExecuteTransparentDrawNoBarrier(
                     deviceContext,
                     resourceManager,
                     pipelineManager,
@@ -288,8 +366,10 @@ public:
                     scissorRect,
                     visibleInstances,
                     transparentStartIndex,
-                    resourceManager->GetPostProcessRtvHandle(),
-                    deviceContext->GetDSVHandle());
+                    sceneColorCopySrv.descriptorIndex,
+                    shadowMapSrv.descriptorIndex,
+                    sceneColorRtv.cpuHandle,
+                    depthDsv.cpuHandle);
             });
     }
 

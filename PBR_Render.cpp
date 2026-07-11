@@ -659,6 +659,11 @@ void D3D12App::Render()
     else
     {
         RDGBuilder deferredGraph(&m_deviceContext, "DeferredFrameGraph");
+        deferredGraph.SetTransientSrvUavDescriptorAllocator(
+            [this](UINT* descriptorIndex, D3D12_CPU_DESCRIPTOR_HANDLE* cpuHandle)
+            {
+                return m_resourceManager.AllocateTransientSrvUavDescriptor(descriptorIndex, cpuHandle);
+            });
 
         size_t transparentStartIndex = g_visibleInstances.size();
 
@@ -722,7 +727,7 @@ void D3D12App::Render()
         deferredInput.gbufferEmissive = gbufferOutput.emissive;
         deferredInput.depth = gbufferOutput.depth;
         deferredInput.hbaoBlurred = hbaoOutput.blurredTexture;
-        deferredInput.shadowMap = shadowOutput.shadowMap;
+        deferredInput.shadowMap = shadowOutput.shadowMapSrv;
 
         DeferredLightingPass::Output deferredOutput = DeferredLightingPass::AddToGraph(
             deferredGraph,
@@ -761,8 +766,7 @@ void D3D12App::Render()
             scissorRect,
             g_visibleInstances,
             transparentStartIndex,
-            { deferredOutput.sceneColor, gbufferOutput.depth });
-        deferredGraph.AddPassDependencies(transparentPass, { sceneColorProducer });
+            { deferredOutput.sceneColor, gbufferOutput.depth, shadowOutput.shadowMapSrv });
         sceneColorProducer = transparentPass;
 
         if (m_useTAA)
@@ -792,7 +796,6 @@ void D3D12App::Render()
                 frameIndex,
                 viewport,
                 scissorRect,
-                taaOutput.historySrvIdx,
                 taaOutput.historyTexture);
             deferredGraph.AddPassDependencies(postProcessPass, { sceneColorProducer });
 
@@ -809,7 +812,6 @@ void D3D12App::Render()
                 frameIndex,
                 viewport,
                 scissorRect,
-                m_resourceManager.GetPostProcessSrvIdx(),
                 deferredOutput.sceneColor);
             deferredGraph.AddPassDependencies(postProcessPass, { sceneColorProducer });
 
@@ -848,7 +850,7 @@ void D3D12App::Render()
     {
         if (!m_useTAA)
         {
-            PostProcessPass::ExecuteRDG(&m_deviceContext, &m_resourceManager, &m_pipelineManager, frameIndex, viewport, scissorRect, finalPostInputSRV);
+            PostProcessPass::ExecuteRDG(&m_deviceContext, &m_resourceManager, &m_pipelineManager, frameIndex, viewport, scissorRect);
         }
         else
         {

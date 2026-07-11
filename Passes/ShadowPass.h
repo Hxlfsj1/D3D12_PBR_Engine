@@ -18,6 +18,7 @@ public:
     struct Output
     {
         RDGTextureHandle shadowMap;
+        RDGTextureSRVHandle shadowMapSrv;
         RDGPassHandle pass;
     };
 
@@ -32,6 +33,12 @@ public:
     {
         auto cmdList = deviceContext->GetCommandList();
 
+        std::array<D3D12_CPU_DESCRIPTOR_HANDLE, NUM_CASCADES> shadowDsvHandles = {};
+        for (UINT cascadeIdx = 0; cascadeIdx < NUM_CASCADES; ++cascadeIdx)
+        {
+            shadowDsvHandles[cascadeIdx] = resourceManager->GetShadowDsvHandle(cascadeIdx);
+        }
+
         CD3DX12_RESOURCE_BARRIER toDepthWrite = CD3DX12_RESOURCE_BARRIER::Transition(
             resourceManager->GetShadowMap(),
             D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
@@ -45,7 +52,8 @@ public:
             frameIndex,
             shadowVisibleInstancesByCascade,
             shadowInstanceOffsets,
-            visibleInstancesSize);
+            visibleInstancesSize,
+            shadowDsvHandles);
 
         CD3DX12_RESOURCE_BARRIER toSrv = CD3DX12_RESOURCE_BARRIER::Transition(
             resourceManager->GetShadowMap(),
@@ -61,7 +69,8 @@ public:
         int frameIndex,
         const std::array<std::vector<ModelInstance*>, NUM_CASCADES>& shadowVisibleInstancesByCascade,
         const std::array<size_t, NUM_CASCADES>& shadowInstanceOffsets,
-        size_t visibleInstancesSize)
+        size_t visibleInstancesSize,
+        const std::array<D3D12_CPU_DESCRIPTOR_HANDLE, NUM_CASCADES>& shadowDsvHandles)
     {
         auto cmdList = deviceContext->GetCommandList();
 
@@ -79,7 +88,7 @@ public:
             const auto& shadowVisibleInstances = shadowVisibleInstancesByCascade[cascadeIdx];
             size_t cascadeInstanceOffset = shadowInstanceOffsets[cascadeIdx];
 
-            CD3DX12_CPU_DESCRIPTOR_HANDLE dsv = resourceManager->GetShadowDsvHandle(cascadeIdx);
+            D3D12_CPU_DESCRIPTOR_HANDLE dsv = shadowDsvHandles[cascadeIdx];
             cmdList->OMSetRenderTargets(0, nullptr, FALSE, &dsv);
             cmdList->ClearDepthStencilView(dsv, D3D12_CLEAR_FLAG_DEPTH, 1.0f, 0, 0, nullptr);
 
@@ -160,9 +169,44 @@ public:
             D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
             D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
             "ShadowMap");
+        graph.MarkTextureAsOutput(shadowMap);
+
+        D3D12_DEPTH_STENCIL_VIEW_DESC shadowDsvDesc = {};
+        shadowDsvDesc.Format = DXGI_FORMAT_D32_FLOAT;
+        shadowDsvDesc.ViewDimension = D3D12_DSV_DIMENSION_TEXTURE2DARRAY;
+        shadowDsvDesc.Flags = D3D12_DSV_FLAG_NONE;
+        shadowDsvDesc.Texture2DArray.MipSlice = 0;
+        shadowDsvDesc.Texture2DArray.ArraySize = 1;
+
+        std::array<RDGTextureDSVHandle, NUM_CASCADES> shadowDsvViews = {};
+        std::array<D3D12_CPU_DESCRIPTOR_HANDLE, NUM_CASCADES> shadowDsvHandles = {};
+        for (UINT cascadeIdx = 0; cascadeIdx < NUM_CASCADES; ++cascadeIdx)
+        {
+            shadowDsvDesc.Texture2DArray.FirstArraySlice = cascadeIdx;
+            shadowDsvViews[cascadeIdx] = graph.CreateTextureDSVView(shadowMap, &shadowDsvDesc);
+            if (!shadowDsvViews[cascadeIdx].IsValid())
+            {
+                return {};
+            }
+
+            shadowDsvHandles[cascadeIdx] = shadowDsvViews[cascadeIdx].cpuHandle;
+        }
+
+        D3D12_SHADER_RESOURCE_VIEW_DESC shadowSrvDesc = {};
+        shadowSrvDesc.Format = DXGI_FORMAT_R32_FLOAT;
+        shadowSrvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2DARRAY;
+        shadowSrvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+        shadowSrvDesc.Texture2DArray.MipLevels = 1;
+        shadowSrvDesc.Texture2DArray.ArraySize = NUM_CASCADES;
+
+        RDGTextureSRVHandle shadowMapSrv = graph.CreateTextureSRVView(shadowMap, &shadowSrvDesc);
+        if (!shadowMapSrv.IsValid())
+        {
+            return {};
+        }
 
         RDGPassParameters params;
-        params.WriteDSV(shadowMap);
+        params.WriteDSV(shadowDsvViews[0]);
 
         RDGPassHandle pass = graph.AddPass(
             "ShadowMap",
@@ -177,10 +221,11 @@ public:
                     frameIndex,
                     shadowVisibleInstancesByCascade,
                     shadowInstanceOffsets,
-                    visibleInstancesSize);
+                    visibleInstancesSize,
+                    shadowDsvHandles);
             });
 
-        return { shadowMap, pass };
+        return { shadowMap, shadowMapSrv, pass };
     }
 
     static void ExecuteRDG(
@@ -193,6 +238,11 @@ public:
         size_t visibleInstancesSize)
     {
         RDGBuilder graph(deviceContext, "ShadowGraph");
+        graph.SetTransientSrvUavDescriptorAllocator(
+            [resourceManager](UINT* descriptorIndex, D3D12_CPU_DESCRIPTOR_HANDLE* cpuHandle)
+            {
+                return resourceManager->AllocateTransientSrvUavDescriptor(descriptorIndex, cpuHandle);
+            });
 
         AddToGraph(
             graph,

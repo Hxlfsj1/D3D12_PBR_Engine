@@ -20,9 +20,16 @@ public:
     struct Output
     {
         RDGTextureHandle historyTexture;
-        UINT historySrvIdx = 0;
         int historyIndex = 0;
         RDGPassHandle pass;
+    };
+
+    struct TextureViews
+    {
+        D3D12_CPU_DESCRIPTOR_HANDLE outputRtv = {};
+        UINT colorSrvIdx = UINT_MAX;
+        UINT historySrvIdx = UINT_MAX;
+        UINT depthSrvIdx = UINT_MAX;
     };
 
     static UINT Execute(
@@ -62,7 +69,12 @@ public:
             width,
             height,
             historyValid,
-            taaCurrentIdx);
+            {
+                resourceManager->GetTAARtvHandle(taaCurrentIdx),
+                resourceManager->GetPostProcessSrvIdx(),
+                resourceManager->GetTAAHistorySrvIdx(1 - taaCurrentIdx),
+                resourceManager->GetDepthBufferSrvIdx()
+            });
 
         CD3DX12_RESOURCE_BARRIER revertBarriers[3] =
         {
@@ -86,12 +98,11 @@ public:
         float jitterX, float jitterY,
         int frameIndex, int width, int height,
         bool historyValid,
-        int taaCurrentIdx)
+        const TextureViews& views)
     {
         auto cmdList = deviceContext->GetCommandList();
 
-        CD3DX12_CPU_DESCRIPTOR_HANDLE rtvHandle = resourceManager->GetTAARtvHandle(taaCurrentIdx);
-        cmdList->OMSetRenderTargets(1, &rtvHandle, FALSE, nullptr);
+        cmdList->OMSetRenderTargets(1, &views.outputRtv, FALSE, nullptr);
 
         D3D12_VIEWPORT viewport = { 0.0f, 0.0f, (float)width, (float)height, 0.0f, 1.0f };
         D3D12_RECT scissorRect = { 0, 0, width, height };
@@ -114,9 +125,9 @@ public:
         cb.blendAlpha = historyValid ? 0.95f : 0.0f;
         cb.varianceScale = 1.5f;
 
-        cb.colorTextureIdx = resourceManager->GetPostProcessSrvIdx();
-        cb.historyTextureIdx = resourceManager->GetTAAHistorySrvIdx(1 - taaCurrentIdx);
-        cb.depthTextureIdx = resourceManager->GetDepthBufferSrvIdx();
+        cb.colorTextureIdx = views.colorSrvIdx;
+        cb.historyTextureIdx = views.historySrvIdx;
+        cb.depthTextureIdx = views.depthSrvIdx;
 
         memcpy(cbvCpuAddress, &cb, sizeof(TAAConstants));
         cmdList->SetGraphicsRootConstantBufferView(0, resourceManager->GetCBVGPUAddress(frameIndex) + taaConstantsOffset);
@@ -138,6 +149,11 @@ public:
         int taaCurrentIdx = resourceManager->GetTAACurrentHistoryIdx();
 
         RDGBuilder graph(deviceContext, "TAAGraph");
+        graph.SetTransientSrvUavDescriptorAllocator(
+            [resourceManager](UINT* descriptorIndex, D3D12_CPU_DESCRIPTOR_HANDLE* cpuHandle)
+            {
+                return resourceManager->AllocateTransientSrvUavDescriptor(descriptorIndex, cpuHandle);
+            });
 
         RDGTextureHandle offscreenLitBuffer = graph.RegisterExternalTexture(
             resourceManager->GetPostProcessRT(),
@@ -150,6 +166,7 @@ public:
             D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
             D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
             "TAACurrentHistory");
+        graph.MarkTextureAsOutput(currentHistoryTarget);
 
         RDGTextureHandle previousHistory = graph.RegisterExternalTexture(
             resourceManager->GetTAAHistoryRT(1 - taaCurrentIdx),
@@ -163,11 +180,49 @@ public:
             D3D12_RESOURCE_STATE_DEPTH_WRITE,
             "SceneDepth");
 
+        D3D12_SHADER_RESOURCE_VIEW_DESC depthSrvDesc = {};
+        depthSrvDesc.Format = DXGI_FORMAT_R32_FLOAT;
+        depthSrvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+        depthSrvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+        depthSrvDesc.Texture2D.MipLevels = 1;
+
+        RDGTextureSRVHandle colorSrv = graph.CreateTextureSRVView(offscreenLitBuffer);
+        RDGTextureSRVHandle historySrv = graph.CreateTextureSRVView(previousHistory);
+        RDGTextureSRVHandle depthSrv = graph.CreateTextureSRVView(depth, &depthSrvDesc);
+        RDGTextureRTVHandle historyRtv = graph.CreateTextureRTVView(currentHistoryTarget);
+
+        if (!colorSrv.IsValid() ||
+            !historySrv.IsValid() ||
+            !depthSrv.IsValid() ||
+            !historyRtv.IsValid())
+        {
+            return Execute(
+                deviceContext,
+                resourceManager,
+                pipelineManager,
+                currentInvViewProj,
+                prevViewProj,
+                jitterX,
+                jitterY,
+                frameIndex,
+                width,
+                height,
+                historyValid);
+        }
+
+        TextureViews views =
+        {
+            historyRtv.cpuHandle,
+            colorSrv.descriptorIndex,
+            historySrv.descriptorIndex,
+            depthSrv.descriptorIndex
+        };
+
         RDGPassParameters params;
-        params.ReadSRV(offscreenLitBuffer);
-        params.ReadSRV(previousHistory);
-        params.ReadSRV(depth);
-        params.WriteRTV(currentHistoryTarget);
+        params.ReadSRV(colorSrv);
+        params.ReadSRV(historySrv);
+        params.ReadSRV(depthSrv);
+        params.WriteRTV(historyRtv);
 
         graph.AddPass(
             "TAA",
@@ -187,7 +242,7 @@ public:
                     width,
                     height,
                     historyValid,
-                    taaCurrentIdx);
+                    views);
             });
 
         graph.Execute(deviceContext->GetCommandList());
@@ -244,11 +299,38 @@ public:
                 "SceneDepth");
         }
 
+        D3D12_SHADER_RESOURCE_VIEW_DESC depthSrvDesc = {};
+        depthSrvDesc.Format = DXGI_FORMAT_R32_FLOAT;
+        depthSrvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+        depthSrvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+        depthSrvDesc.Texture2D.MipLevels = 1;
+
+        RDGTextureSRVHandle colorSrv = graph.CreateTextureSRVView(color);
+        RDGTextureSRVHandle historySrv = graph.CreateTextureSRVView(previousHistory);
+        RDGTextureSRVHandle depthSrv = graph.CreateTextureSRVView(depth, &depthSrvDesc);
+        RDGTextureRTVHandle historyRtv = graph.CreateTextureRTVView(currentHistoryTarget);
+
+        if (!colorSrv.IsValid() ||
+            !historySrv.IsValid() ||
+            !depthSrv.IsValid() ||
+            !historyRtv.IsValid())
+        {
+            return {};
+        }
+
+        TextureViews views =
+        {
+            historyRtv.cpuHandle,
+            colorSrv.descriptorIndex,
+            historySrv.descriptorIndex,
+            depthSrv.descriptorIndex
+        };
+
         RDGPassParameters params;
-        params.ReadSRV(color);
-        params.ReadSRV(previousHistory);
-        params.ReadSRV(depth);
-        params.WriteRTV(currentHistoryTarget);
+        params.ReadSRV(colorSrv);
+        params.ReadSRV(historySrv);
+        params.ReadSRV(depthSrv);
+        params.WriteRTV(historyRtv);
 
         RDGPassHandle pass = graph.AddPass(
             "TAA",
@@ -268,10 +350,10 @@ public:
                     width,
                     height,
                     historyValid,
-                    taaCurrentIdx);
+                    views);
             });
 
-        return { currentHistoryTarget, resourceManager->GetTAAHistorySrvIdx(taaCurrentIdx), taaCurrentIdx, pass };
+        return { currentHistoryTarget, taaCurrentIdx, pass };
     }
 };
 

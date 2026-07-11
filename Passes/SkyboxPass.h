@@ -122,9 +122,16 @@ public:
                 "SceneDepth");
         }
 
+        RDGTextureRTVHandle sceneColorRtv = graph.CreateTextureRTVView(sceneColor);
+        RDGTextureDSVHandle depthDsv = graph.CreateTextureDSVView(depth);
+        if (!sceneColorRtv.IsValid() || !depthDsv.IsValid())
+        {
+            return {};
+        }
+
         RDGPassParameters params;
-        params.WriteRTV(sceneColor);
-        params.WriteDSV(depth);
+        params.WriteRTV(sceneColorRtv);
+        params.WriteDSV(depthDsv);
 
         return graph.AddPass(
             "Skybox",
@@ -141,8 +148,8 @@ public:
                     scissorRect,
                     width,
                     height,
-                    resourceManager->GetPostProcessRtvHandle(),
-                    deviceContext->GetDSVHandle());
+                    sceneColorRtv.cpuHandle,
+                    depthDsv.cpuHandle);
             });
     }
 };

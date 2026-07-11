@@ -26,7 +26,7 @@ public:
         RDGTextureHandle gbufferEmissive;
         RDGTextureHandle depth;
         RDGTextureHandle hbaoBlurred;
-        RDGTextureHandle shadowMap;
+        RDGTextureSRVHandle shadowMap;
     };
 
     struct SrvIndices
@@ -37,6 +37,7 @@ public:
         UINT depthBuffer;
         UINT hbao;
         UINT gbufferEmissive;
+        UINT shadowMap;
     };
 
     static void Execute(
@@ -58,13 +59,15 @@ public:
             width,
             height,
             frameIndex,
+            resourceManager->GetPostProcessRtvHandle(),
             {
                 resourceManager->GetGBufferAlbedoSrvIdx(),
                 resourceManager->GetGBufferNormalSrvIdx(),
                 resourceManager->GetGBufferORMSrvIdx(),
                 resourceManager->GetDepthBufferSrvIdx(),
                 resourceManager->GetHBAOBlurredSrvIdx(),
-                resourceManager->GetGBufferEmissiveSrvIdx()
+                resourceManager->GetGBufferEmissiveSrvIdx(),
+                resourceManager->GetShadowSrvIdx()
             });
 
         CD3DX12_RESOURCE_BARRIER depthToWrite = CD3DX12_RESOURCE_BARRIER::Transition(
@@ -82,12 +85,12 @@ public:
         int width,
         int height,
         int frameIndex,
+        D3D12_CPU_DESCRIPTOR_HANDLE outputRtv,
         const SrvIndices& srvIndices)
     {
         auto cmdList = deviceContext->GetCommandList();
 
-        CD3DX12_CPU_DESCRIPTOR_HANDLE rtv = resourceManager->GetPostProcessRtvHandle();
-        cmdList->OMSetRenderTargets(1, &rtv, FALSE, nullptr);
+        cmdList->OMSetRenderTargets(1, &outputRtv, FALSE, nullptr);
 
         D3D12_VIEWPORT viewport = { 0.0f, 0.0f, (float)width, (float)height, 0.0f, 1.0f };
         D3D12_RECT scissorRect = { 0, 0, width, height };
@@ -108,6 +111,10 @@ public:
         deferredCb.gbufferEmissiveIdx = srvIndices.gbufferEmissive;
 
         memcpy(cbvCpuAddress, &deferredCb, sizeof(DeferredConstants));
+
+        PassConstants* passConstants = reinterpret_cast<PassConstants*>(
+            resourceManager->GetCBVAddress(frameIndex));
+        passConstants->shadowMapIdx = srvIndices.shadowMap;
 
         cmdList->SetGraphicsRootSignature(pipelineManager->GetDeferredRootSignature());
         cmdList->SetPipelineState(pipelineManager->GetDeferredPSO());
@@ -194,72 +201,22 @@ public:
                 "HBAOBlurred");
         }
 
-        SrvIndices srvIndices =
+        RDGTextureSRVHandle shadowMapSrv = input.shadowMap;
+        if (!shadowMapSrv.IsValid())
         {
-            resourceManager->GetGBufferAlbedoSrvIdx(),
-            resourceManager->GetGBufferNormalSrvIdx(),
-            resourceManager->GetGBufferORMSrvIdx(),
-            resourceManager->GetDepthBufferSrvIdx(),
-            resourceManager->GetHBAOBlurredSrvIdx(),
-            resourceManager->GetGBufferEmissiveSrvIdx()
-        };
-
-        UINT transientGBufferAlbedoSrvIdx = resourceManager->AllocateTransientSrvUavDescriptor();
-        if (transientGBufferAlbedoSrvIdx != UINT_MAX &&
-            graph.CreateTextureSRV(gbufferAlbedo, resourceManager->GetSrvUavCPUHandle(transientGBufferAlbedoSrvIdx)))
-        {
-            srvIndices.gbufferAlbedo = transientGBufferAlbedoSrvIdx;
-        }
-
-        UINT transientGBufferNormalSrvIdx = resourceManager->AllocateTransientSrvUavDescriptor();
-        if (transientGBufferNormalSrvIdx != UINT_MAX &&
-            graph.CreateTextureSRV(gbufferNormal, resourceManager->GetSrvUavCPUHandle(transientGBufferNormalSrvIdx)))
-        {
-            srvIndices.gbufferNormal = transientGBufferNormalSrvIdx;
-        }
-
-        UINT transientGBufferORMSrvIdx = resourceManager->AllocateTransientSrvUavDescriptor();
-        if (transientGBufferORMSrvIdx != UINT_MAX &&
-            graph.CreateTextureSRV(gbufferORM, resourceManager->GetSrvUavCPUHandle(transientGBufferORMSrvIdx)))
-        {
-            srvIndices.gbufferORM = transientGBufferORMSrvIdx;
-        }
-
-        UINT transientGBufferEmissiveSrvIdx = resourceManager->AllocateTransientSrvUavDescriptor();
-        if (transientGBufferEmissiveSrvIdx != UINT_MAX &&
-            graph.CreateTextureSRV(gbufferEmissive, resourceManager->GetSrvUavCPUHandle(transientGBufferEmissiveSrvIdx)))
-        {
-            srvIndices.gbufferEmissive = transientGBufferEmissiveSrvIdx;
-        }
-
-        D3D12_SHADER_RESOURCE_VIEW_DESC depthSrvDesc = {};
-        depthSrvDesc.Format = DXGI_FORMAT_R32_FLOAT;
-        depthSrvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
-        depthSrvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-        depthSrvDesc.Texture2D.MipLevels = 1;
-
-        UINT transientDepthSrvIdx = resourceManager->AllocateTransientSrvUavDescriptor();
-        if (transientDepthSrvIdx != UINT_MAX &&
-            graph.CreateTextureSRV(depth, resourceManager->GetSrvUavCPUHandle(transientDepthSrvIdx), &depthSrvDesc))
-        {
-            srvIndices.depthBuffer = transientDepthSrvIdx;
-        }
-
-        UINT transientHbaoBlurredSrvIdx = resourceManager->AllocateTransientSrvUavDescriptor();
-        if (transientHbaoBlurredSrvIdx != UINT_MAX &&
-            graph.CreateTextureSRV(hbaoBlurred, resourceManager->GetSrvUavCPUHandle(transientHbaoBlurredSrvIdx)))
-        {
-            srvIndices.hbao = transientHbaoBlurredSrvIdx;
-        }
-
-        RDGTextureHandle shadowMap = input.shadowMap;
-        if (!shadowMap.IsValid())
-        {
-            shadowMap = graph.RegisterExternalTexture(
+            RDGTextureHandle shadowMap = graph.RegisterExternalTexture(
                 resourceManager->GetShadowMap(),
                 D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
                 D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
                 "ShadowMap");
+
+            D3D12_SHADER_RESOURCE_VIEW_DESC shadowSrvDesc = {};
+            shadowSrvDesc.Format = DXGI_FORMAT_R32_FLOAT;
+            shadowSrvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2DARRAY;
+            shadowSrvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+            shadowSrvDesc.Texture2DArray.MipLevels = 1;
+            shadowSrvDesc.Texture2DArray.ArraySize = NUM_CASCADES;
+            shadowMapSrv = graph.CreateTextureSRVView(shadowMap, &shadowSrvDesc);
         }
 
         RDGTextureHandle sceneColor = graph.RegisterExternalTexture(
@@ -269,15 +226,52 @@ public:
             "PostProcessRT");
         graph.MarkTextureAsOutput(sceneColor);
 
+        D3D12_SHADER_RESOURCE_VIEW_DESC depthSrvDesc = {};
+        depthSrvDesc.Format = DXGI_FORMAT_R32_FLOAT;
+        depthSrvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+        depthSrvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+        depthSrvDesc.Texture2D.MipLevels = 1;
+
+        RDGTextureSRVHandle gbufferAlbedoSrv = graph.CreateTextureSRVView(gbufferAlbedo);
+        RDGTextureSRVHandle gbufferNormalSrv = graph.CreateTextureSRVView(gbufferNormal);
+        RDGTextureSRVHandle gbufferORMSrv = graph.CreateTextureSRVView(gbufferORM);
+        RDGTextureSRVHandle gbufferEmissiveSrv = graph.CreateTextureSRVView(gbufferEmissive);
+        RDGTextureSRVHandle depthSrv = graph.CreateTextureSRVView(depth, &depthSrvDesc);
+        RDGTextureSRVHandle hbaoBlurredSrv = graph.CreateTextureSRVView(hbaoBlurred);
+        RDGTextureRTVHandle sceneColorRtv = graph.CreateTextureRTVView(sceneColor);
+
+        if (!gbufferAlbedoSrv.IsValid() ||
+            !gbufferNormalSrv.IsValid() ||
+            !gbufferORMSrv.IsValid() ||
+            !gbufferEmissiveSrv.IsValid() ||
+            !depthSrv.IsValid() ||
+            !hbaoBlurredSrv.IsValid() ||
+            !shadowMapSrv.IsValid() ||
+            !sceneColorRtv.IsValid())
+        {
+            return {};
+        }
+
+        SrvIndices srvIndices =
+        {
+            gbufferAlbedoSrv.descriptorIndex,
+            gbufferNormalSrv.descriptorIndex,
+            gbufferORMSrv.descriptorIndex,
+            depthSrv.descriptorIndex,
+            hbaoBlurredSrv.descriptorIndex,
+            gbufferEmissiveSrv.descriptorIndex,
+            shadowMapSrv.descriptorIndex
+        };
+
         RDGPassParameters params;
-        params.ReadSRV(gbufferAlbedo);
-        params.ReadSRV(gbufferNormal);
-        params.ReadSRV(gbufferORM);
-        params.ReadSRV(gbufferEmissive);
-        params.ReadSRV(depth);
-        params.ReadSRV(hbaoBlurred);
-        params.ReadSRV(shadowMap);
-        params.WriteRTV(sceneColor);
+        params.ReadSRV(gbufferAlbedoSrv);
+        params.ReadSRV(gbufferNormalSrv);
+        params.ReadSRV(gbufferORMSrv);
+        params.ReadSRV(gbufferEmissiveSrv);
+        params.ReadSRV(depthSrv);
+        params.ReadSRV(hbaoBlurredSrv);
+        params.ReadSRV(shadowMapSrv);
+        params.WriteRTV(sceneColorRtv);
 
         RDGPassHandle pass = graph.AddPass(
             "DeferredLighting",
@@ -293,6 +287,7 @@ public:
                     width,
                     height,
                     frameIndex,
+                    sceneColorRtv.cpuHandle,
                     srvIndices);
             });
 
@@ -309,6 +304,11 @@ public:
         int frameIndex)
     {
         RDGBuilder graph(deviceContext, "DeferredLightingGraph");
+        graph.SetTransientSrvUavDescriptorAllocator(
+            [resourceManager](UINT* descriptorIndex, D3D12_CPU_DESCRIPTOR_HANDLE* cpuHandle)
+            {
+                return resourceManager->AllocateTransientSrvUavDescriptor(descriptorIndex, cpuHandle);
+            });
 
         AddToGraph(
             graph,

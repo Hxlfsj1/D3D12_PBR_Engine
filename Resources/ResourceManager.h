@@ -776,6 +776,26 @@ public:
         return srvIdx++;
     }
 
+    bool AllocateTransientSrvUavDescriptor(
+        UINT* outDescriptorIndex,
+        D3D12_CPU_DESCRIPTOR_HANDLE* outCpuHandle)
+    {
+        if (outDescriptorIndex == nullptr || outCpuHandle == nullptr)
+        {
+            return false;
+        }
+
+        const UINT descriptorIndex = AllocateTransientSrvUavDescriptor();
+        if (descriptorIndex == UINT_MAX)
+        {
+            return false;
+        }
+
+        *outDescriptorIndex = descriptorIndex;
+        *outCpuHandle = GetSrvUavCPUHandle(descriptorIndex);
+        return true;
+    }
+
     void ResetRDGTransientResources(int frameIndex)
     {
         if (frameIndex < 0 || frameIndex >= static_cast<int>(m_rdgTransientResources.size()))

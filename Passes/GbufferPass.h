@@ -69,6 +69,7 @@ public:
             scissorRect,
             visibleInstances,
             rtvHandles,
+            deviceContext->GetDSVHandle(),
             false);
 
         CD3DX12_RESOURCE_BARRIER revertBarriers[4] =
@@ -92,6 +93,7 @@ public:
         const D3D12_RECT& scissorRect,
         const std::vector<ModelInstance*>& visibleInstances,
         const RtvHandles& rtvHandlesInput,
+        D3D12_CPU_DESCRIPTOR_HANDLE dsvHandle,
         bool useZPrepass = false)
     {
         auto cmdList = deviceContext->GetCommandList();
@@ -106,7 +108,6 @@ public:
             rtvHandlesInput.orm,
             rtvHandlesInput.emissive
         };
-        CD3DX12_CPU_DESCRIPTOR_HANDLE dsvHandle = deviceContext->GetDSVHandle();
         cmdList->OMSetRenderTargets(4, rtvHandles, FALSE, &dsvHandle);
 
         const float clearColorBlack[] = { 0.0f, 0.0f, 0.0f, 0.0f };
@@ -249,20 +250,35 @@ public:
                 "SceneDepth");
         }
 
+        RDGTextureRTVHandle albedoRtv = graph.CreateTextureRTVView(gbufferAlbedo);
+        RDGTextureRTVHandle normalRtv = graph.CreateTextureRTVView(gbufferNormal);
+        RDGTextureRTVHandle ormRtv = graph.CreateTextureRTVView(gbufferORM);
+        RDGTextureRTVHandle emissiveRtv = graph.CreateTextureRTVView(gbufferEmissive);
+        RDGTextureDSVHandle depthDsv = graph.CreateTextureDSVView(depth);
+
+        if (!albedoRtv.IsValid() ||
+            !normalRtv.IsValid() ||
+            !ormRtv.IsValid() ||
+            !emissiveRtv.IsValid() ||
+            !depthDsv.IsValid())
+        {
+            return {};
+        }
+
         RtvHandles rtvHandles =
         {
-            resourceManager->GetGBufferAlbedoRtvHandle(),
-            resourceManager->GetGBufferNormalRtvHandle(),
-            resourceManager->GetGBufferORMRtvHandle(),
-            resourceManager->GetGBufferEmissiveRtvHandle()
+            albedoRtv.cpuHandle,
+            normalRtv.cpuHandle,
+            ormRtv.cpuHandle,
+            emissiveRtv.cpuHandle
         };
 
         RDGPassParameters params;
-        params.WriteRTV(gbufferAlbedo);
-        params.WriteRTV(gbufferNormal);
-        params.WriteRTV(gbufferORM);
-        params.WriteRTV(gbufferEmissive);
-        params.WriteDSV(depth);
+        params.WriteRTV(albedoRtv);
+        params.WriteRTV(normalRtv);
+        params.WriteRTV(ormRtv);
+        params.WriteRTV(emissiveRtv);
+        params.WriteDSV(depthDsv);
 
         RDGPassHandle pass = graph.AddPass(
             "GBuffer",
@@ -279,6 +295,7 @@ public:
                     scissorRect,
                     visibleInstances,
                     rtvHandles,
+                    depthDsv.cpuHandle,
                     consumeZPrepassDepth);
             });
 

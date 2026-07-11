@@ -88,6 +88,75 @@ struct RDGPassHandle
     }
 };
 
+struct RDGTextureSRVHandle
+{
+    RDGTextureHandle texture;
+    UINT descriptorIndex = UINT_MAX;
+
+    bool IsValid() const
+    {
+        return texture.IsValid() && descriptorIndex != UINT_MAX;
+    }
+};
+
+struct RDGTextureUAVHandle
+{
+    RDGTextureHandle texture;
+    UINT descriptorIndex = UINT_MAX;
+
+    bool IsValid() const
+    {
+        return texture.IsValid() && descriptorIndex != UINT_MAX;
+    }
+};
+
+struct RDGTextureRTVHandle
+{
+    RDGTextureHandle texture;
+    D3D12_CPU_DESCRIPTOR_HANDLE cpuHandle = {};
+
+    bool IsValid() const
+    {
+        return texture.IsValid() && cpuHandle.ptr != 0;
+    }
+};
+
+struct RDGTextureDSVHandle
+{
+    RDGTextureHandle texture;
+    D3D12_CPU_DESCRIPTOR_HANDLE cpuHandle = {};
+
+    bool IsValid() const
+    {
+        return texture.IsValid() && cpuHandle.ptr != 0;
+    }
+};
+
+struct RDGBufferSRVHandle
+{
+    RDGBufferHandle buffer;
+    UINT descriptorIndex = UINT_MAX;
+
+    bool IsValid() const
+    {
+        return buffer.IsValid() && descriptorIndex != UINT_MAX;
+    }
+};
+
+struct RDGBufferUAVHandle
+{
+    RDGBufferHandle buffer;
+    UINT descriptorIndex = UINT_MAX;
+
+    bool IsValid() const
+    {
+        return buffer.IsValid() && descriptorIndex != UINT_MAX;
+    }
+};
+
+using RDGTransientSrvUavDescriptorAllocator =
+    std::function<bool(UINT*, D3D12_CPU_DESCRIPTOR_HANDLE*)>;
+
 struct RDGPassParameters
 {
     std::vector<RDGTextureAccess> textures;
@@ -98,9 +167,19 @@ struct RDGPassParameters
         textures.push_back({ texture, ERDGAccess::SRV });
     }
 
+    void ReadSRV(RDGTextureSRVHandle srv)
+    {
+        ReadSRV(srv.texture);
+    }
+
     void ReadSRV(RDGBufferHandle buffer)
     {
         buffers.push_back({ buffer, ERDGAccess::SRV });
+    }
+
+    void ReadSRV(RDGBufferSRVHandle srv)
+    {
+        ReadSRV(srv.buffer);
     }
 
     void WriteRTV(RDGTextureHandle texture)
@@ -108,9 +187,19 @@ struct RDGPassParameters
         textures.push_back({ texture, ERDGAccess::RTV });
     }
 
+    void WriteRTV(RDGTextureRTVHandle rtv)
+    {
+        WriteRTV(rtv.texture);
+    }
+
     void WriteUAV(RDGTextureHandle texture)
     {
         textures.push_back({ texture, ERDGAccess::UAV });
+    }
+
+    void WriteUAV(RDGTextureUAVHandle uav)
+    {
+        WriteUAV(uav.texture);
     }
 
     void WriteUAV(RDGBufferHandle buffer)
@@ -118,14 +207,29 @@ struct RDGPassParameters
         buffers.push_back({ buffer, ERDGAccess::UAV });
     }
 
+    void WriteUAV(RDGBufferUAVHandle uav)
+    {
+        WriteUAV(uav.buffer);
+    }
+
     void ReadDSV(RDGTextureHandle texture)
     {
         textures.push_back({ texture, ERDGAccess::DSVRead });
     }
 
+    void ReadDSV(RDGTextureDSVHandle dsv)
+    {
+        ReadDSV(dsv.texture);
+    }
+
     void WriteDSV(RDGTextureHandle texture)
     {
         textures.push_back({ texture, ERDGAccess::DSVWrite });
+    }
+
+    void WriteDSV(RDGTextureDSVHandle dsv)
+    {
+        WriteDSV(dsv.texture);
     }
 
     void ReadCopySrc(RDGTextureHandle texture)
@@ -279,6 +383,18 @@ public:
     RDGBuilder(RenderDevice* deviceContext, const char* debugName)
         : m_deviceContext(deviceContext), m_debugName(debugName ? debugName : "RDG")
     {
+    }
+
+    void SetTransientSrvUavDescriptorAllocator(
+        RDGTransientSrvUavDescriptorAllocator allocator)
+    {
+        if (m_executed)
+        {
+            TraceLifecycleWarning("SetTransientSrvUavDescriptorAllocator called after Execute");
+            return;
+        }
+
+        m_transientSrvUavDescriptorAllocator = std::move(allocator);
     }
 
     RDGTextureHandle RegisterExternalTexture(
@@ -597,6 +713,31 @@ public:
         CollectOwnedResources(outResources);
     }
 
+    RDGTextureSRVHandle CreateTextureSRVView(
+        RDGTextureHandle texture,
+        const D3D12_SHADER_RESOURCE_VIEW_DESC* overrideDesc = nullptr)
+    {
+        RDGTextureSRVHandle view;
+        UINT descriptorIndex = UINT_MAX;
+        D3D12_CPU_DESCRIPTOR_HANDLE cpuHandle = {};
+
+        if (!AllocateTransientSrvUavDescriptor(&descriptorIndex, &cpuHandle))
+        {
+            TraceLifecycleWarning("CreateTextureSRVView failed to allocate a descriptor");
+            return view;
+        }
+
+        if (!CreateTextureSRV(texture, cpuHandle, overrideDesc))
+        {
+            TraceLifecycleWarning("CreateTextureSRVView failed to create the SRV");
+            return view;
+        }
+
+        view.texture = texture;
+        view.descriptorIndex = descriptorIndex;
+        return view;
+    }
+
     bool CreateTextureSRV(
         RDGTextureHandle texture,
         D3D12_CPU_DESCRIPTOR_HANDLE cpuHandle,
@@ -628,6 +769,31 @@ public:
 
         m_deviceContext->GetDevice()->CreateShaderResourceView(resource, &srvDesc, cpuHandle);
         return true;
+    }
+
+    RDGTextureUAVHandle CreateTextureUAVView(
+        RDGTextureHandle texture,
+        const D3D12_UNORDERED_ACCESS_VIEW_DESC* overrideDesc = nullptr)
+    {
+        RDGTextureUAVHandle view;
+        UINT descriptorIndex = UINT_MAX;
+        D3D12_CPU_DESCRIPTOR_HANDLE cpuHandle = {};
+
+        if (!AllocateTransientSrvUavDescriptor(&descriptorIndex, &cpuHandle))
+        {
+            TraceLifecycleWarning("CreateTextureUAVView failed to allocate a descriptor");
+            return view;
+        }
+
+        if (!CreateTextureUAV(texture, cpuHandle, overrideDesc))
+        {
+            TraceLifecycleWarning("CreateTextureUAVView failed to create the UAV");
+            return view;
+        }
+
+        view.texture = texture;
+        view.descriptorIndex = descriptorIndex;
+        return view;
     }
 
     bool CreateTextureUAV(
@@ -669,6 +835,31 @@ public:
         return true;
     }
 
+    RDGBufferSRVHandle CreateBufferSRVView(
+        RDGBufferHandle buffer,
+        const D3D12_SHADER_RESOURCE_VIEW_DESC* overrideDesc = nullptr)
+    {
+        RDGBufferSRVHandle view;
+        UINT descriptorIndex = UINT_MAX;
+        D3D12_CPU_DESCRIPTOR_HANDLE cpuHandle = {};
+
+        if (!AllocateTransientSrvUavDescriptor(&descriptorIndex, &cpuHandle))
+        {
+            TraceLifecycleWarning("CreateBufferSRVView failed to allocate a descriptor");
+            return view;
+        }
+
+        if (!CreateBufferSRV(buffer, cpuHandle, overrideDesc))
+        {
+            TraceLifecycleWarning("CreateBufferSRVView failed to create the SRV");
+            return view;
+        }
+
+        view.buffer = buffer;
+        view.descriptorIndex = descriptorIndex;
+        return view;
+    }
+
     bool CreateBufferSRV(
         RDGBufferHandle buffer,
         D3D12_CPU_DESCRIPTOR_HANDLE cpuHandle,
@@ -705,6 +896,32 @@ public:
 
         m_deviceContext->GetDevice()->CreateShaderResourceView(rdgBuffer.resource, &srvDesc, cpuHandle);
         return true;
+    }
+
+    RDGBufferUAVHandle CreateBufferUAVView(
+        RDGBufferHandle buffer,
+        const D3D12_UNORDERED_ACCESS_VIEW_DESC* overrideDesc = nullptr,
+        ID3D12Resource* counterResource = nullptr)
+    {
+        RDGBufferUAVHandle view;
+        UINT descriptorIndex = UINT_MAX;
+        D3D12_CPU_DESCRIPTOR_HANDLE cpuHandle = {};
+
+        if (!AllocateTransientSrvUavDescriptor(&descriptorIndex, &cpuHandle))
+        {
+            TraceLifecycleWarning("CreateBufferUAVView failed to allocate a descriptor");
+            return view;
+        }
+
+        if (!CreateBufferUAV(buffer, cpuHandle, overrideDesc, counterResource))
+        {
+            TraceLifecycleWarning("CreateBufferUAVView failed to create the UAV");
+            return view;
+        }
+
+        view.buffer = buffer;
+        view.descriptorIndex = descriptorIndex;
+        return view;
     }
 
     bool CreateBufferUAV(
@@ -750,6 +967,24 @@ public:
             cpuHandle);
 
         return true;
+    }
+
+    RDGTextureRTVHandle CreateTextureRTVView(
+        RDGTextureHandle texture,
+        const D3D12_RENDER_TARGET_VIEW_DESC* overrideDesc = nullptr)
+    {
+        RDGTextureRTVHandle view;
+        D3D12_CPU_DESCRIPTOR_HANDLE cpuHandle = {};
+
+        if (!CreateTransientTextureRTV(texture, &cpuHandle, overrideDesc))
+        {
+            TraceLifecycleWarning("CreateTextureRTVView failed to create the RTV");
+            return view;
+        }
+
+        view.texture = texture;
+        view.cpuHandle = cpuHandle;
+        return view;
     }
 
     bool CreateTextureRTV(
@@ -886,6 +1121,24 @@ public:
 
         ++m_transientDSVCount;
         return true;
+    }
+
+    RDGTextureDSVHandle CreateTextureDSVView(
+        RDGTextureHandle texture,
+        const D3D12_DEPTH_STENCIL_VIEW_DESC* overrideDesc = nullptr)
+    {
+        RDGTextureDSVHandle view;
+        D3D12_CPU_DESCRIPTOR_HANDLE cpuHandle = {};
+
+        if (!CreateTransientTextureDSV(texture, &cpuHandle, overrideDesc))
+        {
+            TraceLifecycleWarning("CreateTextureDSVView failed to create the DSV");
+            return view;
+        }
+
+        view.texture = texture;
+        view.cpuHandle = cpuHandle;
+        return view;
     }
 
     bool CreateTextureDSV(
@@ -1185,6 +1438,20 @@ public:
     }
 
 private:
+    bool AllocateTransientSrvUavDescriptor(
+        UINT* outDescriptorIndex,
+        D3D12_CPU_DESCRIPTOR_HANDLE* outCpuHandle)
+    {
+        if (outDescriptorIndex == nullptr ||
+            outCpuHandle == nullptr ||
+            !m_transientSrvUavDescriptorAllocator)
+        {
+            return false;
+        }
+
+        return m_transientSrvUavDescriptorAllocator(outDescriptorIndex, outCpuHandle);
+    }
+
     void CreateTransientRTVHeap()
     {
         if (m_deviceContext == nullptr || m_deviceContext->GetDevice() == nullptr)
@@ -2549,6 +2816,8 @@ private:
     Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> m_transientDSVHeap;
     UINT m_transientDSVDescriptorSize = 0;
     UINT m_transientDSVCount = 0;
+
+    RDGTransientSrvUavDescriptorAllocator m_transientSrvUavDescriptorAllocator;
 
     std::vector<RDGTexture> m_textures;
     std::vector<RDGBuffer> m_buffers;

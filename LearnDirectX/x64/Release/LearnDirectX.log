@@ -26,13 +26,13 @@ D:\项目\LearnDirectX\Resources\Settings_Manager.h(212,55): warning C4101: “e
 D:\项目\LearnDirectX\Resources\Settings_Manager.h(238,55): warning C4101: “e”: 未引用的局部变量
   (编译源文件“PBR_Render.cpp”)
   
-D:\项目\LearnDirectX\Passes\GBufferPass.h(189,47): warning C4267: “=”: 从“size_t”转换到“UINT”，可能丢失数据
+D:\项目\LearnDirectX\Passes\GBufferPass.h(190,47): warning C4267: “=”: 从“size_t”转换到“UINT”，可能丢失数据
   (编译源文件“PBR_Render.cpp”)
   
   正在生成代码
-  383 of 7308 functions ( 5.2%) were compiled, the rest were copied from previous compilation.
-    8 functions were new in current compilation
-    92 functions had inline decision re-evaluated but remain unchanged
+  503 of 7447 functions ( 6.8%) were compiled, the rest were copied from previous compilation.
+    200 functions were new in current compilation
+    277 functions had inline decision re-evaluated but remain unchanged
   已完成代码的生成
   LearnDirectX.vcxproj -> D:\项目\LearnDirectX\x64\Release\LearnDirectX.exe
   'pwsh.exe' 不是内部或外部命令，也不是可运行的程序
