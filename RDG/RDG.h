@@ -1244,11 +1244,13 @@ public:
 
             const RDGTexture& texture = m_textures[access.texture.index];
 
+            // If the current pass reads a resource, it must add the resource’s last writer as a dependency
             if (IsReadAccess(access.access))
             {
                 AddPassDependency(pass, texture.lastProducer);
             }
 
+            // If the current pass writes to a resource, it must add the last writer and all preceding readers as dependencies
             if (IsWriteAccess(access.access))
             {
                 AddPassDependency(pass, texture.lastProducer);
@@ -1260,6 +1262,7 @@ public:
             }
         }
 
+        // Samiliar as above
         for (const RDGBufferAccess& access : parameters.buffers)
         {
             if (!access.buffer.IsValid() || access.buffer.index >= m_buffers.size())
@@ -1294,11 +1297,13 @@ public:
 
             RDGTexture& texture = m_textures[access.texture.index];
 
+            // If the current pass reads a resource, add it to the list of latest readers
             if (IsReadAccess(access.access))
             {
                 texture.lastReaders.push_back(passIndex);
             }
 
+            // If the current pass writes to a resource, it becomes the new last writer
             if (IsWriteAccess(access.access))
             {
                 texture.lastProducer = passIndex;
@@ -1306,6 +1311,7 @@ public:
             }
         }
 
+        // Samiliar as above
         for (const RDGBufferAccess& access : parameters.buffers)
         {
             if (!access.buffer.IsValid() || access.buffer.index >= m_buffers.size())
@@ -1392,7 +1398,7 @@ public:
             ValidateGraph();
         }
 #endif
-
+        // The function returns false if a dependency cycle exists
         const bool compileSucceeded = CompileGraph();
         BuildResourceLifetimes();
         BuildBarrierPlan();
@@ -1405,7 +1411,7 @@ public:
             DumpGraph();
         }
 #endif
-
+        // Execute the passes sequentially in order
         for (uint32_t passIndex : m_compiledPassOrder)
         {
             if (passIndex >= m_passes.size())
@@ -1644,7 +1650,9 @@ private:
         const uint32_t livePassCount = CullUnusedPasses(passCount);
         m_passDependencyLevels.assign(passCount, UINT32_MAX);
 
+        // dependencyCount[i] indicates how many prerequisites of the i-th pass remain unprocessed
         std::vector<uint32_t> dependencyCount(passCount, 0);
+        // dependents[i] stores all passes that directly depend on pass i
         std::vector<std::vector<uint32_t>> dependents(passCount);
 
         for (uint32_t passIndex = 0; passIndex < passCount; ++passIndex)
@@ -1666,8 +1674,8 @@ private:
             }
         }
 
+        // Seed the ready queue with live passes that have no unresolved dependencies
         std::vector<uint32_t> readyPasses;
-
         for (uint32_t passIndex = 0; passIndex < passCount; ++passIndex)
         {
             if (m_livePasses[passIndex] && dependencyCount[passIndex] == 0)
@@ -1677,9 +1685,18 @@ private:
             }
         }
 
+        /*
+        Start the topological sort
+        This loop continuously enqueues new passes, so a dynamically sized container is used
+         
+        Once a ready pass is added to the final execution order, use dependents[passIndex]
+        to find every pass waiting on it and decrement their remaining dependency counts,
+        Any pass whose count reaches zero becomes ready. Repeat until no ready passes remain
+        */
         for (size_t readyIndex = 0; readyIndex < readyPasses.size(); ++readyIndex)
         {
             uint32_t passIndex = readyPasses[readyIndex];
+            // Final pass execution order
             m_compiledPassOrder.push_back(passIndex);
             const uint32_t passLevel = m_passDependencyLevels[passIndex] == UINT32_MAX ? 0 : m_passDependencyLevels[passIndex];
 

@@ -658,7 +658,9 @@ void D3D12App::Render()
     }
     else
     {
+        // Build the RDG for the deferred rendering pipeline
         RDGBuilder deferredGraph(&m_deviceContext, "DeferredFrameGraph");
+        // Wire the descriptor allocator into the RDG
         deferredGraph.SetTransientSrvUavDescriptorAllocator(
             [this](UINT* descriptorIndex, D3D12_CPU_DESCRIPTOR_HANDLE* cpuHandle)
             {
@@ -819,6 +821,7 @@ void D3D12App::Render()
         }
 
         std::vector<ComPtr<ID3D12Resource>> rdgTransientResources;
+        // Execute the entire graph after all passes have been added
         deferredGraph.ExecuteAndCollectOwnedResources(m_deviceContext.GetCommandList(), rdgTransientResources);
         m_resourceManager.KeepRDGResourcesAlive(frameIndex, rdgTransientResources);
 
