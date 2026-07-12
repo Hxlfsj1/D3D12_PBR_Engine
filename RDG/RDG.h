@@ -1215,6 +1215,8 @@ public:
         return true;
     }
 
+    // The first two loops establish dependencies between passes based on resource dependencies,
+    // while the last two loops update the resource read/write tracking state
     RDGPassHandle AddPass(
         const char* name,
         ERDGPassFlags flags,
@@ -1244,7 +1246,7 @@ public:
 
             const RDGTexture& texture = m_textures[access.texture.index];
 
-            // If the current pass reads a resource, it must add the resource’s last writer as a dependency
+            // If the current pass reads a resource, it must add the resource's last writer as a dependency
             if (IsReadAccess(access.access))
             {
                 AddPassDependency(pass, texture.lastProducer);
@@ -1884,6 +1886,7 @@ private:
 
         std::vector<uint32_t> workList;
 
+        // Passes marked with NeverCull and passes that write to the final RDG output are never culled
         for (uint32_t passIndex = 0; passIndex < passCount; ++passIndex)
         {
             if (HasRDGPassFlag(m_passes[passIndex].flags, ERDGPassFlags::NeverCull) ||
@@ -1894,6 +1897,7 @@ private:
             }
         }
 
+        // If all passes are eligible for culling, keep them all as a safety measure
         if (workList.empty())
         {
             for (uint32_t passIndex = 0; passIndex < passCount; ++passIndex)
@@ -1904,6 +1908,13 @@ private:
             return passCount;
         }
 
+        /*
+        Starting from each culling root,
+        traverse the graph backward and recursively mark the root and all of its dependencies as live;
+        mark all other passes as cullable.
+
+        The topological sort then considers only the live passes when generating the final execution order.
+        */
         for (size_t workIndex = 0; workIndex < workList.size(); ++workIndex)
         {
             uint32_t passIndex = workList[workIndex];
@@ -1966,6 +1977,11 @@ private:
         return false;
     }
 
+    /*
+    Queue a transition barrier when a resource's current state differs from the state required by the pass,
+    if the resource remains in UAV state, queue a UAV barrier only after a previous UAV access,
+    after all passes, queue final transitions that restore resources to their declared final states.
+    */
     void BuildBarrierPlan()
     {
         m_passBarriers.clear();

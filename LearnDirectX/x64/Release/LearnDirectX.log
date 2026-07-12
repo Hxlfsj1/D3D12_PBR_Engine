@@ -32,7 +32,7 @@ D:\项目\LearnDirectX\Passes\GBufferPass.h(190,47): warning C4267: “=”: 从
   正在生成代码
   1 of 7447 functions (<0.1%) were compiled, the rest were copied from previous compilation.
     0 functions were new in current compilation
-    38 functions had inline decision re-evaluated but remain unchanged
+    28 functions had inline decision re-evaluated but remain unchanged
   已完成代码的生成
   LearnDirectX.vcxproj -> D:\项目\LearnDirectX\x64\Release\LearnDirectX.exe
   'pwsh.exe' 不是内部或外部命令，也不是可运行的程序
