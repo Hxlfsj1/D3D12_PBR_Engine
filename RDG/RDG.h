@@ -157,6 +157,14 @@ struct RDGBufferUAVHandle
 using RDGTransientSrvUavDescriptorAllocator =
     std::function<bool(UINT*, D3D12_CPU_DESCRIPTOR_HANDLE*)>;
 
+using RDGTransientResourceAllocator =
+    std::function<bool(
+        const D3D12_RESOURCE_DESC&,
+        D3D12_RESOURCE_STATES,
+        D3D12_RESOURCE_STATES,
+        const D3D12_CLEAR_VALUE*,
+        Microsoft::WRL::ComPtr<ID3D12Resource>*)>;
+
 struct RDGPassParameters
 {
     std::vector<RDGTextureAccess> textures;
@@ -385,6 +393,18 @@ public:
     {
     }
 
+    void SetTransientResourceAllocator(
+        RDGTransientResourceAllocator allocator)
+    {
+        if (m_executed)
+        {
+            TraceLifecycleWarning("SetTransientResourceAllocator called after Execute");
+            return;
+        }
+
+        m_transientResourceAllocator = std::move(allocator);
+    }
+
     void SetTransientSrvUavDescriptorAllocator(
         RDGTransientSrvUavDescriptorAllocator allocator)
     {
@@ -471,8 +491,6 @@ public:
             0,
             desc.flags);
 
-        CD3DX12_HEAP_PROPERTIES heapProps(D3D12_HEAP_TYPE_DEFAULT);
-
         RDGTexture texture;
         texture.desc = desc;
         texture.initialState = initialState;
@@ -483,15 +501,12 @@ public:
 
         const D3D12_CLEAR_VALUE* clearValue = desc.hasClearValue ? &desc.clearValue : nullptr;
 
-        HRESULT hr = m_deviceContext->GetDevice()->CreateCommittedResource(
-            &heapProps,
-            D3D12_HEAP_FLAG_NONE,
-            &resourceDesc,
+        if (!AllocateTransientResource(
+            resourceDesc,
             initialState,
+            finalState,
             clearValue,
-            IID_PPV_ARGS(&texture.ownedResource));
-
-        if (FAILED(hr))
+            &texture.ownedResource))
         {
             return handle;
         }
@@ -560,8 +575,6 @@ public:
             desc.flags,
             desc.alignment);
 
-        CD3DX12_HEAP_PROPERTIES heapProps(D3D12_HEAP_TYPE_DEFAULT);
-
         RDGBuffer buffer;
         buffer.desc = desc;
         buffer.initialState = initialState;
@@ -570,15 +583,12 @@ public:
         buffer.external = false;
         buffer.name = name ? name : "TransientBuffer";
 
-        HRESULT hr = m_deviceContext->GetDevice()->CreateCommittedResource(
-            &heapProps,
-            D3D12_HEAP_FLAG_NONE,
-            &resourceDesc,
+        if (!AllocateTransientResource(
+            resourceDesc,
             initialState,
+            finalState,
             nullptr,
-            IID_PPV_ARGS(&buffer.ownedResource));
-
-        if (FAILED(hr))
+            &buffer.ownedResource))
         {
             return handle;
         }
@@ -684,33 +694,6 @@ public:
     const RDGCompileSnapshot& GetLastCompileSnapshot() const
     {
         return m_lastCompileSnapshot;
-    }
-
-    void CollectOwnedResources(std::vector<Microsoft::WRL::ComPtr<ID3D12Resource>>& outResources) const
-    {
-        for (const RDGTexture& texture : m_textures)
-        {
-            if (texture.ownedResource)
-            {
-                outResources.push_back(texture.ownedResource);
-            }
-        }
-
-        for (const RDGBuffer& buffer : m_buffers)
-        {
-            if (buffer.ownedResource)
-            {
-                outResources.push_back(buffer.ownedResource);
-            }
-        }
-    }
-
-    void ExecuteAndCollectOwnedResources(
-        ID3D12GraphicsCommandList* cmdList,
-        std::vector<Microsoft::WRL::ComPtr<ID3D12Resource>>& outResources)
-    {
-        Execute(cmdList);
-        CollectOwnedResources(outResources);
     }
 
     RDGTextureSRVHandle CreateTextureSRVView(
@@ -1446,6 +1429,27 @@ public:
     }
 
 private:
+    bool AllocateTransientResource(
+        const D3D12_RESOURCE_DESC& resourceDesc,
+        D3D12_RESOURCE_STATES initialState,
+        D3D12_RESOURCE_STATES finalState,
+        const D3D12_CLEAR_VALUE* clearValue,
+        Microsoft::WRL::ComPtr<ID3D12Resource>* outResource)
+    {
+        if (outResource == nullptr || !m_transientResourceAllocator)
+        {
+            TraceLifecycleWarning("CreateTexture/CreateBuffer called without a transient resource allocator");
+            return false;
+        }
+
+        return m_transientResourceAllocator(
+            resourceDesc,
+            initialState,
+            finalState,
+            clearValue,
+            outResource);
+    }
+
     bool AllocateTransientSrvUavDescriptor(
         UINT* outDescriptorIndex,
         D3D12_CPU_DESCRIPTOR_HANDLE* outCpuHandle)
@@ -2850,6 +2854,7 @@ private:
     UINT m_transientDSVDescriptorSize = 0;
     UINT m_transientDSVCount = 0;
 
+    RDGTransientResourceAllocator m_transientResourceAllocator;
     RDGTransientSrvUavDescriptorAllocator m_transientSrvUavDescriptorAllocator;
 
     std::vector<RDGTexture> m_textures;

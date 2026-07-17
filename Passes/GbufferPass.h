@@ -32,58 +32,6 @@ public:
         D3D12_CPU_DESCRIPTOR_HANDLE emissive;
     };
 
-    static size_t Execute(
-        RenderDevice* deviceContext,
-        ResourceManager* resourceManager,
-        PipelineManager* pipelineManager,
-        int frameIndex,
-        const D3D12_VIEWPORT& viewport,
-        const D3D12_RECT& scissorRect,
-        const std::vector<ModelInstance*>& visibleInstances)
-    {
-        auto cmdList = deviceContext->GetCommandList();
-
-        RtvHandles rtvHandles =
-        {
-            resourceManager->GetGBufferAlbedoRtvHandle(),
-            resourceManager->GetGBufferNormalRtvHandle(),
-            resourceManager->GetGBufferORMRtvHandle(),
-            resourceManager->GetGBufferEmissiveRtvHandle()
-        };
-
-        CD3DX12_RESOURCE_BARRIER barriers[4] =
-        {
-            CD3DX12_RESOURCE_BARRIER::Transition(resourceManager->GetGBufferAlbedo(), D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_RENDER_TARGET),
-            CD3DX12_RESOURCE_BARRIER::Transition(resourceManager->GetGBufferNormal(), D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_RENDER_TARGET),
-            CD3DX12_RESOURCE_BARRIER::Transition(resourceManager->GetGBufferORM(), D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_RENDER_TARGET),
-            CD3DX12_RESOURCE_BARRIER::Transition(resourceManager->GetGBufferEmissive(), D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_RENDER_TARGET)
-        };
-        cmdList->ResourceBarrier(4, barriers);
-
-        size_t transparentStartIndex = ExecuteNoBarrier(
-            deviceContext,
-            resourceManager,
-            pipelineManager,
-            frameIndex,
-            viewport,
-            scissorRect,
-            visibleInstances,
-            rtvHandles,
-            deviceContext->GetDSVHandle(),
-            false);
-
-        CD3DX12_RESOURCE_BARRIER revertBarriers[4] =
-        {
-            CD3DX12_RESOURCE_BARRIER::Transition(resourceManager->GetGBufferAlbedo(), D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE),
-            CD3DX12_RESOURCE_BARRIER::Transition(resourceManager->GetGBufferNormal(), D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE),
-            CD3DX12_RESOURCE_BARRIER::Transition(resourceManager->GetGBufferORM(), D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE),
-            CD3DX12_RESOURCE_BARRIER::Transition(resourceManager->GetGBufferEmissive(), D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE)
-        };
-        cmdList->ResourceBarrier(4, revertBarriers);
-
-        return transparentStartIndex;
-    }
-
     static size_t ExecuteNoBarrier(
         RenderDevice* deviceContext,
         ResourceManager* resourceManager,
@@ -214,31 +162,6 @@ public:
         bool useZPrepass = false,
         RDGTextureHandle inputDepth = {})
     {
-        auto registerGBufferTexture = [&](ID3D12Resource* resource, const char* name)
-            {
-                return graph.RegisterExternalTexture(
-                    resource,
-                    D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
-                    D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
-                    name);
-            };
-
-        RDGTextureHandle gbufferAlbedo = registerGBufferTexture(
-            resourceManager->GetGBufferAlbedo(),
-            "GBufferAlbedo");
-
-        RDGTextureHandle gbufferNormal = registerGBufferTexture(
-            resourceManager->GetGBufferNormal(),
-            "GBufferNormal");
-
-        RDGTextureHandle gbufferORM = registerGBufferTexture(
-            resourceManager->GetGBufferORM(),
-            "GBufferORM");
-
-        RDGTextureHandle gbufferEmissive = registerGBufferTexture(
-            resourceManager->GetGBufferEmissive(),
-            "GBufferEmissive");
-
         RDGTextureHandle depth = inputDepth;
         bool consumeZPrepassDepth = useZPrepass && depth.IsValid();
         if (!depth.IsValid())
@@ -248,6 +171,53 @@ public:
                 D3D12_RESOURCE_STATE_DEPTH_WRITE,
                 D3D12_RESOURCE_STATE_DEPTH_WRITE,
                 "SceneDepth");
+        }
+
+        const RDGTextureDesc* depthDesc = graph.GetTextureDesc(depth);
+        if (depthDesc == nullptr)
+        {
+            return {};
+        }
+
+        auto createGBufferTexture = [&](DXGI_FORMAT format, const char* name)
+            {
+                RDGTextureDesc desc;
+                desc.width = depthDesc->width;
+                desc.height = depthDesc->height;
+                desc.format = format;
+                desc.flags = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
+                desc.hasClearValue = true;
+                desc.clearValue.Format = format;
+
+                return graph.CreateTexture(
+                    desc,
+                    D3D12_RESOURCE_STATE_COMMON,
+                    D3D12_RESOURCE_STATE_COMMON,
+                    name);
+            };
+
+        RDGTextureHandle gbufferAlbedo = createGBufferTexture(
+            DXGI_FORMAT_R8G8B8A8_UNORM,
+            "GBufferAlbedo");
+
+        RDGTextureHandle gbufferNormal = createGBufferTexture(
+            DXGI_FORMAT_R16G16B16A16_FLOAT,
+            "GBufferNormal");
+
+        RDGTextureHandle gbufferORM = createGBufferTexture(
+            DXGI_FORMAT_R8G8B8A8_UNORM,
+            "GBufferORM");
+
+        RDGTextureHandle gbufferEmissive = createGBufferTexture(
+            DXGI_FORMAT_R8G8B8A8_UNORM,
+            "GBufferEmissive");
+
+        if (!gbufferAlbedo.IsValid() ||
+            !gbufferNormal.IsValid() ||
+            !gbufferORM.IsValid() ||
+            !gbufferEmissive.IsValid())
+        {
+            return {};
         }
 
         RDGTextureRTVHandle albedoRtv = graph.CreateTextureRTVView(gbufferAlbedo);
@@ -312,6 +282,23 @@ public:
         const std::vector<ModelInstance*>& visibleInstances)
     {
         RDGBuilder graph(deviceContext, "GBufferGraph");
+        graph.SetTransientResourceAllocator(
+            [deviceContext, resourceManager, frameIndex](
+                const D3D12_RESOURCE_DESC& resourceDesc,
+                D3D12_RESOURCE_STATES initialState,
+                D3D12_RESOURCE_STATES finalState,
+                const D3D12_CLEAR_VALUE* clearValue,
+                Microsoft::WRL::ComPtr<ID3D12Resource>* outResource)
+            {
+                return resourceManager->AllocateRDGTransientResource(
+                    deviceContext,
+                    frameIndex,
+                    resourceDesc,
+                    initialState,
+                    finalState,
+                    clearValue,
+                    outResource);
+            });
 
         size_t transparentStartIndex = visibleInstances.size();
 

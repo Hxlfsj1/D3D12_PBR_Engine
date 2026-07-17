@@ -52,8 +52,8 @@ VS_OUTPUT VSMain(uint vertexID : SV_VertexID)
 /*
 Reconstruct view space position from NDC coordinates and depth
 
-We compute in View Space for two reasons: First,
-it's completely sufficient since AO doesn't rely on world-space lights.
+We compute in View Space for two reasons:
+First, it's completely sufficient since AO doesn't rely on world-space lights.
 Second, it saves 16 expensive inverse view matrix multiplications per pixel during ray marching.
 */
 float3 ReconstructViewPos(float2 uv, float depth)

@@ -146,7 +146,7 @@ public:
 
         constantBufferUploadHeap.resize(frameBufferCount);
         cbvGPUAddress.resize(frameBufferCount);
-        m_rdgTransientResources.resize(frameBufferCount);
+        m_rdgTransientResourcePools.resize(frameBufferCount);
 
         for (int i = 0; i < frameBufferCount; ++i)
         {
@@ -540,170 +540,33 @@ public:
         return true;
     }
 
-    // Request the Base Color, Normal, and ORM textures
-    // Map the depth buffer as an SRV, directly reusing the physical VRAM from the Z-Prepass
-    bool InitGBuffer(RenderDevice* dc, int width, int height)
+    bool InitDepthBufferSRV(RenderDevice* dc)
     {
-        ID3D12Device* device = dc->GetDevice();
-        m_rtvDescriptorSize = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
-
-        D3D12_DESCRIPTOR_HEAP_DESC rtvHeapDesc = {};
-        rtvHeapDesc.NumDescriptors = 4;
-        rtvHeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
-        rtvHeapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
-        if (FAILED(device->CreateDescriptorHeap(&rtvHeapDesc, IID_PPV_ARGS(&m_gbufferRtvHeap))))
+        if (dc == nullptr ||
+            dc->GetDevice() == nullptr ||
+            dc->GetDepthStencilBuffer() == nullptr ||
+            !mainDescriptorHeap)
         {
             return false;
         }
-
-        auto defHeapProps = CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_DEFAULT);
-
-        D3D12_CLEAR_VALUE clearVal = {};
-        clearVal.Color[0] = 0.0f; clearVal.Color[1] = 0.0f; clearVal.Color[2] = 0.0f; clearVal.Color[3] = 0.0f;
-
-        D3D12_RESOURCE_DESC albedoDesc = CD3DX12_RESOURCE_DESC::Tex2D(
-            DXGI_FORMAT_R8G8B8A8_UNORM, (UINT64)width, (UINT)height, 1, 1, 1, 0, D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET);
-        clearVal.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
-        if (FAILED(device->CreateCommittedResource(&defHeapProps, D3D12_HEAP_FLAG_NONE, &albedoDesc,
-            D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, &clearVal, IID_PPV_ARGS(&m_gbufferAlbedo))))
-        {
-            return false;
-        }
-
-        D3D12_RESOURCE_DESC normalDesc = CD3DX12_RESOURCE_DESC::Tex2D(
-            DXGI_FORMAT_R16G16B16A16_FLOAT, (UINT64)width, (UINT)height, 1, 1, 1, 0, D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET);
-        clearVal.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
-        if (FAILED(device->CreateCommittedResource(&defHeapProps, D3D12_HEAP_FLAG_NONE, &normalDesc,
-            D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, &clearVal, IID_PPV_ARGS(&m_gbufferNormal))))
-        {
-            return false;
-        }
-
-        D3D12_RESOURCE_DESC ormDesc = CD3DX12_RESOURCE_DESC::Tex2D(
-            DXGI_FORMAT_R8G8B8A8_UNORM, (UINT64)width, (UINT)height, 1, 1, 1, 0, D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET);
-        clearVal.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
-        if (FAILED(device->CreateCommittedResource(&defHeapProps, D3D12_HEAP_FLAG_NONE, &ormDesc,
-            D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, &clearVal, IID_PPV_ARGS(&m_gbufferORM))))
-        {
-            return false;
-        }
-
-        D3D12_RESOURCE_DESC emissiveDesc = CD3DX12_RESOURCE_DESC::Tex2D(
-            DXGI_FORMAT_R8G8B8A8_UNORM, (UINT64)width, (UINT)height, 1, 1, 1, 0, D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET);
-        clearVal.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
-
-        if (FAILED(device->CreateCommittedResource(&defHeapProps, D3D12_HEAP_FLAG_NONE, &emissiveDesc,
-            D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, &clearVal, IID_PPV_ARGS(&m_gbufferEmissive))))
-        {
-            return false;
-        }
-
-        CD3DX12_CPU_DESCRIPTOR_HANDLE rtvHandle(m_gbufferRtvHeap->GetCPUDescriptorHandleForHeapStart());
-        device->CreateRenderTargetView(m_gbufferAlbedo.Get(), nullptr, rtvHandle);
-
-        rtvHandle.Offset(1, m_rtvDescriptorSize);
-        device->CreateRenderTargetView(m_gbufferNormal.Get(), nullptr, rtvHandle);
-
-        rtvHandle.Offset(1, m_rtvDescriptorSize);
-        device->CreateRenderTargetView(m_gbufferORM.Get(), nullptr, rtvHandle);
-
-        rtvHandle.Offset(1, m_rtvDescriptorSize);
-        device->CreateRenderTargetView(m_gbufferEmissive.Get(), nullptr, rtvHandle);
-
-        m_gbufferAlbedoSrvIdx = srvIdx++;
-        m_gbufferNormalSrvIdx = srvIdx++;
-        m_gbufferORMSrvIdx = srvIdx++;
-        m_gbufferEmissiveSrvIdx = srvIdx++;
-
-        D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
-        srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-        srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
-        srvDesc.Texture2D.MipLevels = 1;
-
-        srvDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
-        CD3DX12_CPU_DESCRIPTOR_HANDLE hAlbedoSrv(mainDescriptorHeap->GetCPUDescriptorHandleForHeapStart(), m_gbufferAlbedoSrvIdx, srvDescriptorSize);
-        device->CreateShaderResourceView(m_gbufferAlbedo.Get(), &srvDesc, hAlbedoSrv);
-
-        srvDesc.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
-        CD3DX12_CPU_DESCRIPTOR_HANDLE hNormalSrv(mainDescriptorHeap->GetCPUDescriptorHandleForHeapStart(), m_gbufferNormalSrvIdx, srvDescriptorSize);
-        device->CreateShaderResourceView(m_gbufferNormal.Get(), &srvDesc, hNormalSrv);
-
-        srvDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
-        CD3DX12_CPU_DESCRIPTOR_HANDLE hORMSrv(mainDescriptorHeap->GetCPUDescriptorHandleForHeapStart(), m_gbufferORMSrvIdx, srvDescriptorSize);
-        device->CreateShaderResourceView(m_gbufferORM.Get(), &srvDesc, hORMSrv);
-
-        srvDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
-        CD3DX12_CPU_DESCRIPTOR_HANDLE hEmissiveSrv(mainDescriptorHeap->GetCPUDescriptorHandleForHeapStart(), m_gbufferEmissiveSrvIdx, srvDescriptorSize);
-        device->CreateShaderResourceView(m_gbufferEmissive.Get(), &srvDesc, hEmissiveSrv);
 
         m_depthBufferSrvIdx = srvIdx++;
+
         D3D12_SHADER_RESOURCE_VIEW_DESC depthSrvDesc = {};
         depthSrvDesc.Format = DXGI_FORMAT_R32_FLOAT;
         depthSrvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
         depthSrvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
         depthSrvDesc.Texture2D.MipLevels = 1;
 
-        CD3DX12_CPU_DESCRIPTOR_HANDLE hDepthSrv(mainDescriptorHeap->GetCPUDescriptorHandleForHeapStart(), m_depthBufferSrvIdx, srvDescriptorSize);
-        device->CreateShaderResourceView(dc->GetDepthStencilBuffer(), &depthSrvDesc, hDepthSrv);
+        CD3DX12_CPU_DESCRIPTOR_HANDLE depthSrvHandle(
+            mainDescriptorHeap->GetCPUDescriptorHandleForHeapStart(),
+            m_depthBufferSrvIdx,
+            srvDescriptorSize);
 
-        return true;
-    }
-
-    bool InitHBAO(RenderDevice* dc, int width, int height)
-    {
-        ID3D12Device* device = dc->GetDevice();
-
-        D3D12_DESCRIPTOR_HEAP_DESC rtvHeapDesc = {};
-        rtvHeapDesc.NumDescriptors = 2;
-        rtvHeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
-        rtvHeapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
-        if (FAILED(device->CreateDescriptorHeap(&rtvHeapDesc, IID_PPV_ARGS(&m_hbaoRtvHeap))))
-        {
-            return false;
-        }
-
-        D3D12_RESOURCE_DESC texDesc = CD3DX12_RESOURCE_DESC::Tex2D(
-            DXGI_FORMAT_R16_FLOAT, (UINT64)width, (UINT)height, 1, 1, 1, 0, D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET);
-
-        D3D12_CLEAR_VALUE clearVal = {};
-        clearVal.Format = DXGI_FORMAT_R16_FLOAT;
-        clearVal.Color[0] = 1.0f;
-
-        auto defHeapProps = CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_DEFAULT);
-
-        if (FAILED(device->CreateCommittedResource(&defHeapProps, D3D12_HEAP_FLAG_NONE, &texDesc,
-            D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, &clearVal, IID_PPV_ARGS(&m_hbaoRawRT))))
-        {
-            return false;
-        }
-
-        if (FAILED(device->CreateCommittedResource(&defHeapProps, D3D12_HEAP_FLAG_NONE, &texDesc,
-            D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, &clearVal, IID_PPV_ARGS(&m_hbaoBlurredRT))))
-        {
-            return false;
-        }
-
-        m_rtvDescriptorSize = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
-        CD3DX12_CPU_DESCRIPTOR_HANDLE rtvHandle(m_hbaoRtvHeap->GetCPUDescriptorHandleForHeapStart());
-
-        device->CreateRenderTargetView(m_hbaoRawRT.Get(), nullptr, rtvHandle);
-        rtvHandle.Offset(1, m_rtvDescriptorSize);
-        device->CreateRenderTargetView(m_hbaoBlurredRT.Get(), nullptr, rtvHandle);
-
-        m_hbaoRawSrvIdx = srvIdx++;
-        m_hbaoBlurredSrvIdx = srvIdx++;
-
-        D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
-        srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-        srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
-        srvDesc.Texture2D.MipLevels = 1;
-        srvDesc.Format = DXGI_FORMAT_R16_FLOAT;
-
-        CD3DX12_CPU_DESCRIPTOR_HANDLE hRawSrv(mainDescriptorHeap->GetCPUDescriptorHandleForHeapStart(), m_hbaoRawSrvIdx, srvDescriptorSize);
-        device->CreateShaderResourceView(m_hbaoRawRT.Get(), &srvDesc, hRawSrv);
-
-        CD3DX12_CPU_DESCRIPTOR_HANDLE hBlurredSrv(mainDescriptorHeap->GetCPUDescriptorHandleForHeapStart(), m_hbaoBlurredSrvIdx, srvDescriptorSize);
-        device->CreateShaderResourceView(m_hbaoBlurredRT.Get(), &srvDesc, hBlurredSrv);
+        dc->GetDevice()->CreateShaderResourceView(
+            dc->GetDepthStencilBuffer(),
+            &depthSrvDesc,
+            depthSrvHandle);
 
         return true;
     }
@@ -796,31 +659,88 @@ public:
         return true;
     }
 
-    void ResetRDGTransientResources(int frameIndex)
+    bool AllocateRDGTransientResource(
+        RenderDevice* dc,
+        int frameIndex,
+        const D3D12_RESOURCE_DESC& resourceDesc,
+        D3D12_RESOURCE_STATES initialState,
+        D3D12_RESOURCE_STATES finalState,
+        const D3D12_CLEAR_VALUE* clearValue,
+        ComPtr<ID3D12Resource>* outResource)
     {
-        if (frameIndex < 0 || frameIndex >= static_cast<int>(m_rdgTransientResources.size()))
+        if (dc == nullptr ||
+            dc->GetDevice() == nullptr ||
+            outResource == nullptr ||
+            frameIndex < 0 ||
+            frameIndex >= static_cast<int>(m_rdgTransientResourcePools.size()))
+        {
+            return false;
+        }
+
+        std::vector<RDGTransientResourcePoolEntry>& framePool =
+            m_rdgTransientResourcePools[frameIndex];
+
+        // Matching final-to-initial state keeps RDG's state model aligned with the reused resource.
+        for (RDGTransientResourcePoolEntry& entry : framePool)
+        {
+            if (entry.usedThisFrame ||
+                !entry.resource ||
+                entry.finalState != initialState ||
+                !AreRDGResourceDescsEqual(entry.desc, resourceDesc) ||
+                !AreRDGClearValuesEqual(entry, resourceDesc, clearValue))
+            {
+                continue;
+            }
+
+            entry.usedThisFrame = true;
+            entry.finalState = finalState;
+            *outResource = entry.resource;
+            return true;
+        }
+
+        CD3DX12_HEAP_PROPERTIES heapProps(D3D12_HEAP_TYPE_DEFAULT);
+        ComPtr<ID3D12Resource> resource;
+
+        const HRESULT hr = dc->GetDevice()->CreateCommittedResource(
+            &heapProps,
+            D3D12_HEAP_FLAG_NONE,
+            &resourceDesc,
+            initialState,
+            clearValue,
+            IID_PPV_ARGS(&resource));
+
+        if (FAILED(hr))
+        {
+            return false;
+        }
+
+        RDGTransientResourcePoolEntry entry;
+        entry.desc = resourceDesc;
+        entry.hasClearValue = clearValue != nullptr;
+        if (clearValue != nullptr)
+        {
+            entry.clearValue = *clearValue;
+        }
+        entry.resource = resource;
+        entry.finalState = finalState;
+        entry.usedThisFrame = true;
+
+        framePool.push_back(std::move(entry));
+        *outResource = resource;
+        return true;
+    }
+
+    void BeginRDGFrame(int frameIndex)
+    {
+        if (frameIndex < 0 || frameIndex >= static_cast<int>(m_rdgTransientResourcePools.size()))
         {
             return;
         }
 
-        m_rdgTransientResources[frameIndex].clear();
-    }
-
-    void KeepRDGResourceAlive(int frameIndex, const ComPtr<ID3D12Resource>& resource)
-    {
-        if (!resource || frameIndex < 0 || frameIndex >= static_cast<int>(m_rdgTransientResources.size()))
+        // BeginFrame reaches this point only after this frame slot's fence has completed.
+        for (RDGTransientResourcePoolEntry& entry : m_rdgTransientResourcePools[frameIndex])
         {
-            return;
-        }
-
-        m_rdgTransientResources[frameIndex].push_back(resource);
-    }
-
-    void KeepRDGResourcesAlive(int frameIndex, const std::vector<ComPtr<ID3D12Resource>>& resources)
-    {
-        for (const ComPtr<ID3D12Resource>& resource : resources)
-        {
-            KeepRDGResourceAlive(frameIndex, resource);
+            entry.usedThisFrame = false;
         }
     }
 
@@ -950,99 +870,9 @@ public:
         return m_materialBuffer->GetGPUVirtualAddress();
     }
 
-    ID3D12Resource* GetGBufferAlbedo()
-    {
-        return m_gbufferAlbedo.Get();
-    }
-
-    ID3D12Resource* GetGBufferNormal()
-    {
-        return m_gbufferNormal.Get();
-    }
-
-    UINT GetGBufferAlbedoSrvIdx()
-    {
-        return m_gbufferAlbedoSrvIdx;
-    }
-
-    UINT GetGBufferNormalSrvIdx()
-    {
-        return m_gbufferNormalSrvIdx;
-    }
-
-    CD3DX12_CPU_DESCRIPTOR_HANDLE GetGBufferAlbedoRtvHandle()
-    {
-        return CD3DX12_CPU_DESCRIPTOR_HANDLE(m_gbufferRtvHeap->GetCPUDescriptorHandleForHeapStart(), 0, m_rtvDescriptorSize);
-    }
-
-    CD3DX12_CPU_DESCRIPTOR_HANDLE GetGBufferNormalRtvHandle()
-    {
-        return CD3DX12_CPU_DESCRIPTOR_HANDLE(m_gbufferRtvHeap->GetCPUDescriptorHandleForHeapStart(), 1, m_rtvDescriptorSize);
-    }
-
-    ID3D12Resource* GetGBufferORM()
-    {
-        return m_gbufferORM.Get();
-    }
-
-    UINT GetGBufferORMSrvIdx()
-    {
-        return m_gbufferORMSrvIdx;
-    }
-
-    CD3DX12_CPU_DESCRIPTOR_HANDLE GetGBufferORMRtvHandle()
-    {
-        return CD3DX12_CPU_DESCRIPTOR_HANDLE(m_gbufferRtvHeap->GetCPUDescriptorHandleForHeapStart(), 2, m_rtvDescriptorSize);
-    }
-
-    ID3D12Resource* GetGBufferEmissive()
-    {
-        return m_gbufferEmissive.Get();
-    }
-
-    UINT GetGBufferEmissiveSrvIdx()
-    {
-        return m_gbufferEmissiveSrvIdx;
-    }
-
-    CD3DX12_CPU_DESCRIPTOR_HANDLE GetGBufferEmissiveRtvHandle()
-    {
-        return CD3DX12_CPU_DESCRIPTOR_HANDLE(m_gbufferRtvHeap->GetCPUDescriptorHandleForHeapStart(), 3, m_rtvDescriptorSize);
-    }
-
     UINT GetDepthBufferSrvIdx()
     {
         return m_depthBufferSrvIdx;
-    }
-
-    ID3D12Resource* GetHBAORawRT()
-    {
-        return m_hbaoRawRT.Get();
-    }
-
-    ID3D12Resource* GetHBAOBlurredRT()
-    {
-        return m_hbaoBlurredRT.Get();
-    }
-
-    CD3DX12_CPU_DESCRIPTOR_HANDLE GetHBAORawRtvHandle()
-    {
-        return CD3DX12_CPU_DESCRIPTOR_HANDLE(m_hbaoRtvHeap->GetCPUDescriptorHandleForHeapStart(), 0, m_rtvDescriptorSize);
-    }
-
-    CD3DX12_CPU_DESCRIPTOR_HANDLE GetHBAOBlurredRtvHandle()
-    {
-        return CD3DX12_CPU_DESCRIPTOR_HANDLE(m_hbaoRtvHeap->GetCPUDescriptorHandleForHeapStart(), 1, m_rtvDescriptorSize);
-    }
-
-    UINT GetHBAORawSrvIdx()
-    {
-        return m_hbaoRawSrvIdx;
-    }
-
-    UINT GetHBAOBlurredSrvIdx()
-    {
-        return m_hbaoBlurredSrvIdx;
     }
 
     ID3D12Resource* GetTAAHistoryRT(int idx)
@@ -1061,13 +891,78 @@ public:
     }
 
 private:
+    struct RDGTransientResourcePoolEntry
+    {
+        D3D12_RESOURCE_DESC desc = {};
+        bool hasClearValue = false;
+        D3D12_CLEAR_VALUE clearValue = {};
+        ComPtr<ID3D12Resource> resource;
+        D3D12_RESOURCE_STATES finalState = D3D12_RESOURCE_STATE_COMMON;
+        bool usedThisFrame = false;
+    };
+
+    static bool AreRDGResourceDescsEqual(
+        const D3D12_RESOURCE_DESC& lhs,
+        const D3D12_RESOURCE_DESC& rhs)
+    {
+        return lhs.Dimension == rhs.Dimension &&
+            lhs.Alignment == rhs.Alignment &&
+            lhs.Width == rhs.Width &&
+            lhs.Height == rhs.Height &&
+            lhs.DepthOrArraySize == rhs.DepthOrArraySize &&
+            lhs.MipLevels == rhs.MipLevels &&
+            lhs.Format == rhs.Format &&
+            lhs.SampleDesc.Count == rhs.SampleDesc.Count &&
+            lhs.SampleDesc.Quality == rhs.SampleDesc.Quality &&
+            lhs.Layout == rhs.Layout &&
+            lhs.Flags == rhs.Flags;
+    }
+
+    static bool AreRDGClearValuesEqual(
+        const RDGTransientResourcePoolEntry& entry,
+        const D3D12_RESOURCE_DESC& resourceDesc,
+        const D3D12_CLEAR_VALUE* clearValue)
+    {
+        const bool hasClearValue = clearValue != nullptr;
+        if (entry.hasClearValue != hasClearValue)
+        {
+            return false;
+        }
+
+        if (!hasClearValue)
+        {
+            return true;
+        }
+
+        if (entry.clearValue.Format != clearValue->Format)
+        {
+            return false;
+        }
+
+        if ((resourceDesc.Flags & D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL) != 0)
+        {
+            return entry.clearValue.DepthStencil.Depth == clearValue->DepthStencil.Depth &&
+                entry.clearValue.DepthStencil.Stencil == clearValue->DepthStencil.Stencil;
+        }
+
+        for (UINT componentIndex = 0; componentIndex < 4; ++componentIndex)
+        {
+            if (entry.clearValue.Color[componentIndex] != clearValue->Color[componentIndex])
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
     static constexpr UINT MaxSrvUavDescriptors = 1024;
     UINT persistentSrvUavDescriptorCount = 0;
     UINT transientSrvUavDescriptorEnd = MaxSrvUavDescriptors;
     UINT m_srvFrameBufferCount = 1;
     UINT srvIdx;
     UINT srvDescriptorSize;
-    std::vector<std::vector<ComPtr<ID3D12Resource>>> m_rdgTransientResources;
+    std::vector<std::vector<RDGTransientResourcePoolEntry>> m_rdgTransientResourcePools;
 
     ComPtr<ID3D12DescriptorHeap> mainDescriptorHeap;
 
@@ -1121,27 +1016,9 @@ private:
     ComPtr<ID3D12Resource> m_materialBuffer;
     ComPtr<ID3D12Resource> m_materialUploadBuffer;
 
-    Microsoft::WRL::ComPtr<ID3D12Resource> m_gbufferAlbedo;
-    Microsoft::WRL::ComPtr<ID3D12Resource> m_gbufferNormal;
-    Microsoft::WRL::ComPtr<ID3D12Resource> m_gbufferORM;
-    Microsoft::WRL::ComPtr<ID3D12Resource> m_gbufferEmissive;
-
-    Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> m_gbufferRtvHeap;
-
-    UINT m_gbufferAlbedoSrvIdx = 0;
-    UINT m_gbufferNormalSrvIdx = 0;
-    UINT m_gbufferORMSrvIdx = 0;
-    UINT m_gbufferEmissiveSrvIdx = 0;
-
     UINT m_rtvDescriptorSize = 0;
 
     UINT m_depthBufferSrvIdx = 0;
-
-    Microsoft::WRL::ComPtr<ID3D12Resource> m_hbaoRawRT;
-    Microsoft::WRL::ComPtr<ID3D12Resource> m_hbaoBlurredRT;
-    Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> m_hbaoRtvHeap;
-    UINT m_hbaoRawSrvIdx = 0;
-    UINT m_hbaoBlurredSrvIdx = 0;
 
     Microsoft::WRL::ComPtr<ID3D12Resource> m_taaHistoryRT[2];
     Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> m_taaRtvHeap;

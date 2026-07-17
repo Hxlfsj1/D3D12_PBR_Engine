@@ -238,6 +238,23 @@ public:
         size_t visibleInstancesSize)
     {
         RDGBuilder graph(deviceContext, "ShadowGraph");
+        graph.SetTransientResourceAllocator(
+            [deviceContext, resourceManager, frameIndex](
+                const D3D12_RESOURCE_DESC& resourceDesc,
+                D3D12_RESOURCE_STATES initialState,
+                D3D12_RESOURCE_STATES finalState,
+                const D3D12_CLEAR_VALUE* clearValue,
+                Microsoft::WRL::ComPtr<ID3D12Resource>* outResource)
+            {
+                return resourceManager->AllocateRDGTransientResource(
+                    deviceContext,
+                    frameIndex,
+                    resourceDesc,
+                    initialState,
+                    finalState,
+                    clearValue,
+                    outResource);
+            });
         graph.SetTransientSrvUavDescriptorAllocator(
             [resourceManager](UINT* descriptorIndex, D3D12_CPU_DESCRIPTOR_HANDLE* cpuHandle)
             {

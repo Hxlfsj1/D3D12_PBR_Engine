@@ -40,43 +40,6 @@ public:
         UINT shadowMap;
     };
 
-    static void Execute(
-        RenderDevice* deviceContext,
-        ResourceManager* resourceManager,
-        PipelineManager* pipelineManager,
-        const DirectX::XMFLOAT4X4& invViewProjMat,
-        int width,
-        int height,
-        int frameIndex)
-    {
-        auto cmdList = deviceContext->GetCommandList();
-
-        ExecuteNoBarrier(
-            deviceContext,
-            resourceManager,
-            pipelineManager,
-            invViewProjMat,
-            width,
-            height,
-            frameIndex,
-            resourceManager->GetPostProcessRtvHandle(),
-            {
-                resourceManager->GetGBufferAlbedoSrvIdx(),
-                resourceManager->GetGBufferNormalSrvIdx(),
-                resourceManager->GetGBufferORMSrvIdx(),
-                resourceManager->GetDepthBufferSrvIdx(),
-                resourceManager->GetHBAOBlurredSrvIdx(),
-                resourceManager->GetGBufferEmissiveSrvIdx(),
-                resourceManager->GetShadowSrvIdx()
-            });
-
-        CD3DX12_RESOURCE_BARRIER depthToWrite = CD3DX12_RESOURCE_BARRIER::Transition(
-            deviceContext->GetDepthStencilBuffer(),
-            D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
-            D3D12_RESOURCE_STATE_DEPTH_WRITE);
-        cmdList->ResourceBarrier(1, &depthToWrite);
-    }
-
     static void ExecuteNoBarrier(
         RenderDevice* deviceContext,
         ResourceManager* resourceManager,
@@ -139,85 +102,26 @@ public:
         int width,
         int height,
         int frameIndex,
-        const Input& input = {})
+        const Input& input)
     {
+        if (!input.gbufferAlbedo.IsValid() ||
+            !input.gbufferNormal.IsValid() ||
+            !input.gbufferORM.IsValid() ||
+            !input.gbufferEmissive.IsValid() ||
+            !input.depth.IsValid() ||
+            !input.hbaoBlurred.IsValid() ||
+            !input.shadowMap.IsValid())
+        {
+            return {};
+        }
+
         RDGTextureHandle gbufferAlbedo = input.gbufferAlbedo;
-        if (!gbufferAlbedo.IsValid())
-        {
-            gbufferAlbedo = graph.RegisterExternalTexture(
-                resourceManager->GetGBufferAlbedo(),
-                D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
-                D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
-                "GBufferAlbedo");
-        }
-
         RDGTextureHandle gbufferNormal = input.gbufferNormal;
-        if (!gbufferNormal.IsValid())
-        {
-            gbufferNormal = graph.RegisterExternalTexture(
-                resourceManager->GetGBufferNormal(),
-                D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
-                D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
-                "GBufferNormal");
-        }
-
         RDGTextureHandle gbufferORM = input.gbufferORM;
-        if (!gbufferORM.IsValid())
-        {
-            gbufferORM = graph.RegisterExternalTexture(
-                resourceManager->GetGBufferORM(),
-                D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
-                D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
-                "GBufferORM");
-        }
-
         RDGTextureHandle gbufferEmissive = input.gbufferEmissive;
-        if (!gbufferEmissive.IsValid())
-        {
-            gbufferEmissive = graph.RegisterExternalTexture(
-                resourceManager->GetGBufferEmissive(),
-                D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
-                D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
-                "GBufferEmissive");
-        }
-
         RDGTextureHandle depth = input.depth;
-        if (!depth.IsValid())
-        {
-            depth = graph.RegisterExternalTexture(
-                deviceContext->GetDepthStencilBuffer(),
-                D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
-                D3D12_RESOURCE_STATE_DEPTH_WRITE,
-                "SceneDepth");
-        }
-
         RDGTextureHandle hbaoBlurred = input.hbaoBlurred;
-        if (!hbaoBlurred.IsValid())
-        {
-            hbaoBlurred = graph.RegisterExternalTexture(
-                resourceManager->GetHBAOBlurredRT(),
-                D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
-                D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
-                "HBAOBlurred");
-        }
-
         RDGTextureSRVHandle shadowMapSrv = input.shadowMap;
-        if (!shadowMapSrv.IsValid())
-        {
-            RDGTextureHandle shadowMap = graph.RegisterExternalTexture(
-                resourceManager->GetShadowMap(),
-                D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
-                D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
-                "ShadowMap");
-
-            D3D12_SHADER_RESOURCE_VIEW_DESC shadowSrvDesc = {};
-            shadowSrvDesc.Format = DXGI_FORMAT_R32_FLOAT;
-            shadowSrvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2DARRAY;
-            shadowSrvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-            shadowSrvDesc.Texture2DArray.MipLevels = 1;
-            shadowSrvDesc.Texture2DArray.ArraySize = NUM_CASCADES;
-            shadowMapSrv = graph.CreateTextureSRVView(shadowMap, &shadowSrvDesc);
-        }
 
         RDGTextureHandle sceneColor = graph.RegisterExternalTexture(
             resourceManager->GetPostProcessRT(),
@@ -292,35 +196,6 @@ public:
             });
 
         return { sceneColor, pass };
-    }
-
-    static void ExecuteRDG(
-        RenderDevice* deviceContext,
-        ResourceManager* resourceManager,
-        PipelineManager* pipelineManager,
-        const DirectX::XMFLOAT4X4& invViewProjMat,
-        int width,
-        int height,
-        int frameIndex)
-    {
-        RDGBuilder graph(deviceContext, "DeferredLightingGraph");
-        graph.SetTransientSrvUavDescriptorAllocator(
-            [resourceManager](UINT* descriptorIndex, D3D12_CPU_DESCRIPTOR_HANDLE* cpuHandle)
-            {
-                return resourceManager->AllocateTransientSrvUavDescriptor(descriptorIndex, cpuHandle);
-            });
-
-        AddToGraph(
-            graph,
-            deviceContext,
-            resourceManager,
-            pipelineManager,
-            invViewProjMat,
-            width,
-            height,
-            frameIndex);
-
-        graph.Execute(deviceContext->GetCommandList());
     }
 };
 

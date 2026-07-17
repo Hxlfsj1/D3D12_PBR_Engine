@@ -202,9 +202,7 @@ bool D3D12App::InitD3D()
 
     if (!m_resourceManager.InitPostProcess(&m_deviceContext, Width, Height)) return false;
 
-    if (!m_resourceManager.InitGBuffer(&m_deviceContext, Width, Height)) return false;
-
-    if (!m_resourceManager.InitHBAO(&m_deviceContext, Width, Height)) return false;
+    if (!m_resourceManager.InitDepthBufferSRV(&m_deviceContext)) return false;
 
     m_resourceManager.SealPersistentSrvUavDescriptors();
 
@@ -587,7 +585,7 @@ void D3D12App::Update()
 void D3D12App::BeginFrame(bool backBufferHandledByFrameGraph)
 {
     m_resourceManager.ResetTransientSrvUavDescriptors(frameIndex);
-    m_resourceManager.ResetRDGTransientResources(frameIndex);
+    m_resourceManager.BeginRDGFrame(frameIndex);
 
     // Reset the command sequence from the previous frame
     m_deviceContext.GetCommandAllocator(frameIndex)->Reset();
@@ -660,6 +658,24 @@ void D3D12App::Render()
     {
         // Build the RDG for the deferred rendering pipeline
         RDGBuilder deferredGraph(&m_deviceContext, "DeferredFrameGraph");
+        // Wire the transient resource allocator into the RDG
+        deferredGraph.SetTransientResourceAllocator(
+            [this](
+                const D3D12_RESOURCE_DESC& resourceDesc,
+                D3D12_RESOURCE_STATES initialState,
+                D3D12_RESOURCE_STATES finalState,
+                const D3D12_CLEAR_VALUE* clearValue,
+                Microsoft::WRL::ComPtr<ID3D12Resource>* outResource)
+            {
+                return m_resourceManager.AllocateRDGTransientResource(
+                    &m_deviceContext,
+                    frameIndex,
+                    resourceDesc,
+                    initialState,
+                    finalState,
+                    clearValue,
+                    outResource);
+            });
         // Wire the descriptor allocator into the RDG
         deferredGraph.SetTransientSrvUavDescriptorAllocator(
             [this](UINT* descriptorIndex, D3D12_CPU_DESCRIPTOR_HANDLE* cpuHandle)
@@ -820,10 +836,8 @@ void D3D12App::Render()
             postProcessHandledByDeferredGraph = true;
         }
 
-        std::vector<ComPtr<ID3D12Resource>> rdgTransientResources;
         // Execute the entire graph after all passes have been added
-        deferredGraph.ExecuteAndCollectOwnedResources(m_deviceContext.GetCommandList(), rdgTransientResources);
-        m_resourceManager.KeepRDGResourcesAlive(frameIndex, rdgTransientResources);
+        deferredGraph.Execute(m_deviceContext.GetCommandList());
 
         if (taaHandledByDeferredGraph)
         {
