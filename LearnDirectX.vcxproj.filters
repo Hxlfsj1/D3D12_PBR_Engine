@@ -106,6 +106,9 @@
     <None Include="Shaders\Shaders_For_TAA.hlsl">
       <Filter>源文件\Shaders</Filter>
     </None>
+    <None Include="Shaders\Shaders_For_MotionVector.hlsl">
+      <Filter>源文件\Shaders</Filter>
+    </None>
     <None Include="Settings\Scene.json">
       <Filter>源文件\Settings</Filter>
     </None>
@@ -199,6 +202,9 @@
       <Filter>头文件\Passes</Filter>
     </ClInclude>
     <ClInclude Include="Passes\TAAPass.h">
+      <Filter>头文件\Passes</Filter>
+    </ClInclude>
+    <ClInclude Include="Passes\MotionVectorPass.h">
       <Filter>头文件\Passes</Filter>
     </ClInclude>
     <ClInclude Include="Resources\Settings_Manager.h">

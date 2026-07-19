@@ -154,6 +154,7 @@
     <ClInclude Include="Passes\GbufferPass.h" />
     <ClInclude Include="Passes\HiZPass.h" />
     <ClInclude Include="Passes\HBAOPass.h" />
+    <ClInclude Include="Passes\MotionVectorPass.h" />
     <ClInclude Include="Passes\OcclusionCullPass.h" />
     <ClInclude Include="Resources\IBLBaker.h" />
     <ClInclude Include="Logic\InputManager.h" />
@@ -262,6 +263,11 @@
   </ItemGroup>
   <ItemGroup>
     <None Include="Shaders\Shaders_For_TAA.hlsl">
+      <FileType>Document</FileType>
+    </None>
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="Shaders\Shaders_For_MotionVector.hlsl">
       <FileType>Document</FileType>
     </None>
   </ItemGroup>

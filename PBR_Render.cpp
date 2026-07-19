@@ -18,6 +18,7 @@
 #include "OcclusionCullPass.h"
 #include "HBAOPass.h"
 #include "DeferredLightingPass.h"
+#include "MotionVectorPass.h"
 #include "TAAPass.h"
 
 #define STB_IMAGE_IMPLEMENTATION
@@ -1037,6 +1038,18 @@ void D3D12App::Render()
 
         if (m_useTAA)
         {
+            MotionVectorPass::Output motionOutput = MotionVectorPass::AddToGraph(
+                deferredGraph,
+                &m_deviceContext,
+                &m_resourceManager,
+                &m_pipelineManager,
+                m_invViewProjMat,
+                m_prevViewProj,
+                Width,
+                Height,
+                frameIndex,
+                { gbufferOutput.depth });
+
             TAAPass::Output taaOutput = TAAPass::AddToGraph(
                 deferredGraph,
                 &m_deviceContext,
@@ -1050,7 +1063,7 @@ void D3D12App::Render()
                 Width,
                 Height,
                 m_taaHistoryValid,
-                { deferredOutput.sceneColor, gbufferOutput.depth });
+                { deferredOutput.sceneColor, gbufferOutput.depth, motionOutput.motionTexture });
             deferredGraph.AddPassDependencies(taaOutput.pass, { sceneColorProducer });
             sceneColorProducer = taaOutput.pass;
 

@@ -8,6 +8,7 @@ cbuffer TAAConstants : register(b0)
     uint colorTextureIdx;
     uint historyTextureIdx;
     uint depthTextureIdx;
+    uint motionTextureIdx;
 };
 
 SamplerState sPoint : register(s0);
@@ -43,6 +44,55 @@ static const float3x3 YCoCg_2_RGB = float3x3
     1.0, -1.0, -1.0
 );
 
+float CatmullRomWeight(float x)
+{
+    x = abs(x);
+    float x2 = x * x;
+    float x3 = x2 * x;
+
+    if (x <= 1.0f)
+    {
+        return 1.5f * x3 - 2.5f * x2 + 1.0f;
+    }
+
+    if (x < 2.0f)
+    {
+        return -0.5f * x3 + 2.5f * x2 - 4.0f * x + 2.0f;
+    }
+
+    return 0.0f;
+}
+
+float4 SampleHistoryCatmullRom(Texture2D historyTexture, SamplerState pointSampler, float2 uv, float2 texelSize)
+{
+    float2 textureSize = 1.0f / texelSize;
+    float2 samplePos = uv * textureSize - 0.5f;
+    float2 basePos = floor(samplePos);
+    float2 fraction = samplePos - basePos;
+    float2 minUV = texelSize * 0.5f;
+    float2 maxUV = 1.0f - minUV;
+
+    float4 result = 0.0f;
+
+    [unroll]
+    for (int y = -1; y <= 2; ++y)
+    {
+        float weightY = CatmullRomWeight((float)y - fraction.y);
+
+        [unroll]
+        for (int x = -1; x <= 2; ++x)
+        {
+            float weightX = CatmullRomWeight((float)x - fraction.x);
+            float2 sampleUV = (basePos + float2(x, y) + 0.5f) * texelSize;
+            sampleUV = clamp(sampleUV, minUV, maxUV);
+
+            result += historyTexture.SampleLevel(pointSampler, sampleUV, 0) * (weightX * weightY);
+        }
+    }
+
+    return result;
+}
+
 float4 PSMain(VS_OUTPUT input) : SV_TARGET
 {
     Texture2D tCurrentColor = ResourceDescriptorHeap[colorTextureIdx];
@@ -59,7 +109,7 @@ float4 PSMain(VS_OUTPUT input) : SV_TARGET
     float depth = tDepth.SampleLevel(sPoint, uv, 0).r;
 
     float minDepth = depth;
-    float2 velocityUV = uv;
+    float2 closestDepthUV = uv;
     
     // 3x3 depth dilation (fully unrolled to avoid branch overhead)
     [unroll]
@@ -73,22 +123,33 @@ float4 PSMain(VS_OUTPUT input) : SV_TARGET
             if (d < minDepth)
             {
                 minDepth = d;
-                velocityUV = uv + offset;
+                closestDepthUV = uv + offset;
             }
         }
     }
 
-    float xNDC = (velocityUV.x * 2.0f - 1.0f) - jitterOffset.x;
-    float yNDC = (1.0f - velocityUV.y * 2.0f) - jitterOffset.y;
-    float4 clipSpacePos = float4(xNDC, yNDC, minDepth, 1.0f);
-    
-    float4 worldPosH = mul(clipSpacePos, invViewProj);
-    float3 worldPos = worldPosH.xyz / worldPosH.w;
+    float2 motionUV = 0.0f;
+    float2 historyUV = closestDepthUV;
+    bool hasMotionTexture = motionTextureIdx != 0xffffffffu;
+    if (hasMotionTexture)
+    {
+        Texture2D tMotionUV = ResourceDescriptorHeap[motionTextureIdx];
+        motionUV = tMotionUV.SampleLevel(sPoint, closestDepthUV, 0).rg;
+        historyUV = closestDepthUV - motionUV;
+    }
+    else
+    {
+        float xNDC = closestDepthUV.x * 2.0f - 1.0f;
+        float yNDC = 1.0f - closestDepthUV.y * 2.0f;
+        float4 clipSpacePos = float4(xNDC, yNDC, minDepth, 1.0f);
 
-    // Re-calculate previous UV (compute UVs dynamically to save VRAM)
-    float4 prevClipSpacePos = mul(float4(worldPos, 1.0f), prevViewProj);
-    float2 prevNDC = prevClipSpacePos.xy / prevClipSpacePos.w;
-    float2 historyUV = float2(prevNDC.x * 0.5f + 0.5f, 0.5f - prevNDC.y * 0.5f);
+        float4 worldPosH = mul(clipSpacePos, invViewProj);
+        float3 worldPos = worldPosH.xyz / worldPosH.w;
+
+        float4 prevClipSpacePos = mul(float4(worldPos, 1.0f), prevViewProj);
+        float2 prevNDC = prevClipSpacePos.xy / prevClipSpacePos.w;
+        historyUV = float2(prevNDC.x * 0.5f + 0.5f, 0.5f - prevNDC.y * 0.5f);
+    }
 
     // m1 stores YCoCg sum, m2 stores YCoCg sum of squares (Var(X) = E(X²) - E(X)²)
     float3 m1 = 0.0f;
@@ -130,14 +191,22 @@ float4 PSMain(VS_OUTPUT input) : SV_TARGET
         return float4(sharpenedCenter, 1.0f);
     }
 
-    float3 historyColor = tHistoryColor.SampleLevel(sLinear, historyUV, 0).rgb;
+    float3 historyColor = SampleHistoryCatmullRom(tHistoryColor, sPoint, historyUV, texelSize).rgb;
     float3 historyYCoCg = mul(RGB_2_YCoCg, historyColor);
     
     // Define the Color Clamping Range (often referred to as a Color Bounding Box)
     float3 clampedHistoryY = clamp(historyYCoCg, boxMin, boxMax);
     float3 clampedHistoryRGB = mul(YCoCg_2_RGB, clampedHistoryY);
 
-    float3 finalColor = lerp(sharpenedCenter, clampedHistoryRGB, blendAlpha);
+    float historyBlend = blendAlpha;
+    if (hasMotionTexture && blendAlpha > 0.0f)
+    {
+        float motionPixels = length(motionUV * float2(width, height));
+        float currentWeight = lerp(0.05f, 0.20f, saturate(motionPixels / 40.0f));
+        historyBlend = 1.0f - currentWeight;
+    }
+
+    float3 finalColor = lerp(sharpenedCenter, clampedHistoryRGB, historyBlend);
 
     return float4(finalColor, 1.0f);
 }

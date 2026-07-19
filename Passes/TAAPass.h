@@ -6,6 +6,7 @@
 #include "ResourceManager.h"
 #include "PipelineManager.h"
 #include "RenderStructs.h"
+#include "MotionVectorPass.h"
 #include "RDG.h"
 
 class TAAPass
@@ -15,6 +16,7 @@ public:
     {
         RDGTextureHandle color;
         RDGTextureHandle depth;
+        RDGTextureHandle motion;
     };
 
     struct Output
@@ -30,6 +32,7 @@ public:
         UINT colorSrvIdx = UINT_MAX;
         UINT historySrvIdx = UINT_MAX;
         UINT depthSrvIdx = UINT_MAX;
+        UINT motionSrvIdx = UINT_MAX;
     };
 
     static UINT Execute(
@@ -73,7 +76,8 @@ public:
                 resourceManager->GetTAARtvHandle(taaCurrentIdx),
                 resourceManager->GetPostProcessSrvIdx(),
                 resourceManager->GetTAAHistorySrvIdx(1 - taaCurrentIdx),
-                resourceManager->GetDepthBufferSrvIdx()
+                resourceManager->GetDepthBufferSrvIdx(),
+                UINT_MAX
             });
 
         CD3DX12_RESOURCE_BARRIER revertBarriers[3] =
@@ -128,6 +132,7 @@ public:
         cb.colorTextureIdx = views.colorSrvIdx;
         cb.historyTextureIdx = views.historySrvIdx;
         cb.depthTextureIdx = views.depthSrvIdx;
+        cb.motionTextureIdx = views.motionSrvIdx;
 
         memcpy(cbvCpuAddress, &cb, sizeof(TAAConstants));
         cmdList->SetGraphicsRootConstantBufferView(0, resourceManager->GetCBVGPUAddress(frameIndex) + taaConstantsOffset);
@@ -203,9 +208,26 @@ public:
         depthSrvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
         depthSrvDesc.Texture2D.MipLevels = 1;
 
+        MotionVectorPass::Output motionOutput = MotionVectorPass::AddToGraph(
+            graph,
+            deviceContext,
+            resourceManager,
+            pipelineManager,
+            currentInvViewProj,
+            prevViewProj,
+            width,
+            height,
+            frameIndex,
+            { depth });
+
         RDGTextureSRVHandle colorSrv = graph.CreateTextureSRVView(offscreenLitBuffer);
         RDGTextureSRVHandle historySrv = graph.CreateTextureSRVView(previousHistory);
         RDGTextureSRVHandle depthSrv = graph.CreateTextureSRVView(depth, &depthSrvDesc);
+        RDGTextureSRVHandle motionSrv = {};
+        if (motionOutput.motionTexture.IsValid())
+        {
+            motionSrv = graph.CreateTextureSRVView(motionOutput.motionTexture);
+        }
         RDGTextureRTVHandle historyRtv = graph.CreateTextureRTVView(currentHistoryTarget);
 
         if (!colorSrv.IsValid() ||
@@ -232,13 +254,18 @@ public:
             historyRtv.cpuHandle,
             colorSrv.descriptorIndex,
             historySrv.descriptorIndex,
-            depthSrv.descriptorIndex
+            depthSrv.descriptorIndex,
+            motionSrv.IsValid() ? motionSrv.descriptorIndex : UINT_MAX
         };
 
         RDGPassParameters params;
         params.ReadSRV(colorSrv);
         params.ReadSRV(historySrv);
         params.ReadSRV(depthSrv);
+        if (motionSrv.IsValid())
+        {
+            params.ReadSRV(motionSrv);
+        }
         params.WriteRTV(historyRtv);
 
         graph.AddPass(
@@ -325,6 +352,11 @@ public:
         RDGTextureSRVHandle colorSrv = graph.CreateTextureSRVView(color);
         RDGTextureSRVHandle historySrv = graph.CreateTextureSRVView(previousHistory);
         RDGTextureSRVHandle depthSrv = graph.CreateTextureSRVView(depth, &depthSrvDesc);
+        RDGTextureSRVHandle motionSrv = {};
+        if (input.motion.IsValid())
+        {
+            motionSrv = graph.CreateTextureSRVView(input.motion);
+        }
         RDGTextureRTVHandle historyRtv = graph.CreateTextureRTVView(currentHistoryTarget);
 
         if (!colorSrv.IsValid() ||
@@ -340,13 +372,18 @@ public:
             historyRtv.cpuHandle,
             colorSrv.descriptorIndex,
             historySrv.descriptorIndex,
-            depthSrv.descriptorIndex
+            depthSrv.descriptorIndex,
+            motionSrv.IsValid() ? motionSrv.descriptorIndex : UINT_MAX
         };
 
         RDGPassParameters params;
         params.ReadSRV(colorSrv);
         params.ReadSRV(historySrv);
         params.ReadSRV(depthSrv);
+        if (motionSrv.IsValid())
+        {
+            params.ReadSRV(motionSrv);
+        }
         params.WriteRTV(historyRtv);
 
         RDGPassHandle pass = graph.AddPass(

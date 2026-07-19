@@ -106,7 +106,16 @@ struct alignas(D3D12_CONSTANT_BUFFER_DATA_PLACEMENT_ALIGNMENT) TAAConstants
     UINT colorTextureIdx;
     UINT historyTextureIdx;
     UINT depthTextureIdx;
-    UINT pad;
+    UINT motionTextureIdx;
+};
+
+struct alignas(D3D12_CONSTANT_BUFFER_DATA_PLACEMENT_ALIGNMENT) MotionVectorConstants
+{
+    DirectX::XMFLOAT4X4 invViewProj;
+    DirectX::XMFLOAT4X4 prevViewProj;
+
+    UINT depthTextureIdx;
+    UINT pad[3];
 };
 
 #endif
