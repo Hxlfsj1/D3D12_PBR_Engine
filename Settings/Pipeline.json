@@ -1,5 +1,6 @@
 {
   "use_deferred": true,
-  "use_z_prepass": true,
-  "use_taa": false
+  "use_z_prepass": false,
+  "use_taa": false,
+  "use_hiz_occlusion": false
 }

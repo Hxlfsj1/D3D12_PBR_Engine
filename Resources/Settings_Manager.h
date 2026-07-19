@@ -66,6 +66,7 @@ struct PipelineConfig
     bool useDeferred = true;
     bool useZPrepass = false;
     bool useTAA = false;
+    bool useHiZOcclusion = true;
 };
 
 struct LightingConfig
@@ -218,6 +219,7 @@ private:
             pipeline.useDeferred = j.value("use_deferred", pipeline.useDeferred);
             pipeline.useZPrepass = j.value("use_z_prepass", pipeline.useZPrepass);
             pipeline.useTAA = j.value("use_taa", pipeline.useTAA);
+            pipeline.useHiZOcclusion = j.value("use_hiz_occlusion", pipeline.useHiZOcclusion);
         }
         else
         {

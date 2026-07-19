@@ -9,7 +9,9 @@
 #ifndef D3D12APP_H
 #define D3D12APP_H
 
+#include <cstdint>
 #include <string>
+#include <vector>
 #include "stdafx.h"
 #include "Camera.h"
 #include "RenderDevice.h"
@@ -40,6 +42,10 @@ private:
 
     // Internal routines invoked per frame during runtime
     void Update();
+    void InitializeOcclusionVisibility();
+    void ResetOcclusionVisibility();
+    void UpdateOcclusionVisibilityFromReadback();
+    bool IsVisibleByPreviousOcclusion(const ModelInstance& instance) const;
 
     // Render passes
     void BeginFrame(bool backBufferHandledByFrameGraph);
@@ -87,9 +93,17 @@ private:
     float timeElapsed = 0.0f;
 
     int m_visibleInstanceCount = 0;
+    int m_frustumInstanceCount = 0;
+    int m_occlusionCandidateCount = 0;
+    int m_occlusionRejectedInstanceCount = 0;
     bool m_useTAA;
+    bool m_useHiZOcclusion = true;
     UINT m_taaFrameCounter;
     bool m_taaHistoryValid = false;
+    std::vector<uint8_t> m_previousOcclusionVisible;
+    std::vector<bool> m_occlusionReadbackValid;
+    std::vector<OcclusionCandidateData> m_occlusionCandidates;
+    std::vector<std::vector<UINT>> m_occlusionSubmittedCandidateIds;
 
     DirectX::XMFLOAT4X4 m_viewMat;
     DirectX::XMFLOAT4X4 m_unjitteredProjMat;

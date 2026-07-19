@@ -56,6 +56,16 @@ struct InstanceData
     UINT pad[3];
 };
 
+constexpr UINT OCCLUSION_CANDIDATE_FORCE_VISIBLE = 1 << 0;
+
+struct OcclusionCandidateData
+{
+    DirectX::XMFLOAT3 boundsCenter;
+    UINT occlusionId;
+    DirectX::XMFLOAT3 boundsExtents;
+    UINT flags;
+};
+
 struct alignas(D3D12_CONSTANT_BUFFER_DATA_PLACEMENT_ALIGNMENT) DeferredConstants
 {
     DirectX::XMFLOAT4X4 invViewProj;

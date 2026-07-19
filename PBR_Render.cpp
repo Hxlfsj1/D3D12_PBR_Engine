@@ -14,6 +14,8 @@
 #include "PostProcessPass.h"
 #include "PBRPass.h"
 #include "GBufferPass.h"
+#include "HiZPass.h"
+#include "OcclusionCullPass.h"
 #include "HBAOPass.h"
 #include "DeferredLightingPass.h"
 #include "TAAPass.h"
@@ -92,6 +94,7 @@ bool D3D12App::Initialize(int nShowCmd)
     Height = m_settingsManager.window.height;
     FullScreen = m_settingsManager.window.fullScreen;
     m_useTAA = m_settingsManager.pipeline.useTAA;
+    m_useHiZOcclusion = m_settingsManager.pipeline.useHiZOcclusion;
 
     std::string titleStr = m_settingsManager.window.title;
     g_wWindowTitle = std::wstring(titleStr.begin(), titleStr.end());
@@ -194,6 +197,8 @@ bool D3D12App::InitD3D()
 
     // Stream Assets & Build IBL: Load 3D models and HDR textures into VRAM and bake IBL components
     if (!m_resourceManager.LoadAssets(&m_deviceContext, SettingsManager::LoadSceneFromJson("Settings/Scene.json"), frameBufferCount)) return false;
+    InitializeOcclusionVisibility();
+    if (!m_resourceManager.InitOcclusionReadback(&m_deviceContext, static_cast<UINT>(m_previousOcclusionVisible.size()), frameBufferCount)) return false;
     m_resourceManager.BuildGlobalMaterialPool(&m_deviceContext);
     currentHDRPath = SettingsManager::GetSkyboxPathFromJson();
     if (!m_resourceManager.InitIBL(&m_deviceContext, currentHDRPath.c_str())) return false;
@@ -212,10 +217,134 @@ bool D3D12App::InitD3D()
     return true;
 }
 
+void D3D12App::InitializeOcclusionVisibility()
+{
+    const auto& instances = m_resourceManager.GetSceneInstances();
+    size_t visibilityCount = instances.size();
+
+    for (const ModelInstance& instance : instances)
+    {
+        if (instance.occlusionId != 0xFFFFFFFF)
+        {
+            const size_t requiredCount = static_cast<size_t>(instance.occlusionId) + 1;
+            if (requiredCount > visibilityCount)
+            {
+                visibilityCount = requiredCount;
+            }
+        }
+    }
+
+    m_previousOcclusionVisible.assign(visibilityCount, 1);
+    m_occlusionReadbackValid.assign(frameBufferCount, false);
+    m_occlusionSubmittedCandidateIds.assign(frameBufferCount, {});
+}
+
+void D3D12App::ResetOcclusionVisibility()
+{
+    std::fill(m_previousOcclusionVisible.begin(), m_previousOcclusionVisible.end(), 1);
+    std::fill(m_occlusionReadbackValid.begin(), m_occlusionReadbackValid.end(), false);
+    for (std::vector<UINT>& submittedCandidateIds : m_occlusionSubmittedCandidateIds)
+    {
+        submittedCandidateIds.clear();
+    }
+}
+
+void D3D12App::UpdateOcclusionVisibilityFromReadback()
+{
+    if (!m_useHiZOcclusion || !m_settingsManager.pipeline.useDeferred)
+    {
+        return;
+    }
+
+    if (frameIndex < 0 ||
+        frameIndex >= static_cast<int>(m_occlusionReadbackValid.size()) ||
+        !m_occlusionReadbackValid[frameIndex])
+    {
+        return;
+    }
+
+    const UINT* visibilityData = m_resourceManager.GetOcclusionReadbackData(frameIndex);
+    const UINT visibilityCount = m_resourceManager.GetOcclusionVisibilityCount();
+    if (visibilityData == nullptr || visibilityCount == 0)
+    {
+        m_occlusionReadbackValid[frameIndex] = false;
+        if (frameIndex < static_cast<int>(m_occlusionSubmittedCandidateIds.size()))
+        {
+            m_occlusionSubmittedCandidateIds[frameIndex].clear();
+        }
+        return;
+    }
+
+    const std::vector<UINT>* submittedCandidateIds = nullptr;
+    if (frameIndex < static_cast<int>(m_occlusionSubmittedCandidateIds.size()))
+    {
+        submittedCandidateIds = &m_occlusionSubmittedCandidateIds[frameIndex];
+    }
+
+    size_t copyCount = m_previousOcclusionVisible.size();
+    if (static_cast<size_t>(visibilityCount) < copyCount)
+    {
+        copyCount = static_cast<size_t>(visibilityCount);
+    }
+
+    size_t visibleCount = 0;
+    for (size_t i = 0; i < copyCount; ++i)
+    {
+        m_previousOcclusionVisible[i] = visibilityData[i] != 0 ? 1 : 0;
+        visibleCount += m_previousOcclusionVisible[i] != 0 ? 1 : 0;
+    }
+
+    size_t candidateCount = 0;
+    size_t candidateVisibleCount = 0;
+    if (submittedCandidateIds != nullptr)
+    {
+        for (UINT occlusionId : *submittedCandidateIds)
+        {
+            if (occlusionId >= copyCount)
+            {
+                continue;
+            }
+
+            ++candidateCount;
+            candidateVisibleCount += m_previousOcclusionVisible[occlusionId] != 0 ? 1 : 0;
+        }
+    }
+
+    if ((copyCount > 0 && visibleCount == 0) ||
+        (candidateCount > 0 && candidateVisibleCount == 0))
+    {
+        ResetOcclusionVisibility();
+        OutputDebugStringA("HiZ occlusion readback rejected because every candidate was culled\n");
+        return;
+    }
+
+    if (submittedCandidateIds != nullptr)
+    {
+        m_occlusionSubmittedCandidateIds[frameIndex].clear();
+    }
+    m_occlusionReadbackValid[frameIndex] = false;
+}
+
+bool D3D12App::IsVisibleByPreviousOcclusion(const ModelInstance& instance) const
+{
+    if (!m_useHiZOcclusion ||
+        !m_settingsManager.pipeline.useDeferred ||
+        instance.isTransparent ||
+        instance.isCutout ||
+        instance.occlusionId == 0xFFFFFFFF ||
+        instance.occlusionId >= m_previousOcclusionVisible.size())
+    {
+        return true;
+    }
+
+    return m_previousOcclusionVisible[instance.occlusionId] != 0;
+}
+
 // Data is streamed directly from the Upload Heap to the GPU, utilizing a Ring Buffer mechanism (with a count of 3 to align with the Triple Buffering scheme)
 void D3D12App::Update()
 {
     auto& instances = m_resourceManager.GetSceneInstances();
+    UpdateOcclusionVisibilityFromReadback();
 
     // ====================================================================================================
     // Handle FPS
@@ -237,7 +366,11 @@ void D3D12App::Update()
         std::wstring windowText = std::wstring(WindowTitle) +
             L"    |    FPS: " + fpsStr +
             L"    |    ms/frame: " + mspfStr +
-            L"    |    Visible: " + std::to_wstring(g_visibleInstances.size()) + L"/" + std::to_wstring(instances.size()) +
+            L"    |    Visible: " + std::to_wstring(m_visibleInstanceCount) + L"/" + std::to_wstring(instances.size()) +
+            L"    |    Frustum: " + std::to_wstring(m_frustumInstanceCount) +
+            L"    |    HiZ: " + std::wstring((m_useHiZOcclusion && m_settingsManager.pipeline.useDeferred) ? L"On" : L"Off") +
+            L"    |    HiZ Culled: " + std::to_wstring(m_occlusionRejectedInstanceCount) +
+            L"    |    HiZ Candidates: " + std::to_wstring(m_occlusionCandidateCount) +
             L"    |    Hz: 300";
 
         SetWindowText(hwnd, windowText.c_str());
@@ -438,11 +571,18 @@ void D3D12App::Update()
     shadowArea.Extents = XMFLOAT3(shadowRadius, shadowRadius, (maxZ - minZ) * 0.5f);
 
     g_visibleInstances.clear();
+    m_occlusionCandidates.clear();
+    m_visibleInstanceCount = 0;
+    m_frustumInstanceCount = 0;
+    m_occlusionCandidateCount = 0;
+    m_occlusionRejectedInstanceCount = 0;
     for (auto& cascadeInstances : g_shadowVisibleInstancesByCascade)
     {
         cascadeInstances.clear();
     }
     g_shadowInstanceOffsets.fill(0);
+    const bool useHiZOcclusionThisFrame = m_useHiZOcclusion && m_settingsManager.pipeline.useDeferred;
+    std::vector<uint8_t> frustumVisibleFlags(instances.size(), 0);
 
     for (size_t i = 0; i < instances.size(); ++i)
     {   
@@ -475,11 +615,39 @@ void D3D12App::Update()
             instances[i].currentLodLevel = 2;
         }
 
-        // Introduce an isVisible variable to enhance scalability
-        if (frustum.Intersects(worldBox))
+        const bool inViewFrustum = frustum.Intersects(worldBox);
+        if (inViewFrustum)
         {
-            instances[i].isVisible = true;
-            g_visibleInstances.push_back(&instances[i]);
+            ++m_frustumInstanceCount;
+            frustumVisibleFlags[i] = 1;
+        }
+
+        if (useHiZOcclusionThisFrame &&
+            inViewFrustum &&
+            instances[i].occlusionId != 0xFFFFFFFF)
+        {
+            OcclusionCandidateData candidate = {};
+            candidate.boundsCenter = worldBox.Center;
+            candidate.boundsExtents = worldBox.Extents;
+            candidate.occlusionId = instances[i].occlusionId;
+            candidate.flags = (instances[i].isTransparent || instances[i].isCutout)
+                ? OCCLUSION_CANDIDATE_FORCE_VISIBLE
+                : 0;
+            m_occlusionCandidates.push_back(candidate);
+            ++m_occlusionCandidateCount;
+        }
+
+        if (inViewFrustum)
+        {
+            instances[i].isVisible = IsVisibleByPreviousOcclusion(instances[i]);
+            if (instances[i].isVisible)
+            {
+                g_visibleInstances.push_back(&instances[i]);
+            }
+            else
+            {
+                ++m_occlusionRejectedInstanceCount;
+            }
         }
         else
         {
@@ -497,6 +665,27 @@ void D3D12App::Update()
             }
         }
     }
+
+    if (useHiZOcclusionThisFrame &&
+        m_frustumInstanceCount > 0 &&
+        g_visibleInstances.empty())
+    {
+        ResetOcclusionVisibility();
+        m_occlusionRejectedInstanceCount = 0;
+        for (size_t i = 0; i < instances.size(); ++i)
+        {
+            if (frustumVisibleFlags[i] == 0)
+            {
+                continue;
+            }
+
+            instances[i].isVisible = true;
+            g_visibleInstances.push_back(&instances[i]);
+        }
+        OutputDebugStringA("HiZ occlusion rejected by CPU fallback because the draw list became empty\n");
+    }
+
+    m_visibleInstanceCount = static_cast<int>(g_visibleInstances.size());
 
     // ====================================================================================================
     // Render queue sorting and batching optimization
@@ -635,7 +824,17 @@ void D3D12App::Render()
 {
     const bool backBufferHandledByFrameGraph = m_settingsManager.pipeline.useDeferred;
     const bool useZPrepass = m_settingsManager.pipeline.useZPrepass;
+    const bool useHiZOcclusionThisFrame = m_useHiZOcclusion && m_settingsManager.pipeline.useDeferred;
     BeginFrame(backBufferHandledByFrameGraph);
+
+    if (frameIndex >= 0 && frameIndex < static_cast<int>(m_occlusionReadbackValid.size()))
+    {
+        m_occlusionReadbackValid[frameIndex] = false;
+        if (frameIndex < static_cast<int>(m_occlusionSubmittedCandidateIds.size()))
+        {
+            m_occlusionSubmittedCandidateIds[frameIndex].clear();
+        }
+    }
 
     size_t transparentIdx = 0;
     bool taaHandledByDeferredGraph = false;
@@ -722,6 +921,55 @@ void D3D12App::Render()
             transparentStartIndex,
             useZPrepass,
             zPrepassOutput.depth);
+
+        if (useHiZOcclusionThisFrame)
+        {
+            HiZPass::Output hizOutput = HiZPass::AddToGraph(
+                deferredGraph,
+                &m_deviceContext,
+                &m_resourceManager,
+                &m_pipelineManager,
+                Width,
+                Height,
+                gbufferOutput.depth);
+
+            OcclusionCullPass::Output occlusionOutput = OcclusionCullPass::AddToGraph(
+                deferredGraph,
+                &m_deviceContext,
+                &m_resourceManager,
+                &m_pipelineManager,
+                m_viewProjMat,
+                Width,
+                Height,
+                frameIndex,
+                static_cast<UINT>(m_previousOcclusionVisible.size()),
+                m_occlusionCandidates,
+                hizOutput);
+
+            if (occlusionOutput.visibilityBuffer.IsValid() &&
+                frameIndex >= 0 &&
+                frameIndex < static_cast<int>(m_occlusionReadbackValid.size()))
+            {
+                RDGPassHandle occlusionReadbackPass = OcclusionCullPass::AddReadbackCopyToGraph(
+                    deferredGraph,
+                    occlusionOutput,
+                    m_resourceManager.GetOcclusionReadbackBuffer(frameIndex),
+                    m_resourceManager.GetOcclusionVisibilityByteSize());
+
+                m_occlusionReadbackValid[frameIndex] = occlusionReadbackPass.IsValid();
+                if (m_occlusionReadbackValid[frameIndex] &&
+                    frameIndex < static_cast<int>(m_occlusionSubmittedCandidateIds.size()))
+                {
+                    std::vector<UINT>& submittedCandidateIds = m_occlusionSubmittedCandidateIds[frameIndex];
+                    submittedCandidateIds.clear();
+                    submittedCandidateIds.reserve(m_occlusionCandidates.size());
+                    for (const OcclusionCandidateData& candidate : m_occlusionCandidates)
+                    {
+                        submittedCandidateIds.push_back(candidate.occlusionId);
+                    }
+                }
+            }
+        }
 
         HBAOPass::Output hbaoOutput = HBAOPass::AddToGraph(
             deferredGraph,

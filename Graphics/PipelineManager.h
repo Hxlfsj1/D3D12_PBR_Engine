@@ -33,6 +33,8 @@ public:
         if (!BuildDeferredPipeline(dc)) return false;
         if (!BuildHBAOPipeline(dc)) return false;
         if (!BuildTAAPipeline(dc)) return false;
+        if (!BuildHiZPipeline(dc)) return false;
+        if (!BuildOcclusionCullPipeline(dc)) return false;
 
         return true;
     }
@@ -178,6 +180,31 @@ public:
     ID3D12PipelineState* GetTAAPSO()
     {
         return psoTAA.Get();
+    }
+
+    ID3D12RootSignature* GetHiZRootSignature()
+    {
+        return hizRootSignature.Get();
+    }
+
+    ID3D12PipelineState* GetHiZPSO()
+    {
+        return hizPSO.Get();
+    }
+
+    ID3D12RootSignature* GetOcclusionCullRootSignature()
+    {
+        return occlusionCullRootSignature.Get();
+    }
+
+    ID3D12PipelineState* GetOcclusionCullPSO()
+    {
+        return occlusionCullPSO.Get();
+    }
+
+    ID3D12PipelineState* GetOcclusionClearPSO()
+    {
+        return occlusionClearPSO.Get();
     }
 
 private:
@@ -882,6 +909,139 @@ private:
         return true;
     }
 
+    bool BuildHiZPipeline(RenderDevice* dc)
+    {
+        if (dc == nullptr || dc->GetDevice() == nullptr)
+        {
+            return false;
+        }
+
+        D3D12_ROOT_PARAMETER rootParameters[1] = {};
+        rootParameters[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
+        rootParameters[0].Constants.ShaderRegister = 0;
+        rootParameters[0].Constants.Num32BitValues = 6;
+        rootParameters[0].Constants.RegisterSpace = 0;
+        rootParameters[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+
+        CD3DX12_ROOT_SIGNATURE_DESC rootSigDesc;
+        rootSigDesc.Init(
+            _countof(rootParameters),
+            rootParameters,
+            0,
+            nullptr,
+            D3D12_ROOT_SIGNATURE_FLAG_CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED);
+
+        ComPtr<ID3DBlob> serializedRootSig = nullptr;
+        ComPtr<ID3DBlob> errorBlob = nullptr;
+        HRESULT hr = D3D12SerializeRootSignature(&rootSigDesc, D3D_ROOT_SIGNATURE_VERSION_1, &serializedRootSig, &errorBlob);
+        if (FAILED(hr))
+        {
+            return false;
+        }
+
+        hr = dc->GetDevice()->CreateRootSignature(
+            0,
+            serializedRootSig->GetBufferPointer(),
+            serializedRootSig->GetBufferSize(),
+            IID_PPV_ARGS(&hizRootSignature));
+        if (FAILED(hr))
+        {
+            return false;
+        }
+
+        auto cs = ShaderCompiler::CompileFromFile(L"Shaders/Shaders_For_HiZ.hlsl", L"CSMain", L"cs_6_6");
+        if (!cs)
+        {
+            MessageBox(NULL, L"HiZ Shader compilation failed! Please check if Shaders_For_HiZ.hlsl exists in the Shaders directory.", L"Engine Error", MB_OK);
+            return false;
+        }
+
+        D3D12_COMPUTE_PIPELINE_STATE_DESC psoDesc = {};
+        psoDesc.pRootSignature = hizRootSignature.Get();
+        psoDesc.CS = CD3DX12_SHADER_BYTECODE(cs->GetBufferPointer(), cs->GetBufferSize());
+
+        if (FAILED(dc->GetDevice()->CreateComputePipelineState(&psoDesc, IID_PPV_ARGS(&hizPSO))))
+        {
+            MessageBox(NULL, L"Failed to create HiZ PSO!", L"Engine Error", MB_OK);
+            return false;
+        }
+
+        return true;
+    }
+
+    bool BuildOcclusionCullPipeline(RenderDevice* dc)
+    {
+        if (dc == nullptr || dc->GetDevice() == nullptr)
+        {
+            return false;
+        }
+
+        D3D12_ROOT_PARAMETER rootParameters[2] = {};
+        rootParameters[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
+        rootParameters[0].Constants.ShaderRegister = 0;
+        rootParameters[0].Constants.Num32BitValues = 38;
+        rootParameters[0].Constants.RegisterSpace = 0;
+        rootParameters[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+
+        rootParameters[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_SRV;
+        rootParameters[1].Descriptor.ShaderRegister = 0;
+        rootParameters[1].Descriptor.RegisterSpace = 0;
+        rootParameters[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+
+        CD3DX12_ROOT_SIGNATURE_DESC rootSigDesc;
+        rootSigDesc.Init(
+            _countof(rootParameters),
+            rootParameters,
+            0,
+            nullptr,
+            D3D12_ROOT_SIGNATURE_FLAG_CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED);
+
+        ComPtr<ID3DBlob> serializedRootSig = nullptr;
+        ComPtr<ID3DBlob> errorBlob = nullptr;
+        HRESULT hr = D3D12SerializeRootSignature(&rootSigDesc, D3D_ROOT_SIGNATURE_VERSION_1, &serializedRootSig, &errorBlob);
+        if (FAILED(hr))
+        {
+            return false;
+        }
+
+        hr = dc->GetDevice()->CreateRootSignature(
+            0,
+            serializedRootSig->GetBufferPointer(),
+            serializedRootSig->GetBufferSize(),
+            IID_PPV_ARGS(&occlusionCullRootSignature));
+        if (FAILED(hr))
+        {
+            return false;
+        }
+
+        auto csCull = ShaderCompiler::CompileFromFile(L"Shaders/Shaders_For_OcclusionCull.hlsl", L"CSMain", L"cs_6_6");
+        auto csClear = ShaderCompiler::CompileFromFile(L"Shaders/Shaders_For_OcclusionCull.hlsl", L"CSClear", L"cs_6_6");
+        if (!csCull || !csClear)
+        {
+            MessageBox(NULL, L"Occlusion cull shader compilation failed! Please check if Shaders_For_OcclusionCull.hlsl exists in the Shaders directory.", L"Engine Error", MB_OK);
+            return false;
+        }
+
+        D3D12_COMPUTE_PIPELINE_STATE_DESC psoDesc = {};
+        psoDesc.pRootSignature = occlusionCullRootSignature.Get();
+        psoDesc.CS = CD3DX12_SHADER_BYTECODE(csCull->GetBufferPointer(), csCull->GetBufferSize());
+
+        if (FAILED(dc->GetDevice()->CreateComputePipelineState(&psoDesc, IID_PPV_ARGS(&occlusionCullPSO))))
+        {
+            MessageBox(NULL, L"Failed to create occlusion cull PSO!", L"Engine Error", MB_OK);
+            return false;
+        }
+
+        psoDesc.CS = CD3DX12_SHADER_BYTECODE(csClear->GetBufferPointer(), csClear->GetBufferSize());
+        if (FAILED(dc->GetDevice()->CreateComputePipelineState(&psoDesc, IID_PPV_ARGS(&occlusionClearPSO))))
+        {
+            MessageBox(NULL, L"Failed to create occlusion clear PSO!", L"Engine Error", MB_OK);
+            return false;
+        }
+
+        return true;
+    }
+
 private:
 
     ComPtr<ID3D12PipelineState> psoZPrepass;
@@ -915,6 +1075,13 @@ private:
 
     ComPtr<ID3D12RootSignature> taaRootSignature;
     ComPtr<ID3D12PipelineState> psoTAA;
+
+    ComPtr<ID3D12RootSignature> hizRootSignature;
+    ComPtr<ID3D12PipelineState> hizPSO;
+
+    ComPtr<ID3D12RootSignature> occlusionCullRootSignature;
+    ComPtr<ID3D12PipelineState> occlusionCullPSO;
+    ComPtr<ID3D12PipelineState> occlusionClearPSO;
 };
 
 #endif

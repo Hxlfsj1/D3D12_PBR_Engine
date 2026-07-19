@@ -35,7 +35,17 @@ public:
         dummyORMIdx = 0;
     }
 
-    ~ResourceManager() {}
+    ~ResourceManager()
+    {
+        for (ComPtr<ID3D12Resource>& buffer : m_occlusionReadbackBuffers)
+        {
+            if (buffer)
+            {
+                buffer->Unmap(0, nullptr);
+            }
+        }
+
+    }
 
     // What is loaded :
     // 1. Dummy textures
@@ -96,6 +106,7 @@ public:
         DirectX::ResourceUploadBatch resourceUpload(dc->GetDevice());
         resourceUpload.Begin();
 
+        UINT nextOcclusionId = 0;
         for (const auto& desc : sceneConfig)
         {
             // If the model data is not found in the dictionary, fetch it from the hard drive
@@ -108,6 +119,7 @@ public:
             ModelInstance instance;
             instance.name = desc.name;
             instance.pModel = myModels[desc.modelPath].get();
+            instance.occlusionId = nextOcclusionId++;
             instance.translation = desc.pos;
             instance.rotation = desc.rot;
             instance.scale = desc.scale;
@@ -890,6 +902,85 @@ public:
         return CD3DX12_CPU_DESCRIPTOR_HANDLE(m_taaRtvHeap->GetCPUDescriptorHandleForHeapStart(), idx, m_rtvDescriptorSize);
     }
 
+    bool InitOcclusionReadback(RenderDevice* dc, UINT visibilityCount, int frameBufferCount)
+    {
+        if (dc == nullptr ||
+            dc->GetDevice() == nullptr ||
+            visibilityCount == 0 ||
+            frameBufferCount <= 0)
+        {
+            return false;
+        }
+
+        m_occlusionVisibilityCount = visibilityCount;
+        m_occlusionVisibilityByteSize = static_cast<UINT64>(visibilityCount) * sizeof(UINT);
+        m_occlusionReadbackBuffers.resize(frameBufferCount);
+        m_occlusionReadbackMappedData.assign(frameBufferCount, nullptr);
+
+        CD3DX12_HEAP_PROPERTIES heapProps(D3D12_HEAP_TYPE_READBACK);
+        CD3DX12_RESOURCE_DESC bufferDesc = CD3DX12_RESOURCE_DESC::Buffer(m_occlusionVisibilityByteSize);
+
+        for (int i = 0; i < frameBufferCount; ++i)
+        {
+            HRESULT hr = dc->GetDevice()->CreateCommittedResource(
+                &heapProps,
+                D3D12_HEAP_FLAG_NONE,
+                &bufferDesc,
+                D3D12_RESOURCE_STATE_COPY_DEST,
+                nullptr,
+                IID_PPV_ARGS(&m_occlusionReadbackBuffers[i]));
+
+            if (FAILED(hr))
+            {
+                return false;
+            }
+
+            hr = m_occlusionReadbackBuffers[i]->Map(
+                0,
+                nullptr,
+                reinterpret_cast<void**>(&m_occlusionReadbackMappedData[i]));
+
+            if (FAILED(hr) || m_occlusionReadbackMappedData[i] == nullptr)
+            {
+                return false;
+            }
+
+            std::fill_n(m_occlusionReadbackMappedData[i], visibilityCount, 1u);
+        }
+
+        return true;
+    }
+
+    ID3D12Resource* GetOcclusionReadbackBuffer(int frameIndex)
+    {
+        if (frameIndex < 0 || frameIndex >= static_cast<int>(m_occlusionReadbackBuffers.size()))
+        {
+            return nullptr;
+        }
+
+        return m_occlusionReadbackBuffers[frameIndex].Get();
+    }
+
+    const UINT* GetOcclusionReadbackData(int frameIndex) const
+    {
+        if (frameIndex < 0 || frameIndex >= static_cast<int>(m_occlusionReadbackMappedData.size()))
+        {
+            return nullptr;
+        }
+
+        return m_occlusionReadbackMappedData[frameIndex];
+    }
+
+    UINT GetOcclusionVisibilityCount() const
+    {
+        return m_occlusionVisibilityCount;
+    }
+
+    UINT64 GetOcclusionVisibilityByteSize() const
+    {
+        return m_occlusionVisibilityByteSize;
+    }
+
 private:
     struct RDGTransientResourcePoolEntry
     {
@@ -994,6 +1085,11 @@ private:
 
     std::vector<ComPtr<ID3D12Resource>> constantBufferUploadHeap;
     std::vector<UINT8*> cbvGPUAddress;
+
+    std::vector<ComPtr<ID3D12Resource>> m_occlusionReadbackBuffers;
+    std::vector<UINT*> m_occlusionReadbackMappedData;
+    UINT m_occlusionVisibilityCount = 0;
+    UINT64 m_occlusionVisibilityByteSize = 0;
 
     ComPtr<ID3D12Resource> skyboxVB;
     D3D12_VERTEX_BUFFER_VIEW skyboxVBV;

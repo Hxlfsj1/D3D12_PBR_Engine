@@ -13,6 +13,8 @@ struct ModelInstance
     // Pointer to the model data
     Model* pModel;
 
+    UINT occlusionId = 0xFFFFFFFF;
+
     int currentLodLevel = 0;
     float lod1Threshold = 15.0f;
     float lod2Threshold = 40.0f;

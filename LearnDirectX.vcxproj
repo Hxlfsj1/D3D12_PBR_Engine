@@ -152,7 +152,9 @@
     <ClInclude Include="Core\D3D12App.h" />
     <ClInclude Include="Passes\DeferredLightingPass.h" />
     <ClInclude Include="Passes\GbufferPass.h" />
+    <ClInclude Include="Passes\HiZPass.h" />
     <ClInclude Include="Passes\HBAOPass.h" />
+    <ClInclude Include="Passes\OcclusionCullPass.h" />
     <ClInclude Include="Resources\IBLBaker.h" />
     <ClInclude Include="Logic\InputManager.h" />
     <ClInclude Include="ThirdParty\json.hpp" />
@@ -235,6 +237,16 @@
   </ItemGroup>
   <ItemGroup>
     <None Include="Shaders\Shaders_For_GBuffer.hlsl">
+      <FileType>Document</FileType>
+    </None>
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="Shaders\Shaders_For_HiZ.hlsl">
+      <FileType>Document</FileType>
+    </None>
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="Shaders\Shaders_For_OcclusionCull.hlsl">
       <FileType>Document</FileType>
     </None>
   </ItemGroup>
