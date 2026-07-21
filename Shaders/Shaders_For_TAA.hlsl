@@ -105,7 +105,6 @@ float4 PSMain(VS_OUTPUT input) : SV_TARGET
     tCurrentColor.GetDimensions(width, height);
     float2 texelSize = float2(1.0f / width, 1.0f / height);
 
-    float3 centerColor = tCurrentColor.SampleLevel(sPoint, uv, 0).rgb;
     float depth = tDepth.SampleLevel(sPoint, uv, 0).r;
 
     float minDepth = depth;
@@ -135,7 +134,7 @@ float4 PSMain(VS_OUTPUT input) : SV_TARGET
     {
         Texture2D tMotionUV = ResourceDescriptorHeap[motionTextureIdx];
         motionUV = tMotionUV.SampleLevel(sPoint, closestDepthUV, 0).rg;
-        historyUV = closestDepthUV - motionUV;
+        historyUV = uv - motionUV;
     }
     else
     {
@@ -148,13 +147,19 @@ float4 PSMain(VS_OUTPUT input) : SV_TARGET
 
         float4 prevClipSpacePos = mul(float4(worldPos, 1.0f), prevViewProj);
         float2 prevNDC = prevClipSpacePos.xy / prevClipSpacePos.w;
-        historyUV = float2(prevNDC.x * 0.5f + 0.5f, 0.5f - prevNDC.y * 0.5f);
+        float2 closestHistoryUV = float2(prevNDC.x * 0.5f + 0.5f, 0.5f - prevNDC.y * 0.5f);
+        historyUV = uv - (closestDepthUV - closestHistoryUV);
     }
 
     // m1 stores YCoCg sum, m2 stores YCoCg sum of squares (Var(X) = E(X²) - E(X)²)
     float3 m1 = 0.0f;
     float3 m2 = 0.0f;
     float3 blurredCenter = 0.0f;
+    float3 reconstructedCurrent = 0.0f;
+    float reconstructionWeightSum = 0.0f;
+    float2 jitterPixels = float2(
+        jitterOffset.x * 0.5f * width,
+        -jitterOffset.y * 0.5f * height);
 
     [unroll]
     for (int x = -1; x <= 1; ++x)
@@ -162,14 +167,22 @@ float4 PSMain(VS_OUTPUT input) : SV_TARGET
         [unroll]
         for (int y = -1; y <= 1; ++y)
         {
-            float3 neighbor = tCurrentColor.SampleLevel(sPoint, uv + float2(x, y) * texelSize, 0).rgb;
+            float2 sampleOffset = float2(x, y);
+            float3 neighbor = tCurrentColor.SampleLevel(sPoint, uv + sampleOffset * texelSize, 0).rgb;
             float3 neighborY = mul(RGB_2_YCoCg, neighbor);
             m1 += neighborY;
             m2 += neighborY * neighborY;
-            
+
             blurredCenter += neighbor;
+
+            float2 reconstructionOffset = sampleOffset - jitterPixels;
+            float reconstructionWeight = exp(-2.29f * dot(reconstructionOffset, reconstructionOffset));
+            reconstructedCurrent += neighbor * reconstructionWeight;
+            reconstructionWeightSum += reconstructionWeight;
         }
     }
+
+    reconstructedCurrent /= max(reconstructionWeightSum, 1.0e-6f);
     
     float3 mu = m1 / 9.0f;
     // Standard deviation
@@ -182,8 +195,13 @@ float4 PSMain(VS_OUTPUT input) : SV_TARGET
     // Laplacian sharpening
     blurredCenter /= 9.0f;
     float sharpenAmount = 0.25f;
-    float3 sharpenedCenter = centerColor + (centerColor - blurredCenter) * sharpenAmount;
+    float3 sharpenedCenter = reconstructedCurrent + (reconstructedCurrent - blurredCenter) * sharpenAmount;
     sharpenedCenter = max(0.0f, sharpenedCenter);
+
+    if (blendAlpha <= 0.0f)
+    {
+        return float4(sharpenedCenter, 1.0f);
+    }
 
     // Off-screen history rejection: do not blend new pixels entering from outside the screen
     if (historyUV.x < 0.0f || historyUV.x > 1.0f || historyUV.y < 0.0f || historyUV.y > 1.0f)
@@ -202,8 +220,9 @@ float4 PSMain(VS_OUTPUT input) : SV_TARGET
     if (hasMotionTexture && blendAlpha > 0.0f)
     {
         float motionPixels = length(motionUV * float2(width, height));
-        float currentWeight = lerp(0.05f, 0.20f, saturate(motionPixels / 40.0f));
-        historyBlend = 1.0f - currentWeight;
+        float motionFactor = saturate(motionPixels / 40.0f);
+        float movingHistoryBlend = min(blendAlpha, 0.80f);
+        historyBlend = lerp(blendAlpha, movingHistoryBlend, motionFactor);
     }
 
     float3 finalColor = lerp(sharpenedCenter, clampedHistoryRGB, historyBlend);
