@@ -91,21 +91,21 @@ private:
     int m_visibleInstanceCount = 0;
     int m_frustumInstanceCount = 0;
     bool m_useTAA;
-    UINT m_taaFrameCounter;
+    UINT m_taaJitterFrameIndex;
     bool m_taaHistoryValid = false;
 
-    DirectX::XMFLOAT4X4 m_viewMat;
-    DirectX::XMFLOAT4X4 m_unjitteredProjMat;
-    DirectX::XMFLOAT4X4 m_projMat;
-    DirectX::XMFLOAT4X4 m_unjitteredViewProj;
-    DirectX::XMFLOAT4X4 m_viewProjMat;
-    DirectX::XMFLOAT4X4 m_invViewProjMat;
-    DirectX::XMFLOAT4X4 m_invProjMat;
+    DirectX::XMFLOAT4X4 m_currViewGpu;
+    DirectX::XMFLOAT4X4 m_currUnjitteredProjGpu;
+    DirectX::XMFLOAT4X4 m_currJitteredProjGpu;
+    DirectX::XMFLOAT4X4 m_currUnjitteredViewProjGpu;
+    DirectX::XMFLOAT4X4 m_currJitteredViewProjGpu;
+    DirectX::XMFLOAT4X4 m_currJitteredInvViewProjGpu;
+    DirectX::XMFLOAT4X4 m_currJitteredInvProjGpu;
 
-    DirectX::XMFLOAT4X4 m_prevViewProj;
-    bool m_hasPrevViewProj = false;
-    float m_jitterX = 0.0f;
-    float m_jitterY = 0.0f;
+    DirectX::XMFLOAT4X4 m_prevUnjitteredViewProjGpu;
+    bool m_hasPrevUnjitteredViewProj = false;
+    float m_currJitterNdcX = 0.0f;
+    float m_currJitterNdcY = 0.0f;
 };
 
 #endif

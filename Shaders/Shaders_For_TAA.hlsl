@@ -1,8 +1,8 @@
 cbuffer TAAConstants : register(b0)
 {
-    float4x4 invViewProj;
-    float4x4 prevViewProj;
-    float2 jitterOffset;
+    float4x4 currJitteredInvViewProj;
+    float4x4 prevUnjitteredViewProj;
+    float2 currJitterNdc;
     float blendAlpha;
     float varianceScale;
     uint colorTextureIdx;
@@ -142,10 +142,10 @@ float4 PSMain(VS_OUTPUT input) : SV_TARGET
         float yNDC = 1.0f - closestDepthUV.y * 2.0f;
         float4 clipSpacePos = float4(xNDC, yNDC, minDepth, 1.0f);
 
-        float4 worldPosH = mul(clipSpacePos, invViewProj);
+        float4 worldPosH = mul(clipSpacePos, currJitteredInvViewProj);
         float3 worldPos = worldPosH.xyz / worldPosH.w;
 
-        float4 prevClipSpacePos = mul(float4(worldPos, 1.0f), prevViewProj);
+        float4 prevClipSpacePos = mul(float4(worldPos, 1.0f), prevUnjitteredViewProj);
         float2 prevNDC = prevClipSpacePos.xy / prevClipSpacePos.w;
         float2 closestHistoryUV = float2(prevNDC.x * 0.5f + 0.5f, 0.5f - prevNDC.y * 0.5f);
         historyUV = uv - (closestDepthUV - closestHistoryUV);
@@ -158,8 +158,8 @@ float4 PSMain(VS_OUTPUT input) : SV_TARGET
     float3 reconstructedCurrent = 0.0f;
     float reconstructionWeightSum = 0.0f;
     float2 jitterPixels = float2(
-        jitterOffset.x * 0.5f * width,
-        -jitterOffset.y * 0.5f * height);
+        currJitterNdc.x * 0.5f * width,
+        -currJitterNdc.y * 0.5f * height);
 
     [unroll]
     for (int x = -1; x <= 1; ++x)

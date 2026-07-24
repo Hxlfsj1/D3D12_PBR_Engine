@@ -66,14 +66,14 @@ D3D12App::D3D12App(HINSTANCE hInstance) : camera(XMFLOAT3(0.0f, 3.0f, -10.0f))
 
     frameIndex = 0;
     deltaTime = 0.0f;
-    m_taaFrameCounter = 0;
+    m_taaJitterFrameIndex = 0;
     m_taaHistoryValid = false;
 
-    DirectX::XMStoreFloat4x4(&m_unjitteredViewProj, DirectX::XMMatrixIdentity());
-    DirectX::XMStoreFloat4x4(&m_prevViewProj, DirectX::XMMatrixIdentity());
-    m_hasPrevViewProj = false;
-    m_jitterX = 0.0f;
-    m_jitterY = 0.0f;
+    DirectX::XMStoreFloat4x4(&m_currUnjitteredViewProjGpu, DirectX::XMMatrixIdentity());
+    DirectX::XMStoreFloat4x4(&m_prevUnjitteredViewProjGpu, DirectX::XMMatrixIdentity());
+    m_hasPrevUnjitteredViewProj = false;
+    m_currJitterNdcX = 0.0f;
+    m_currJitterNdcY = 0.0f;
 }
 
 D3D12App::~D3D12App()
@@ -254,18 +254,18 @@ void D3D12App::Update()
     // ====================================================================================================
     // Calculate V * P matrix
     // ====================================================================================================
-    XMMATRIX view = camera.GetViewMatrix();
-    XMMATRIX unjitteredProj = XMMatrixPerspectiveFovLH(XMConvertToRadians(camera.Zoom), (float)Width / Height, 0.1f, 1000.0f);
-    XMMATRIX unjitteredViewProj = view * unjitteredProj;
+    XMMATRIX currViewCpu = camera.GetViewMatrix();
+    XMMATRIX currUnjitteredProjCpu = XMMatrixPerspectiveFovLH(XMConvertToRadians(camera.Zoom), (float)Width / Height, 0.1f, 1000.0f);
+    XMMATRIX currUnjitteredViewProjCpu = currViewCpu * currUnjitteredProjCpu;
 
-    if (m_hasPrevViewProj)
+    if (m_hasPrevUnjitteredViewProj)
     {
-        m_prevViewProj = m_unjitteredViewProj;
+        m_prevUnjitteredViewProjGpu = m_currUnjitteredViewProjGpu;
     }
     else
     {
-        XMStoreFloat4x4(&m_prevViewProj, XMMatrixTranspose(unjitteredViewProj));
-        m_hasPrevViewProj = true;
+        XMStoreFloat4x4(&m_prevUnjitteredViewProjGpu, XMMatrixTranspose(currUnjitteredViewProjCpu));
+        m_hasPrevUnjitteredViewProj = true;
     }
 
     if (m_useTAA)
@@ -274,37 +274,37 @@ void D3D12App::Update()
         static const float haltonY[8] = { 0.333333f, 0.666667f, 0.111111f, 0.444444f, 0.777778f, 0.222222f, 0.555556f, 0.888889f };
         constexpr float jitterScale = 0.75f;
 
-        float jX = (haltonX[m_taaFrameCounter % 8] - 0.5f) * jitterScale;
-        float jY = (haltonY[m_taaFrameCounter % 8] - 0.5f) * jitterScale;
-        m_jitterX = (jX * 2.0f) / Width;
-        m_jitterY = (jY * 2.0f) / Height;
-        m_taaFrameCounter++;
+        float currJitterPixelX = (haltonX[m_taaJitterFrameIndex % 8] - 0.5f) * jitterScale;
+        float currJitterPixelY = (haltonY[m_taaJitterFrameIndex % 8] - 0.5f) * jitterScale;
+        m_currJitterNdcX = (currJitterPixelX * 2.0f) / Width;
+        m_currJitterNdcY = (currJitterPixelY * 2.0f) / Height;
+        m_taaJitterFrameIndex++;
     }
     else
     {
-        m_jitterX = 0.0f;
-        m_jitterY = 0.0f;
+        m_currJitterNdcX = 0.0f;
+        m_currJitterNdcY = 0.0f;
     }
 
-    DirectX::XMFLOAT4X4 projF;
-    DirectX::XMStoreFloat4x4(&projF, unjitteredProj);
-    projF._31 += m_jitterX;
-    projF._32 += m_jitterY;
-    XMMATRIX jitteredProj = DirectX::XMLoadFloat4x4(&projF);
+    DirectX::XMFLOAT4X4 currJitteredProjFloat;
+    DirectX::XMStoreFloat4x4(&currJitteredProjFloat, currUnjitteredProjCpu);
+    currJitteredProjFloat._31 += m_currJitterNdcX;
+    currJitteredProjFloat._32 += m_currJitterNdcY;
+    XMMATRIX currJitteredProjCpu = DirectX::XMLoadFloat4x4(&currJitteredProjFloat);
 
-    XMMATRIX jitteredViewProj = view * jitteredProj;
+    XMMATRIX currJitteredViewProjCpu = currViewCpu * currJitteredProjCpu;
 
     XMVECTOR det;
-    XMMATRIX invViewProj = XMMatrixInverse(&det, jitteredViewProj);
-    XMMATRIX invProj = XMMatrixInverse(&det, jitteredProj);
+    XMMATRIX currJitteredInvViewProjCpu = XMMatrixInverse(&det, currJitteredViewProjCpu);
+    XMMATRIX currJitteredInvProjCpu = XMMatrixInverse(&det, currJitteredProjCpu);
 
-    XMStoreFloat4x4(&m_viewMat, XMMatrixTranspose(view));
-    XMStoreFloat4x4(&m_unjitteredProjMat, XMMatrixTranspose(unjitteredProj));
-    XMStoreFloat4x4(&m_projMat, XMMatrixTranspose(jitteredProj));
-    XMStoreFloat4x4(&m_unjitteredViewProj, XMMatrixTranspose(unjitteredViewProj));
-    XMStoreFloat4x4(&m_viewProjMat, XMMatrixTranspose(jitteredViewProj));
-    XMStoreFloat4x4(&m_invViewProjMat, XMMatrixTranspose(invViewProj));
-    XMStoreFloat4x4(&m_invProjMat, XMMatrixTranspose(invProj));
+    XMStoreFloat4x4(&m_currViewGpu, XMMatrixTranspose(currViewCpu));
+    XMStoreFloat4x4(&m_currUnjitteredProjGpu, XMMatrixTranspose(currUnjitteredProjCpu));
+    XMStoreFloat4x4(&m_currJitteredProjGpu, XMMatrixTranspose(currJitteredProjCpu));
+    XMStoreFloat4x4(&m_currUnjitteredViewProjGpu, XMMatrixTranspose(currUnjitteredViewProjCpu));
+    XMStoreFloat4x4(&m_currJitteredViewProjGpu, XMMatrixTranspose(currJitteredViewProjCpu));
+    XMStoreFloat4x4(&m_currJitteredInvViewProjGpu, XMMatrixTranspose(currJitteredInvViewProjCpu));
+    XMStoreFloat4x4(&m_currJitteredInvProjGpu, XMMatrixTranspose(currJitteredInvProjCpu));
 
     // ====================================================================================================
     // Environment setup
@@ -570,7 +570,7 @@ void D3D12App::Update()
         XMMATRIX world = g_visibleInstances[i]->cachedWorldMat;
         XMMATRIX normalMat = g_visibleInstances[i]->cachedNormalMat;
 
-        XMStoreFloat4x4(&mappedInstanceData[i].wvpMat, XMMatrixTranspose(world * jitteredViewProj));
+        XMStoreFloat4x4(&mappedInstanceData[i].wvpMat, XMMatrixTranspose(world * currJitteredViewProjCpu));
         XMStoreFloat4x4(&mappedInstanceData[i].worldMat, XMMatrixTranspose(world));
         XMStoreFloat4x4(&mappedInstanceData[i].normalMat, XMMatrixTranspose(normalMat));
 
@@ -740,9 +740,9 @@ void D3D12App::Render()
             &m_deviceContext,
             &m_resourceManager,
             &m_pipelineManager,
-            m_viewMat,
-            m_projMat,
-            m_invProjMat,
+            m_currViewGpu,
+            m_currJitteredProjGpu,
+            m_currJitteredInvProjGpu,
             Width,
             Height,
             frameIndex,
@@ -764,7 +764,7 @@ void D3D12App::Render()
             &m_deviceContext,
             &m_resourceManager,
             &m_pipelineManager,
-            m_invViewProjMat,
+            m_currJitteredInvViewProjGpu,
             Width,
             Height,
             frameIndex,
@@ -806,8 +806,8 @@ void D3D12App::Render()
                 &m_deviceContext,
                 &m_resourceManager,
                 &m_pipelineManager,
-                m_invViewProjMat,
-                m_prevViewProj,
+                m_currJitteredInvViewProjGpu,
+                m_prevUnjitteredViewProjGpu,
                 Width,
                 Height,
                 frameIndex,
@@ -818,10 +818,10 @@ void D3D12App::Render()
                 &m_deviceContext,
                 &m_resourceManager,
                 &m_pipelineManager,
-                m_invViewProjMat,
-                m_prevViewProj,
-                m_jitterX,
-                m_jitterY,
+                m_currJitteredInvViewProjGpu,
+                m_prevUnjitteredViewProjGpu,
+                m_currJitterNdcX,
+                m_currJitterNdcY,
                 frameIndex,
                 Width,
                 Height,
@@ -883,7 +883,7 @@ void D3D12App::Render()
 
     if (m_useTAA && !taaHandledByDeferredGraph)
     {
-        finalPostInputSRV = TAAPass::ExecuteRDG(&m_deviceContext, &m_resourceManager, &m_pipelineManager, m_invViewProjMat, m_prevViewProj, m_jitterX, m_jitterY, frameIndex, Width, Height, m_taaHistoryValid);
+        finalPostInputSRV = TAAPass::ExecuteRDG(&m_deviceContext, &m_resourceManager, &m_pipelineManager, m_currJitteredInvViewProjGpu, m_prevUnjitteredViewProjGpu, m_currJitterNdcX, m_currJitterNdcY, frameIndex, Width, Height, m_taaHistoryValid);
         m_taaHistoryValid = true;
     }
 

@@ -87,9 +87,9 @@ struct alignas(D3D12_CONSTANT_BUFFER_DATA_PLACEMENT_ALIGNMENT) HBAOConstants
 
 struct alignas(D3D12_CONSTANT_BUFFER_DATA_PLACEMENT_ALIGNMENT) TAAConstants
 {
-    DirectX::XMFLOAT4X4 invViewProj;
-    DirectX::XMFLOAT4X4 prevViewProj;
-    DirectX::XMFLOAT2 jitterOffset;
+    DirectX::XMFLOAT4X4 currJitteredInvViewProj;
+    DirectX::XMFLOAT4X4 prevUnjitteredViewProj;
+    DirectX::XMFLOAT2 currJitterNdc;
     float blendAlpha;
     float varianceScale;
 
@@ -101,8 +101,8 @@ struct alignas(D3D12_CONSTANT_BUFFER_DATA_PLACEMENT_ALIGNMENT) TAAConstants
 
 struct alignas(D3D12_CONSTANT_BUFFER_DATA_PLACEMENT_ALIGNMENT) MotionVectorConstants
 {
-    DirectX::XMFLOAT4X4 invViewProj;
-    DirectX::XMFLOAT4X4 prevViewProj;
+    DirectX::XMFLOAT4X4 currJitteredInvViewProj;
+    DirectX::XMFLOAT4X4 prevUnjitteredViewProj;
 
     UINT depthTextureIdx;
     UINT pad[3];

@@ -27,8 +27,8 @@ public:
         RenderDevice* deviceContext,
         ResourceManager* resourceManager,
         PipelineManager* pipelineManager,
-        const DirectX::XMFLOAT4X4& currentInvViewProj,
-        const DirectX::XMFLOAT4X4& prevViewProj,
+        const DirectX::XMFLOAT4X4& currJitteredInvViewProjGpu,
+        const DirectX::XMFLOAT4X4& prevUnjitteredViewProjGpu,
         int width,
         int height,
         int frameIndex,
@@ -92,8 +92,8 @@ public:
                     deviceContext,
                     resourceManager,
                     pipelineManager,
-                    currentInvViewProj,
-                    prevViewProj,
+                    currJitteredInvViewProjGpu,
+                    prevUnjitteredViewProjGpu,
                     width,
                     height,
                     frameIndex,
@@ -109,8 +109,8 @@ private:
         RenderDevice* deviceContext,
         ResourceManager* resourceManager,
         PipelineManager* pipelineManager,
-        const DirectX::XMFLOAT4X4& currentInvViewProj,
-        const DirectX::XMFLOAT4X4& prevViewProj,
+        const DirectX::XMFLOAT4X4& currJitteredInvViewProjGpu,
+        const DirectX::XMFLOAT4X4& prevUnjitteredViewProjGpu,
         int width,
         int height,
         int frameIndex,
@@ -139,8 +139,8 @@ private:
         D3D12_GPU_VIRTUAL_ADDRESS cbvGpuAddress = resourceManager->GetCBVGPUAddress(frameIndex) + motionConstantsOffset;
 
         MotionVectorConstants motionCb = {};
-        motionCb.invViewProj = currentInvViewProj;
-        motionCb.prevViewProj = prevViewProj;
+        motionCb.currJitteredInvViewProj = currJitteredInvViewProjGpu;
+        motionCb.prevUnjitteredViewProj = prevUnjitteredViewProjGpu;
         motionCb.depthTextureIdx = depthSrvIdx;
 
         memcpy(cbvCpuAddress, &motionCb, sizeof(MotionVectorConstants));

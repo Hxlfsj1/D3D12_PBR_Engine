@@ -39,9 +39,9 @@ public:
         RenderDevice* deviceContext,
         ResourceManager* resourceManager,
         PipelineManager* pipelineManager,
-        const DirectX::XMFLOAT4X4& currentInvViewProj,
-        const DirectX::XMFLOAT4X4& prevViewProj,
-        float jitterX, float jitterY,
+        const DirectX::XMFLOAT4X4& currJitteredInvViewProjGpu,
+        const DirectX::XMFLOAT4X4& prevUnjitteredViewProjGpu,
+        float currJitterNdcX, float currJitterNdcY,
         int frameIndex, int width, int height,
         bool historyValid)
     {
@@ -64,10 +64,10 @@ public:
             deviceContext,
             resourceManager,
             pipelineManager,
-            currentInvViewProj,
-            prevViewProj,
-            jitterX,
-            jitterY,
+            currJitteredInvViewProjGpu,
+            prevUnjitteredViewProjGpu,
+            currJitterNdcX,
+            currJitterNdcY,
             frameIndex,
             width,
             height,
@@ -97,9 +97,9 @@ public:
         RenderDevice* deviceContext,
         ResourceManager* resourceManager,
         PipelineManager* pipelineManager,
-        const DirectX::XMFLOAT4X4& currentInvViewProj,
-        const DirectX::XMFLOAT4X4& prevViewProj,
-        float jitterX, float jitterY,
+        const DirectX::XMFLOAT4X4& currJitteredInvViewProjGpu,
+        const DirectX::XMFLOAT4X4& prevUnjitteredViewProjGpu,
+        float currJitterNdcX, float currJitterNdcY,
         int frameIndex, int width, int height,
         bool historyValid,
         const TextureViews& views)
@@ -123,9 +123,9 @@ public:
         UINT8* cbvCpuAddress = resourceManager->GetCBVAddress(frameIndex) + taaConstantsOffset;
 
         TAAConstants cb = {};
-        cb.invViewProj = currentInvViewProj;
-        cb.prevViewProj = prevViewProj;
-        cb.jitterOffset = DirectX::XMFLOAT2(jitterX, jitterY);
+        cb.currJitteredInvViewProj = currJitteredInvViewProjGpu;
+        cb.prevUnjitteredViewProj = prevUnjitteredViewProjGpu;
+        cb.currJitterNdc = DirectX::XMFLOAT2(currJitterNdcX, currJitterNdcY);
         cb.blendAlpha = historyValid ? 0.95f : 0.0f;
         cb.varianceScale = 1.5f;
 
@@ -145,9 +145,9 @@ public:
         RenderDevice* deviceContext,
         ResourceManager* resourceManager,
         PipelineManager* pipelineManager,
-        const DirectX::XMFLOAT4X4& currentInvViewProj,
-        const DirectX::XMFLOAT4X4& prevViewProj,
-        float jitterX, float jitterY,
+        const DirectX::XMFLOAT4X4& currJitteredInvViewProjGpu,
+        const DirectX::XMFLOAT4X4& prevUnjitteredViewProjGpu,
+        float currJitterNdcX, float currJitterNdcY,
         int frameIndex, int width, int height,
         bool historyValid)
     {
@@ -213,8 +213,8 @@ public:
             deviceContext,
             resourceManager,
             pipelineManager,
-            currentInvViewProj,
-            prevViewProj,
+            currJitteredInvViewProjGpu,
+            prevUnjitteredViewProjGpu,
             width,
             height,
             frameIndex,
@@ -239,10 +239,10 @@ public:
                 deviceContext,
                 resourceManager,
                 pipelineManager,
-                currentInvViewProj,
-                prevViewProj,
-                jitterX,
-                jitterY,
+                currJitteredInvViewProjGpu,
+                prevUnjitteredViewProjGpu,
+                currJitterNdcX,
+                currJitterNdcY,
                 frameIndex,
                 width,
                 height,
@@ -278,10 +278,10 @@ public:
                     deviceContext,
                     resourceManager,
                     pipelineManager,
-                    currentInvViewProj,
-                    prevViewProj,
-                    jitterX,
-                    jitterY,
+                    currJitteredInvViewProjGpu,
+                    prevUnjitteredViewProjGpu,
+                    currJitterNdcX,
+                    currJitterNdcY,
                     frameIndex,
                     width,
                     height,
@@ -301,9 +301,9 @@ public:
         RenderDevice* deviceContext,
         ResourceManager* resourceManager,
         PipelineManager* pipelineManager,
-        const DirectX::XMFLOAT4X4& currentInvViewProj,
-        const DirectX::XMFLOAT4X4& prevViewProj,
-        float jitterX, float jitterY,
+        const DirectX::XMFLOAT4X4& currJitteredInvViewProjGpu,
+        const DirectX::XMFLOAT4X4& prevUnjitteredViewProjGpu,
+        float currJitterNdcX, float currJitterNdcY,
         int frameIndex, int width, int height,
         bool historyValid,
         const Input& input = {})
@@ -396,10 +396,10 @@ public:
                     deviceContext,
                     resourceManager,
                     pipelineManager,
-                    currentInvViewProj,
-                    prevViewProj,
-                    jitterX,
-                    jitterY,
+                    currJitteredInvViewProjGpu,
+                    prevUnjitteredViewProjGpu,
+                    currJitterNdcX,
+                    currJitterNdcY,
                     frameIndex,
                     width,
                     height,
