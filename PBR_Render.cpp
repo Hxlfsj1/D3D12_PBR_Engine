@@ -66,12 +66,16 @@ D3D12App::D3D12App(HINSTANCE hInstance) : camera(XMFLOAT3(0.0f, 3.0f, -10.0f))
 
     frameIndex = 0;
     deltaTime = 0.0f;
+
+    // Construction for TAA
     m_taaJitterFrameIndex = 0;
     m_taaHistoryValid = false;
 
     DirectX::XMStoreFloat4x4(&m_currUnjitteredViewProjGpu, DirectX::XMMatrixIdentity());
     DirectX::XMStoreFloat4x4(&m_prevUnjitteredViewProjGpu, DirectX::XMMatrixIdentity());
+
     m_hasPrevUnjitteredViewProj = false;
+
     m_currJitterNdcX = 0.0f;
     m_currJitterNdcY = 0.0f;
 }
@@ -258,6 +262,7 @@ void D3D12App::Update()
     XMMATRIX currUnjitteredProjCpu = XMMatrixPerspectiveFovLH(XMConvertToRadians(camera.Zoom), (float)Width / Height, 0.1f, 1000.0f);
     XMMATRIX currUnjitteredViewProjCpu = currViewCpu * currUnjitteredProjCpu;
 
+    // Handle previous unjitter VP matrix
     if (m_hasPrevUnjitteredViewProj)
     {
         m_prevUnjitteredViewProjGpu = m_currUnjitteredViewProjGpu;
@@ -268,6 +273,7 @@ void D3D12App::Update()
         m_hasPrevUnjitteredViewProj = true;
     }
 
+    // Calculate current jitter value
     if (m_useTAA)
     {
         static const float haltonX[8] = { 0.5f, 0.25f, 0.75f, 0.125f, 0.625f, 0.375f, 0.875f, 0.0625f };
@@ -286,6 +292,7 @@ void D3D12App::Update()
         m_currJitterNdcY = 0.0f;
     }
 
+    // Apply jitter value to matrix and set them to GPU
     DirectX::XMFLOAT4X4 currJitteredProjFloat;
     DirectX::XMStoreFloat4x4(&currJitteredProjFloat, currUnjitteredProjCpu);
     currJitteredProjFloat._31 += m_currJitterNdcX;

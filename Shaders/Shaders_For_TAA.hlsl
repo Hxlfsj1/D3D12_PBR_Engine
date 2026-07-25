@@ -2,9 +2,11 @@ cbuffer TAAConstants : register(b0)
 {
     float4x4 currJitteredInvViewProj;
     float4x4 prevUnjitteredViewProj;
-    float2 currJitterNdc;
+    float4 currentReconstructionWeights[3];
+
     float blendAlpha;
     float varianceScale;
+
     uint colorTextureIdx;
     uint historyTextureIdx;
     uint depthTextureIdx;
@@ -63,7 +65,11 @@ float CatmullRomWeight(float x)
     return 0.0f;
 }
 
-float4 SampleHistoryCatmullRom(Texture2D historyTexture, SamplerState pointSampler, float2 uv, float2 texelSize)
+float4 SampleHistoryCatmullRom(
+    Texture2D historyTexture,
+    SamplerState pointSampler,
+    float2 uv,
+    float2 texelSize)
 {
     float2 textureSize = 1.0f / texelSize;
     float2 samplePos = uv * textureSize - 0.5f;
@@ -83,14 +89,167 @@ float4 SampleHistoryCatmullRom(Texture2D historyTexture, SamplerState pointSampl
         for (int x = -1; x <= 2; ++x)
         {
             float weightX = CatmullRomWeight((float)x - fraction.x);
-            float2 sampleUV = (basePos + float2(x, y) + 0.5f) * texelSize;
+            float2 sampleUV =
+                (basePos + float2(x, y) + 0.5f) * texelSize;
             sampleUV = clamp(sampleUV, minUV, maxUV);
 
-            result += historyTexture.SampleLevel(pointSampler, sampleUV, 0) * (weightX * weightY);
+            result += historyTexture.SampleLevel(
+                pointSampler,
+                sampleUV,
+                0) * (weightX * weightY);
         }
     }
 
     return result;
+}
+
+struct ClosestDepthSample
+{
+    float depth;
+    float2 uv;
+};
+
+struct CurrentNeighborhood
+{
+    float3 reconstructedColor;
+    float3 averageColor;
+    float3 meanYCoCg;
+    float3 sigmaYCoCg;
+};
+
+ClosestDepthSample FindClosestDepthSample(Texture2D depthTexture, float2 uv, float2 texelSize)
+{
+    ClosestDepthSample closest;
+    closest.depth = depthTexture.SampleLevel(sPoint, uv, 0).r;
+    closest.uv = uv;
+
+    [unroll]
+    for (int x = -1; x <= 1; ++x)
+    {
+        [unroll]
+        for (int y = -1; y <= 1; ++y)
+        {
+            float2 sampleUV = uv + float2(x, y) * texelSize;
+            float sampleDepth = depthTexture.SampleLevel(sPoint, sampleUV, 0).r;
+            if (sampleDepth < closest.depth)
+            {
+                closest.depth = sampleDepth;
+                closest.uv = sampleUV;
+            }
+        }
+    }
+
+    return closest;
+}
+
+float2 ReprojectHistoryUV(
+    float2 currentUV,
+    ClosestDepthSample closestDepth,
+    float4x4 currentInvViewProj,
+    float4x4 previousViewProj)
+{
+    float2 currentNDC = float2(
+        closestDepth.uv.x * 2.0f - 1.0f,
+        1.0f - closestDepth.uv.y * 2.0f);
+    float4 currentClipPos = float4(currentNDC, closestDepth.depth, 1.0f);
+
+    float4 worldPosH = mul(currentClipPos, currentInvViewProj);
+    float3 worldPos = worldPosH.xyz / worldPosH.w;
+
+    float4 previousClipPos = mul(float4(worldPos, 1.0f), previousViewProj);
+    float2 previousNDC = previousClipPos.xy / previousClipPos.w;
+    float2 closestHistoryUV = float2(
+        previousNDC.x * 0.5f + 0.5f,
+        0.5f - previousNDC.y * 0.5f);
+
+    return currentUV - (closestDepth.uv - closestHistoryUV);
+}
+
+CurrentNeighborhood AnalyzeCurrentNeighborhood(
+    Texture2D currentColorTexture,
+    float2 uv,
+    float2 texelSize)
+{
+    float3 yCoCgSum = 0.0f;
+    float3 yCoCgSquareSum = 0.0f;
+    float3 colorSum = 0.0f;
+    float3 reconstructedColor = 0.0f;
+
+    [unroll]
+    for (int x = -1; x <= 1; ++x)
+    {
+        [unroll]
+        for (int y = -1; y <= 1; ++y)
+        {
+            float2 sampleOffset = float2(x, y);
+            float3 neighbor = currentColorTexture.SampleLevel(
+                sPoint,
+                uv + sampleOffset * texelSize,
+                0).rgb;
+            float3 neighborYCoCg = mul(RGB_2_YCoCg, neighbor);
+
+            yCoCgSum += neighborYCoCg;
+            yCoCgSquareSum += neighborYCoCg * neighborYCoCg;
+            colorSum += neighbor;
+
+            float reconstructionWeight =
+                currentReconstructionWeights[x + 1][y + 1];
+            reconstructedColor += neighbor * reconstructionWeight;
+        }
+    }
+
+    CurrentNeighborhood neighborhood;
+    neighborhood.reconstructedColor = reconstructedColor;
+    neighborhood.averageColor = colorSum / 9.0f;
+    neighborhood.meanYCoCg = yCoCgSum / 9.0f;
+    neighborhood.sigmaYCoCg = sqrt(abs(
+        yCoCgSquareSum / 9.0f -
+        neighborhood.meanYCoCg * neighborhood.meanYCoCg));
+    return neighborhood;
+}
+
+float3 SharpenCurrentColor(CurrentNeighborhood neighborhood)
+{
+    const float sharpenAmount = 0.25f;
+    float3 sharpenedColor =
+        neighborhood.reconstructedColor +
+        (neighborhood.reconstructedColor - neighborhood.averageColor) * sharpenAmount;
+    return max(0.0f, sharpenedColor);
+}
+
+float3 ClampHistoryColor(
+    float3 historyColor,
+    CurrentNeighborhood neighborhood)
+{
+    float3 boxMin = neighborhood.meanYCoCg - 1.25f * neighborhood.sigmaYCoCg;
+    float3 boxMax = neighborhood.meanYCoCg + 1.25f * neighborhood.sigmaYCoCg;
+    float3 historyYCoCg = mul(RGB_2_YCoCg, historyColor);
+    float3 clampedHistoryYCoCg = clamp(historyYCoCg, boxMin, boxMax);
+    return mul(YCoCg_2_RGB, clampedHistoryYCoCg);
+}
+
+bool IsUVInsideViewport(float2 uv)
+{
+    return uv.x >= 0.0f && uv.x <= 1.0f &&
+        uv.y >= 0.0f && uv.y <= 1.0f;
+}
+
+float ComputeHistoryBlend(
+    float baseHistoryBlend,
+    bool hasMotionTexture,
+    float2 motionUV,
+    uint width,
+    uint height)
+{
+    if (!hasMotionTexture || baseHistoryBlend <= 0.0f)
+    {
+        return baseHistoryBlend;
+    }
+
+    float motionPixels = length(motionUV * float2(width, height));
+    float motionFactor = saturate(motionPixels / 40.0f);
+    float movingHistoryBlend = min(baseHistoryBlend, 0.80f);
+    return lerp(baseHistoryBlend, movingHistoryBlend, motionFactor);
 }
 
 float4 PSMain(VS_OUTPUT input) : SV_TARGET
@@ -105,127 +264,60 @@ float4 PSMain(VS_OUTPUT input) : SV_TARGET
     tCurrentColor.GetDimensions(width, height);
     float2 texelSize = float2(1.0f / width, 1.0f / height);
 
-    float depth = tDepth.SampleLevel(sPoint, uv, 0).r;
-
-    float minDepth = depth;
-    float2 closestDepthUV = uv;
-    
-    // 3x3 depth dilation (fully unrolled to avoid branch overhead)
-    [unroll]
-    for (int i = -1; i <= 1; ++i)
-    {
-        [unroll]
-        for (int j = -1; j <= 1; ++j)
-        {
-            float2 offset = float2(i, j) * texelSize;
-            float d = tDepth.SampleLevel(sPoint, uv + offset, 0).r;
-            if (d < minDepth)
-            {
-                minDepth = d;
-                closestDepthUV = uv + offset;
-            }
-        }
-    }
+    ClosestDepthSample closestDepth =
+        FindClosestDepthSample(tDepth, uv, texelSize);
 
     float2 motionUV = 0.0f;
-    float2 historyUV = closestDepthUV;
+    float2 historyUV;
     bool hasMotionTexture = motionTextureIdx != 0xffffffffu;
     if (hasMotionTexture)
     {
         Texture2D tMotionUV = ResourceDescriptorHeap[motionTextureIdx];
-        motionUV = tMotionUV.SampleLevel(sPoint, closestDepthUV, 0).rg;
+        motionUV = tMotionUV.SampleLevel(sPoint, closestDepth.uv, 0).rg;
         historyUV = uv - motionUV;
     }
     else
     {
-        float xNDC = closestDepthUV.x * 2.0f - 1.0f;
-        float yNDC = 1.0f - closestDepthUV.y * 2.0f;
-        float4 clipSpacePos = float4(xNDC, yNDC, minDepth, 1.0f);
-
-        float4 worldPosH = mul(clipSpacePos, currJitteredInvViewProj);
-        float3 worldPos = worldPosH.xyz / worldPosH.w;
-
-        float4 prevClipSpacePos = mul(float4(worldPos, 1.0f), prevUnjitteredViewProj);
-        float2 prevNDC = prevClipSpacePos.xy / prevClipSpacePos.w;
-        float2 closestHistoryUV = float2(prevNDC.x * 0.5f + 0.5f, 0.5f - prevNDC.y * 0.5f);
-        historyUV = uv - (closestDepthUV - closestHistoryUV);
+        historyUV = ReprojectHistoryUV(
+            uv,
+            closestDepth,
+            currJitteredInvViewProj,
+            prevUnjitteredViewProj);
     }
 
-    // m1 stores YCoCg sum, m2 stores YCoCg sum of squares (Var(X) = E(X²) - E(X)²)
-    float3 m1 = 0.0f;
-    float3 m2 = 0.0f;
-    float3 blurredCenter = 0.0f;
-    float3 reconstructedCurrent = 0.0f;
-    float reconstructionWeightSum = 0.0f;
-    float2 jitterPixels = float2(
-        currJitterNdc.x * 0.5f * width,
-        -currJitterNdc.y * 0.5f * height);
-
-    [unroll]
-    for (int x = -1; x <= 1; ++x)
-    {
-        [unroll]
-        for (int y = -1; y <= 1; ++y)
-        {
-            float2 sampleOffset = float2(x, y);
-            float3 neighbor = tCurrentColor.SampleLevel(sPoint, uv + sampleOffset * texelSize, 0).rgb;
-            float3 neighborY = mul(RGB_2_YCoCg, neighbor);
-            m1 += neighborY;
-            m2 += neighborY * neighborY;
-
-            blurredCenter += neighbor;
-
-            float2 reconstructionOffset = sampleOffset - jitterPixels;
-            float reconstructionWeight = exp(-2.29f * dot(reconstructionOffset, reconstructionOffset));
-            reconstructedCurrent += neighbor * reconstructionWeight;
-            reconstructionWeightSum += reconstructionWeight;
-        }
-    }
-
-    reconstructedCurrent /= max(reconstructionWeightSum, 1.0e-6f);
-    
-    float3 mu = m1 / 9.0f;
-    // Standard deviation
-    float3 sigma = sqrt(abs(m2 / 9.0f - mu * mu));
-    
-    // Calculate color bounding box
-    float3 boxMin = mu - 1.25f * sigma;
-    float3 boxMax = mu + 1.25f * sigma;
-
-    // Laplacian sharpening
-    blurredCenter /= 9.0f;
-    float sharpenAmount = 0.25f;
-    float3 sharpenedCenter = reconstructedCurrent + (reconstructedCurrent - blurredCenter) * sharpenAmount;
-    sharpenedCenter = max(0.0f, sharpenedCenter);
+    CurrentNeighborhood currentNeighborhood = AnalyzeCurrentNeighborhood(
+        tCurrentColor,
+        uv,
+        texelSize);
+    float3 sharpenedCurrent = SharpenCurrentColor(currentNeighborhood);
 
     if (blendAlpha <= 0.0f)
     {
-        return float4(sharpenedCenter, 1.0f);
+        return float4(sharpenedCurrent, 1.0f);
     }
 
-    // Off-screen history rejection: do not blend new pixels entering from outside the screen
-    if (historyUV.x < 0.0f || historyUV.x > 1.0f || historyUV.y < 0.0f || historyUV.y > 1.0f)
+    if (!IsUVInsideViewport(historyUV))
     {
-        return float4(sharpenedCenter, 1.0f);
+        return float4(sharpenedCurrent, 1.0f);
     }
 
-    float3 historyColor = SampleHistoryCatmullRom(tHistoryColor, sPoint, historyUV, texelSize).rgb;
-    float3 historyYCoCg = mul(RGB_2_YCoCg, historyColor);
-    
-    // Define the Color Clamping Range (often referred to as a Color Bounding Box)
-    float3 clampedHistoryY = clamp(historyYCoCg, boxMin, boxMax);
-    float3 clampedHistoryRGB = mul(YCoCg_2_RGB, clampedHistoryY);
+    float3 historyColor = SampleHistoryCatmullRom(
+        tHistoryColor,
+        sPoint,
+        historyUV,
+        texelSize).rgb;
+    float3 clampedHistoryColor =
+        ClampHistoryColor(historyColor, currentNeighborhood);
+    float historyBlend = ComputeHistoryBlend(
+        blendAlpha,
+        hasMotionTexture,
+        motionUV,
+        width,
+        height);
 
-    float historyBlend = blendAlpha;
-    if (hasMotionTexture && blendAlpha > 0.0f)
-    {
-        float motionPixels = length(motionUV * float2(width, height));
-        float motionFactor = saturate(motionPixels / 40.0f);
-        float movingHistoryBlend = min(blendAlpha, 0.80f);
-        historyBlend = lerp(blendAlpha, movingHistoryBlend, motionFactor);
-    }
-
-    float3 finalColor = lerp(sharpenedCenter, clampedHistoryRGB, historyBlend);
-
+    float3 finalColor = lerp(
+        sharpenedCurrent,
+        clampedHistoryColor,
+        historyBlend);
     return float4(finalColor, 1.0f);
 }

@@ -89,7 +89,8 @@ struct alignas(D3D12_CONSTANT_BUFFER_DATA_PLACEMENT_ALIGNMENT) TAAConstants
 {
     DirectX::XMFLOAT4X4 currJitteredInvViewProj;
     DirectX::XMFLOAT4X4 prevUnjitteredViewProj;
-    DirectX::XMFLOAT2 currJitterNdc;
+    DirectX::XMFLOAT4 currentReconstructionWeights[3];
+
     float blendAlpha;
     float varianceScale;
 

@@ -9,6 +9,8 @@
 #include "MotionVectorPass.h"
 #include "RDG.h"
 
+#include <cmath>
+
 class TAAPass
 {
 public:
@@ -125,9 +127,42 @@ public:
         TAAConstants cb = {};
         cb.currJitteredInvViewProj = currJitteredInvViewProjGpu;
         cb.prevUnjitteredViewProj = prevUnjitteredViewProjGpu;
-        cb.currJitterNdc = DirectX::XMFLOAT2(currJitterNdcX, currJitterNdcY);
         cb.blendAlpha = historyValid ? 0.95f : 0.0f;
         cb.varianceScale = 1.5f;
+
+        const float jitterPixelX =
+            currJitterNdcX * 0.5f * static_cast<float>(width);
+        const float jitterPixelY =
+            -currJitterNdcY * 0.5f * static_cast<float>(height);
+
+        float reconstructionWeights[3][3] = {};
+        float reconstructionWeightSum = 0.0f;
+        for (int x = -1; x <= 1; ++x)
+        {
+            for (int y = -1; y <= 1; ++y)
+            {
+                const float offsetX = static_cast<float>(x) - jitterPixelX;
+                const float offsetY = static_cast<float>(y) - jitterPixelY;
+                const float weight = std::exp(
+                    -2.29f * (offsetX * offsetX + offsetY * offsetY));
+
+                reconstructionWeights[x + 1][y + 1] = weight;
+                reconstructionWeightSum += weight;
+            }
+        }
+
+        const float safeReconstructionWeightSum =
+            reconstructionWeightSum > 1.0e-6f ? reconstructionWeightSum : 1.0e-6f;
+        const float inverseReconstructionWeightSum =
+            1.0f / safeReconstructionWeightSum;
+        for (int x = 0; x < 3; ++x)
+        {
+            cb.currentReconstructionWeights[x] = DirectX::XMFLOAT4(
+                reconstructionWeights[x][0] * inverseReconstructionWeightSum,
+                reconstructionWeights[x][1] * inverseReconstructionWeightSum,
+                reconstructionWeights[x][2] * inverseReconstructionWeightSum,
+                0.0f);
+        }
 
         cb.colorTextureIdx = views.colorSrvIdx;
         cb.historyTextureIdx = views.historySrvIdx;
