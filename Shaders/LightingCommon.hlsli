@@ -135,7 +135,23 @@ static const float2 POISSON_DISK[16] =
     float2(0.19984126, 0.78641367), float2(0.14383161, -0.14100467)
 };
 
-void FindBlocker(out float avgBlockerDepth, out float numBlockers, float2 uv, float zReceiver, float searchRadius, uint cascadeIndex)
+float CalculateReceiverPlaneCompareDepth(
+    float zReceiver,
+    float2 sampleOffset,
+    float2 receiverDepthGradient)
+{
+    float sampleReceiverDepth = zReceiver + dot(receiverDepthGradient, sampleOffset);
+    return min(zReceiver, sampleReceiverDepth);
+}
+
+void FindBlocker(
+    out float avgBlockerDepth,
+    out float numBlockers,
+    float2 uv,
+    float zReceiver,
+    float2 receiverDepthGradient,
+    float searchRadius,
+    uint cascadeIndex)
 {
     Texture2DArray tShadowMap = ResourceDescriptorHeap[shadowMapIdx];
     float blockerSum = 0.0;
@@ -149,9 +165,16 @@ void FindBlocker(out float avgBlockerDepth, out float numBlockers, float2 uv, fl
     for (int i = 0; i < 16; ++i)
     {
         float2 offset = mul(POISSON_DISK[i], rotMat) * searchRadius;
-        float shadowMapDepth = tShadowMap.SampleLevel(s1, float3(uv + offset, (float) cascadeIndex), 0).r;
+        float shadowMapDepth = tShadowMap.SampleLevel(
+            shadowDepthPointSampler,
+            float3(uv + offset, (float) cascadeIndex),
+            0).r;
+        float sampleCompareDepth = CalculateReceiverPlaneCompareDepth(
+            zReceiver,
+            offset,
+            receiverDepthGradient);
 
-        if (shadowMapDepth < zReceiver)
+        if (shadowMapDepth < sampleCompareDepth)
         {
             blockerSum += shadowMapDepth;
             numBlockers += 1.0;
@@ -161,42 +184,82 @@ void FindBlocker(out float avgBlockerDepth, out float numBlockers, float2 uv, fl
     avgBlockerDepth = numBlockers > 0.0 ? blockerSum / numBlockers : 1.0;
 }
 
-float CalcShadowFactor(float4 lightSpacePos, uint cascadeIndex)
+float CalcShadowFactor(
+    float4 lightSpacePos,
+    float4 lightSpacePosDDX,
+    float4 lightSpacePosDDY,
+    uint cascadeIndex)
 {
     Texture2DArray tShadowMap = ResourceDescriptorHeap[shadowMapIdx];
 
-    float3 projCoords = lightSpacePos.xyz / lightSpacePos.w;
+    float inverseW = rcp(lightSpacePos.w);
+    float3 projCoords = lightSpacePos.xyz * inverseW;
+    float3 projCoordsDDX = (lightSpacePosDDX.xyz - projCoords * lightSpacePosDDX.w) * inverseW;
+    float3 projCoordsDDY = (lightSpacePosDDY.xyz - projCoords * lightSpacePosDDY.w) * inverseW;
+
     projCoords.x = projCoords.x * 0.5f + 0.5f;
     projCoords.y = -projCoords.y * 0.5f + 0.5f;
+    projCoordsDDX.xy *= float2(0.5f, -0.5f);
+    projCoordsDDY.xy *= float2(0.5f, -0.5f);
 
     if (projCoords.z > 1.0f || projCoords.x < 0.0f || projCoords.x > 1.0f || projCoords.y < 0.0f || projCoords.y > 1.0f)
         return 1.0f;
 
     float zReceiver = projCoords.z;
 
-    float lightWorldSize = 1.0;
-    float currentOrthoWidth = 1.0;
-    if (cascadeIndex == 0)
-        currentOrthoWidth = cascadeOrthoWidths.x;
-    else if (cascadeIndex == 1)
-        currentOrthoWidth = cascadeOrthoWidths.y;
-    else if (cascadeIndex == 2)
-        currentOrthoWidth = cascadeOrthoWidths.z;
-    else if (cascadeIndex == 3)
-        currentOrthoWidth = cascadeOrthoWidths.w;
+    float3 receiverPlaneNormal = cross(projCoordsDDX, projCoordsDDY);
+    float receiverPlaneNormalLength = length(receiverPlaneNormal);
+    float receiverPlaneDenominator = max(
+        max(abs(receiverPlaneNormal.z), receiverPlaneNormalLength * 0.0872665f),
+        1e-6f);
+    receiverPlaneDenominator = receiverPlaneNormal.z < 0.0f
+        ? -receiverPlaneDenominator
+        : receiverPlaneDenominator;
+    float2 receiverDepthGradient = -receiverPlaneNormal.xy / receiverPlaneDenominator;
 
-    float lightSizeUV = lightWorldSize / max(currentOrthoWidth, 0.001f);
+    float currentOrthoWidth = 1.0;
+    float currentDepthRange = 1.0;
+    if (cascadeIndex == 0)
+    {
+        currentOrthoWidth = cascadeOrthoWidths.x;
+        currentDepthRange = cascadeDepthRanges.x;
+    }
+    else if (cascadeIndex == 1)
+    {
+        currentOrthoWidth = cascadeOrthoWidths.y;
+        currentDepthRange = cascadeDepthRanges.y;
+    }
+    else if (cascadeIndex == 2)
+    {
+        currentOrthoWidth = cascadeOrthoWidths.z;
+        currentDepthRange = cascadeDepthRanges.z;
+    }
+    else if (cascadeIndex == 3)
+    {
+        currentOrthoWidth = cascadeOrthoWidths.w;
+        currentDepthRange = cascadeDepthRanges.w;
+    }
+
+    float inverseOrthoWidth = rcp(max(currentOrthoWidth, 0.001f));
+    float receiverSearchDistance = max(zReceiver, 0.0f) * currentDepthRange;
 
     float avgBlockerDepth = 1.0;
     float numBlockers = 0.0;
-    float searchRadius = lightSizeUV * 0.5;
-    FindBlocker(avgBlockerDepth, numBlockers, projCoords.xy, zReceiver, searchRadius, cascadeIndex);
+    float searchRadius = receiverSearchDistance * tanSunAngularRadius * inverseOrthoWidth;
+    FindBlocker(
+        avgBlockerDepth,
+        numBlockers,
+        projCoords.xy,
+        zReceiver,
+        receiverDepthGradient,
+        searchRadius,
+        cascadeIndex);
 
     if (numBlockers < 1.0)
         return 1.0f;
 
-    float penumbraRatio = (zReceiver - avgBlockerDepth) / max(avgBlockerDepth, 0.0001);
-    float filterRadius = penumbraRatio * lightSizeUV;
+    float blockerReceiverDistance = max(zReceiver - avgBlockerDepth, 0.0f) * currentDepthRange;
+    float filterRadius = blockerReceiverDistance * tanSunAngularRadius * inverseOrthoWidth;
 
     float shadow = 0.0f;
     float randomAngle = Rand(projCoords.xy + float2(1.0, 1.0)) * 2.0 * PI;
@@ -207,7 +270,14 @@ float CalcShadowFactor(float4 lightSpacePos, uint cascadeIndex)
     for (int i = 0; i < 16; ++i)
     {
         float2 offset = mul(POISSON_DISK[i], rotMat) * filterRadius;
-        shadow += tShadowMap.SampleCmpLevelZero(shadowSampler, float3(projCoords.xy + offset, (float) cascadeIndex), zReceiver).r;
+        float sampleCompareDepth = CalculateReceiverPlaneCompareDepth(
+            zReceiver,
+            offset,
+            receiverDepthGradient);
+        shadow += tShadowMap.SampleCmpLevelZero(
+            shadowSampler,
+            float3(projCoords.xy + offset, (float) cascadeIndex),
+            sampleCompareDepth).r;
     }
 
     return shadow / 16.0f;

@@ -227,9 +227,8 @@ private:
         rootParameters[4].Constants.RegisterSpace = 0;
         rootParameters[4].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
 
-        // Two samplers: the former is an anisotropic sampler for high-quality texture sampling;
-        // and the latter is a comparison sampler for PCSS shadow calculations
-        D3D12_STATIC_SAMPLER_DESC samplers[2];
+        // Material, comparison-shadow, and point-shadow samplers.
+        D3D12_STATIC_SAMPLER_DESC samplers[3];
         samplers[0] = CD3DX12_STATIC_SAMPLER_DESC(0, D3D12_FILTER_ANISOTROPIC);
         samplers[0].MaxAnisotropy = 16;
 
@@ -242,9 +241,16 @@ private:
         samplers[1].ComparisonFunc = D3D12_COMPARISON_FUNC_LESS_EQUAL;
         samplers[1].BorderColor = D3D12_STATIC_BORDER_COLOR_OPAQUE_WHITE;
 
+        samplers[2] = CD3DX12_STATIC_SAMPLER_DESC(
+            2,
+            D3D12_FILTER_MIN_MAG_MIP_POINT,
+            D3D12_TEXTURE_ADDRESS_MODE_CLAMP,
+            D3D12_TEXTURE_ADDRESS_MODE_CLAMP,
+            D3D12_TEXTURE_ADDRESS_MODE_CLAMP);
+
         // Enable instancing and bindless resources
         CD3DX12_ROOT_SIGNATURE_DESC rsDesc;
-        rsDesc.Init(5, rootParameters, 2, samplers,
+        rsDesc.Init(5, rootParameters, 3, samplers,
             D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT |
             D3D12_ROOT_SIGNATURE_FLAG_CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED);
 
@@ -536,9 +542,10 @@ private:
         transparencyBlendDesc.RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
 
         transparentDesc.BlendState.RenderTarget[0] = transparencyBlendDesc;
-        transparentDesc.DepthStencilState.DepthEnable = TRUE;
+        transparentDesc.DepthStencilState.DepthEnable = FALSE;
         transparentDesc.DepthStencilState.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ZERO;
-        transparentDesc.DepthStencilState.DepthFunc = D3D12_COMPARISON_FUNC_LESS_EQUAL;
+        transparentDesc.DepthStencilState.DepthFunc = D3D12_COMPARISON_FUNC_ALWAYS;
+        transparentDesc.DSVFormat = DXGI_FORMAT_UNKNOWN;
         transparentDesc.RasterizerState.CullMode = D3D12_CULL_MODE_BACK;
 
         transparentDesc.VS = CD3DX12_SHADER_BYTECODE(vs0->GetBufferPointer(), vs0->GetBufferSize());
@@ -695,7 +702,7 @@ private:
         rootParameters[2].Descriptor.RegisterSpace = 0;
         rootParameters[2].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
 
-        D3D12_STATIC_SAMPLER_DESC samplers[2];
+        D3D12_STATIC_SAMPLER_DESC samplers[3];
         samplers[0] = CD3DX12_STATIC_SAMPLER_DESC(0, D3D12_FILTER_MIN_MAG_MIP_LINEAR);
         samplers[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
 
@@ -709,8 +716,16 @@ private:
         samplers[1].BorderColor = D3D12_STATIC_BORDER_COLOR_OPAQUE_WHITE;
         samplers[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
 
+        samplers[2] = CD3DX12_STATIC_SAMPLER_DESC(
+            2,
+            D3D12_FILTER_MIN_MAG_MIP_POINT,
+            D3D12_TEXTURE_ADDRESS_MODE_CLAMP,
+            D3D12_TEXTURE_ADDRESS_MODE_CLAMP,
+            D3D12_TEXTURE_ADDRESS_MODE_CLAMP);
+        samplers[2].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+
         CD3DX12_ROOT_SIGNATURE_DESC rsDesc;
-        rsDesc.Init(3, rootParameters, 2, samplers,
+        rsDesc.Init(3, rootParameters, 3, samplers,
             D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT |
             D3D12_ROOT_SIGNATURE_FLAG_CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED);
 

@@ -26,6 +26,7 @@
 #include <WICTextureLoader.h>
 
 #include <array>
+#include <cmath>
 
 using namespace DirectX;
 // std::shared_ptr allocates an external reference counter, whereas ComPtr uses the internal counter of the COM object itself
@@ -325,114 +326,27 @@ void D3D12App::Update()
     // Directional light matrix and shadow stability calculations
     // ====================================================================================================
     // Initialize passed data (camera position, light attributes, etc.)
-    PassConstants passCb;
+    PassConstants passCb = {};
     passCb.camPos = camera.Position;
-    XMVECTOR dirVec = XMLoadFloat3(&m_settingsManager.lighting.lightDir);
-    dirVec = XMVector3Normalize(dirVec);
-    XMStoreFloat3(&passCb.lightDir, dirVec);
-
     passCb.lightColor = m_settingsManager.lighting.lightColor;
-    float shadowRadius = m_settingsManager.lighting.shadowRadius;
-    float shadowMaxDistance = 100.0f;
-    BoundingFrustum worldFrustum = camera.GetWorldSpaceFrustum((float)Width / Height, 0.1f, shadowMaxDistance);
-    XMFLOAT3 frustumCorners[8];
-    worldFrustum.GetCorners(frustumCorners);
-    XMVECTOR camPosVec = XMLoadFloat3(&camera.Position);
 
-    // Anchor to the camera and pull back along the reverse light direction to position the virtual 'sun camera' for shadow capture
-    XMVECTOR lightPosVec = XMVectorSubtract(camPosVec, XMVectorScale(dirVec, 200.0f));
-    XMVECTOR lightUp = XMVectorSet(0.0f, 1.0f, 0.0f, 0.0f);
-    if (abs(XMVectorGetY(dirVec)) > 0.99f)
-    {
-        lightUp = XMVectorSet(0.0f, 0.0f, 1.0f, 0.0f);
-    }
-    XMMATRIX lightView = XMMatrixLookAtLH(lightPosVec, XMVectorAdd(lightPosVec, dirVec), lightUp);
+    ShadowPass::FramePreparationInput shadowInput = {};
+    shadowInput.camera = &camera;
+    shadowInput.lightDir = m_settingsManager.lighting.lightDir;
+    shadowInput.aspectRatio = static_cast<float>(Width) / Height;
+    shadowInput.shadowRadius = m_settingsManager.lighting.shadowRadius;
 
-    float minZ = FLT_MAX;
-    float maxZ = -FLT_MAX;
-
-    // Transform the 8 camera frustum corners into the light's view space to calculate the tightest possible bounding box
-    for (int i = 0; i < 8; ++i)
-    {
-        XMVECTOR vWorld = XMLoadFloat3(&frustumCorners[i]);
-        XMVECTOR vLight = XMVector3Transform(vWorld, lightView);
-
-        XMFLOAT3 pLight;
-        XMStoreFloat3(&pLight, vLight);
-
-        minZ = std::min(minZ, pLight.z);
-        maxZ = max(maxZ, pLight.z);
-    }
-
-    // Extend Z-bounds both ways to prevent missing shadows
-    minZ -= 50.0f;
-    maxZ += 50.0f;
-
-    passCb.padding3 = shadowRadius * 2.0f;
-    float nearClip = 0.1f;
-    float cascadeSplits[5] = { nearClip, 5.0f, 15.0f, 50.0f, shadowMaxDistance };
-    passCb.cascadeSplits = XMFLOAT4(cascadeSplits[1], cascadeSplits[2], cascadeSplits[3], cascadeSplits[4]);
-    float orthoWidths[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
-    std::array<BoundingBox, NUM_CASCADES> cascadeShadowAreas = {};
-
-    for (int cascadeIdx = 0; cascadeIdx < NUM_CASCADES; ++cascadeIdx)
-    {
-        BoundingFrustum subFrustum = camera.GetWorldSpaceFrustum((float)Width / Height, cascadeSplits[cascadeIdx], cascadeSplits[cascadeIdx + 1]);
-        XMFLOAT3 subCorners[8];
-        subFrustum.GetCorners(subCorners);
-
-        XMVECTOR frustumCenter = XMVectorZero();
-        for (int i = 0; i < 8; ++i)
-        {
-            frustumCenter = XMVectorAdd(frustumCenter, XMLoadFloat3(&subCorners[i]));
-        }
-        frustumCenter = XMVectorScale(frustumCenter, 1.0f / 8.0f);
-
-        float sphereRadius = 0.0f;
-        for (int i = 0; i < 8; ++i)
-        {
-            XMVECTOR distVec = XMVector3Length(XMVectorSubtract(XMLoadFloat3(&subCorners[i]), frustumCenter));
-            sphereRadius = max(sphereRadius, XMVectorGetX(distVec));
-        }
-
-        sphereRadius = std::ceil(sphereRadius * 16.0f) / 16.0f;
-
-        XMVECTOR lightSpaceCenter = XMVector3Transform(frustumCenter, lightView);
-
-        float orthoWidthOrHeight = sphereRadius * 2.0f;
-
-        // Texel snapping technique to eliminate edge flickering (enforced by calculating the actual world-space length of each shadow map texel)
-        float shadowMapSize = 4096.0f;
-        float fixedTexelSize = orthoWidthOrHeight / shadowMapSize;
-
-        float snappedX = std::floor(XMVectorGetX(lightSpaceCenter) / fixedTexelSize) * fixedTexelSize;
-        float snappedY = std::floor(XMVectorGetY(lightSpaceCenter) / fixedTexelSize) * fixedTexelSize;
-        float snappedZ = XMVectorGetZ(lightSpaceCenter);
-
-        float subMinX = snappedX - sphereRadius;
-        float subMaxX = snappedX + sphereRadius;
-        float subMinY = snappedY - sphereRadius;
-        float subMaxY = snappedY + sphereRadius;
-
-        float subMinZ = snappedZ - sphereRadius - 50.0f;
-        float subMaxZ = snappedZ + sphereRadius;
-
-        cascadeShadowAreas[cascadeIdx].Center = XMFLOAT3(
-            (subMinX + subMaxX) * 0.5f,
-            (subMinY + subMaxY) * 0.5f,
-            (subMinZ + subMaxZ) * 0.5f);
-        cascadeShadowAreas[cascadeIdx].Extents = XMFLOAT3(
-            (subMaxX - subMinX) * 0.5f,
-            (subMaxY - subMinY) * 0.5f,
-            (subMaxZ - subMinZ) * 0.5f);
-
-        // Generate orthographic projection matrix and upload all packed data to GPU memory
-        XMMATRIX subLightProj = XMMatrixOrthographicOffCenterLH(subMinX, subMaxX, subMinY, subMaxY, subMinZ, subMaxZ);
-        XMStoreFloat4x4(&passCb.lightViewProj[cascadeIdx], XMMatrixTranspose(lightView * subLightProj));
-        orthoWidths[cascadeIdx] = orthoWidthOrHeight;
-    }
-
-    passCb.cascadeOrthoWidths = XMFLOAT4(orthoWidths[0], orthoWidths[1], orthoWidths[2], orthoWidths[3]);
+    ShadowPass::FrameData shadowFrame = ShadowPass::PrepareFrame(shadowInput);
+    passCb.lightDir = shadowFrame.lightDir;
+    passCb.tanSunAngularRadius = std::tan(
+        XMConvertToRadians(m_settingsManager.lighting.sunAngularRadiusDegrees));
+    passCb.cascadeSplits = shadowFrame.cascadeSplits;
+    passCb.cascadeOrthoWidths = shadowFrame.cascadeOrthoWidths;
+    passCb.cascadeDepthRanges = shadowFrame.cascadeDepthRanges;
+    std::copy(
+        shadowFrame.lightViewProj.begin(),
+        shadowFrame.lightViewProj.end(),
+        passCb.lightViewProj);
 
     passCb.iblPrefilterIdx = m_resourceManager.GetIblPrefilterIdx();
     passCb.iblBRDFIdx = m_resourceManager.GetIblBRDFIdx();
@@ -443,10 +357,6 @@ void D3D12App::Update()
     // ====================================================================================================
     // Frustum culling and directional light shadow volume culling
     // ====================================================================================================
-    BoundingBox shadowArea;
-    shadowArea.Center = XMFLOAT3(0.0f, 0.0f, (minZ + maxZ) * 0.5f);
-    shadowArea.Extents = XMFLOAT3(shadowRadius, shadowRadius, (maxZ - minZ) * 0.5f);
-
     g_visibleInstances.clear();
     m_visibleInstanceCount = 0;
     m_frustumInstanceCount = 0;
@@ -456,6 +366,8 @@ void D3D12App::Update()
     }
     g_shadowInstanceOffsets.fill(0);
 
+    XMVECTOR camPosVec = XMLoadFloat3(&camera.Position);
+    XMMATRIX lightView = XMLoadFloat4x4(&shadowFrame.lightView);
     for (size_t i = 0; i < instances.size(); ++i)
     {   
         // Use the existing Intersects library function to determine if an object should be added to the render queue or the shadow queue
@@ -508,7 +420,8 @@ void D3D12App::Update()
 
         for (UINT cascadeIdx = 0; cascadeIdx < NUM_CASCADES; ++cascadeIdx)
         {
-            if (shadowArea.Intersects(lightSpaceBox) && cascadeShadowAreas[cascadeIdx].Intersects(lightSpaceBox))
+            if (shadowFrame.shadowArea.Intersects(lightSpaceBox) &&
+                shadowFrame.cascadeShadowAreas[cascadeIdx].Intersects(lightSpaceBox))
             {
                 g_shadowVisibleInstancesByCascade[cascadeIdx].push_back(&instances[i]);
             }

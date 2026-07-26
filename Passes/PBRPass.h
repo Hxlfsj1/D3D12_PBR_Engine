@@ -152,6 +152,36 @@ public:
         auto cmdList = deviceContext->GetCommandList();
         ID3D12Resource* sceneColor = resourceManager->GetPostProcessRT();
         ID3D12Resource* sceneColorCopy = resourceManager->GetTransparentSceneColorCopy();
+        ID3D12Resource* depthBuffer = deviceContext->GetDepthStencilBuffer();
+        size_t nearestTransparentIndex = FindNearestDrawableTransparentIndex(visibleInstances, transparentStartIndex);
+        if (nearestTransparentIndex >= visibleInstances.size())
+        {
+            return;
+        }
+
+        CD3DX12_CPU_DESCRIPTOR_HANDLE rtv = resourceManager->GetPostProcessRtvHandle();
+
+        D3D12_RESOURCE_BARRIER depthReadBarrier = CD3DX12_RESOURCE_BARRIER::Transition(
+            depthBuffer,
+            D3D12_RESOURCE_STATE_DEPTH_WRITE,
+            D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+        cmdList->ResourceBarrier(1, &depthReadBarrier);
+
+        ExecuteTransparentDrawNoBarrier(
+            deviceContext,
+            resourceManager,
+            pipelineManager,
+            frameIndex,
+            viewport,
+            scissorRect,
+            visibleInstances,
+            transparentStartIndex,
+            nearestTransparentIndex,
+            resourceManager->GetTransparentSceneColorSrvIdx(),
+            resourceManager->GetDepthBufferSrvIdx(),
+            resourceManager->GetShadowSrvIdx(),
+            rtv,
+            false);
 
         D3D12_RESOURCE_BARRIER copyBarriers[] =
         {
@@ -168,9 +198,6 @@ public:
         };
         cmdList->ResourceBarrier(_countof(restoreBarriers), restoreBarriers);
 
-        CD3DX12_CPU_DESCRIPTOR_HANDLE rtv = resourceManager->GetPostProcessRtvHandle();
-        CD3DX12_CPU_DESCRIPTOR_HANDLE dsv = deviceContext->GetDSVHandle();
-
         ExecuteTransparentDrawNoBarrier(
             deviceContext,
             resourceManager,
@@ -179,11 +206,19 @@ public:
             viewport,
             scissorRect,
             visibleInstances,
-            transparentStartIndex,
+            nearestTransparentIndex,
+            nearestTransparentIndex + 1,
             resourceManager->GetTransparentSceneColorSrvIdx(),
+            resourceManager->GetDepthBufferSrvIdx(),
             resourceManager->GetShadowSrvIdx(),
             rtv,
-            dsv);
+            true);
+
+        D3D12_RESOURCE_BARRIER depthRestoreBarrier = CD3DX12_RESOURCE_BARRIER::Transition(
+            depthBuffer,
+            D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+            D3D12_RESOURCE_STATE_DEPTH_WRITE);
+        cmdList->ResourceBarrier(1, &depthRestoreBarrier);
     }
 
     static void ExecuteTransparentDrawNoBarrier(
@@ -195,16 +230,19 @@ public:
         const D3D12_RECT& scissorRect,
         const std::vector<ModelInstance*>& visibleInstances,
         size_t transparentStartIndex,
+        size_t transparentEndIndex,
         UINT sceneColorCopySrvIdx,
+        UINT sceneDepthSrvIdx,
         UINT shadowMapSrvIdx,
         D3D12_CPU_DESCRIPTOR_HANDLE rtv,
-        D3D12_CPU_DESCRIPTOR_HANDLE dsv)
+        bool enableRefraction)
     {
         // ====================================================================================================
         // Transparent Object Pass (Only if visible)
         // ====================================================================================================
 
-        if (visibleInstances.empty() || transparentStartIndex >= visibleInstances.size())
+        transparentEndIndex = std::min(transparentEndIndex, visibleInstances.size());
+        if (visibleInstances.empty() || transparentStartIndex >= transparentEndIndex)
         {
             return;
         }
@@ -215,7 +253,7 @@ public:
             resourceManager->GetCBVAddress(frameIndex));
         passConstants->shadowMapIdx = shadowMapSrvIdx;
 
-        cmdList->OMSetRenderTargets(1, &rtv, FALSE, &dsv);
+        cmdList->OMSetRenderTargets(1, &rtv, FALSE, nullptr);
         cmdList->RSSetViewports(1, &viewport);
         cmdList->RSSetScissorRects(1, &scissorRect);
 
@@ -229,7 +267,9 @@ public:
         cmdList->SetGraphicsRootShaderResourceView(3, resourceManager->GetMaterialBufferGPUAddress());
         cmdList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
 
-        for (size_t i = transparentStartIndex; i < visibleInstances.size(); ++i)
+        UINT refractionEnabled = enableRefraction ? 1u : 0u;
+
+        for (size_t i = transparentStartIndex; i < transparentEndIndex; ++i)
         {
             ModelInstance* instance = visibleInstances[i];
             if (!instance->pModel)
@@ -247,7 +287,9 @@ public:
                 UINT transparentConstants[] =
                 {
                     mesh.materialID,
-                    sceneColorCopySrvIdx
+                    sceneColorCopySrvIdx,
+                    sceneDepthSrvIdx,
+                    refractionEnabled
                 };
 
                 cmdList->SetGraphicsRoot32BitConstants(4, _countof(transparentConstants), transparentConstants, 0);
@@ -316,16 +358,51 @@ public:
         ID3D12Resource* sceneColorResource = graph.GetTextureResource(sceneColor);
         ID3D12Resource* sceneColorCopyResource = graph.GetTextureResource(sceneColorCopy);
 
+        D3D12_SHADER_RESOURCE_VIEW_DESC depthSrvDesc = {};
+        depthSrvDesc.Format = DXGI_FORMAT_R32_FLOAT;
+        depthSrvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+        depthSrvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+        depthSrvDesc.Texture2D.MipLevels = 1;
+
         RDGTextureSRVHandle sceneColorCopySrv = graph.CreateTextureSRVView(sceneColorCopy);
+        RDGTextureSRVHandle depthSrv = graph.CreateTextureSRVView(depth, &depthSrvDesc);
         RDGTextureRTVHandle sceneColorRtv = graph.CreateTextureRTVView(sceneColor);
-        RDGTextureDSVHandle depthDsv = graph.CreateTextureDSVView(depth);
         if (!sceneColorCopySrv.IsValid() ||
+            !depthSrv.IsValid() ||
             !shadowMapSrv.IsValid() ||
-            !sceneColorRtv.IsValid() ||
-            !depthDsv.IsValid())
+            !sceneColorRtv.IsValid())
         {
             return {};
         }
+
+        RDGPassParameters regularDrawParams;
+        regularDrawParams.ReadSRV(depthSrv);
+        regularDrawParams.ReadSRV(shadowMapSrv);
+        regularDrawParams.WriteRTV(sceneColorRtv);
+
+        graph.AddPass(
+            "TransparentRegular",
+            ERDGPassFlags::Graphics,
+            regularDrawParams,
+            [=, &transparentStartIndex](ID3D12GraphicsCommandList* cmdList)
+            {
+                size_t nearestTransparentIndex = FindNearestDrawableTransparentIndex(visibleInstances, transparentStartIndex);
+                ExecuteTransparentDrawNoBarrier(
+                    deviceContext,
+                    resourceManager,
+                    pipelineManager,
+                    frameIndex,
+                    viewport,
+                    scissorRect,
+                    visibleInstances,
+                    transparentStartIndex,
+                    nearestTransparentIndex,
+                    sceneColorCopySrv.descriptorIndex,
+                    depthSrv.descriptorIndex,
+                    shadowMapSrv.descriptorIndex,
+                    sceneColorRtv.cpuHandle,
+                    false);
+            });
 
         RDGPassParameters copyParams;
         copyParams.ReadCopySrc(sceneColor);
@@ -337,7 +414,7 @@ public:
             copyParams,
             [=, &transparentStartIndex](ID3D12GraphicsCommandList* cmdList)
             {
-                if (visibleInstances.empty() || transparentStartIndex >= visibleInstances.size())
+                if (FindNearestDrawableTransparentIndex(visibleInstances, transparentStartIndex) >= visibleInstances.size())
                 {
                     return;
                 }
@@ -345,18 +422,19 @@ public:
                 cmdList->CopyResource(sceneColorCopyResource, sceneColorResource);
             });
 
-        RDGPassParameters drawParams;
-        drawParams.ReadSRV(sceneColorCopySrv);
-        drawParams.ReadSRV(shadowMapSrv);
-        drawParams.WriteRTV(sceneColorRtv);
-        drawParams.WriteDSV(depthDsv);
+        RDGPassParameters refractionDrawParams;
+        refractionDrawParams.ReadSRV(sceneColorCopySrv);
+        refractionDrawParams.ReadSRV(depthSrv);
+        refractionDrawParams.ReadSRV(shadowMapSrv);
+        refractionDrawParams.WriteRTV(sceneColorRtv);
 
         return graph.AddPass(
-            "Transparent",
+            "TransparentRefraction",
             ERDGPassFlags::Graphics,
-            drawParams,
+            refractionDrawParams,
             [=, &transparentStartIndex](ID3D12GraphicsCommandList* cmdList)
             {
+                size_t nearestTransparentIndex = FindNearestDrawableTransparentIndex(visibleInstances, transparentStartIndex);
                 ExecuteTransparentDrawNoBarrier(
                     deviceContext,
                     resourceManager,
@@ -365,15 +443,39 @@ public:
                     viewport,
                     scissorRect,
                     visibleInstances,
-                    transparentStartIndex,
+                    nearestTransparentIndex,
+                    nearestTransparentIndex + 1,
                     sceneColorCopySrv.descriptorIndex,
+                    depthSrv.descriptorIndex,
                     shadowMapSrv.descriptorIndex,
                     sceneColorRtv.cpuHandle,
-                    depthDsv.cpuHandle);
+                    true);
             });
     }
 
 private:
+    static size_t FindNearestDrawableTransparentIndex(
+        const std::vector<ModelInstance*>& visibleInstances,
+        size_t transparentStartIndex)
+    {
+        if (transparentStartIndex >= visibleInstances.size())
+        {
+            return visibleInstances.size();
+        }
+
+        for (size_t i = visibleInstances.size(); i > transparentStartIndex; --i)
+        {
+            size_t instanceIndex = i - 1;
+            ModelInstance* instance = visibleInstances[instanceIndex];
+            if (instance != nullptr && instance->pModel != nullptr)
+            {
+                return instanceIndex;
+            }
+        }
+
+        return visibleInstances.size();
+    }
+
     static size_t FindTransparentStartIndex(const std::vector<ModelInstance*>& visibleInstances)
     {
         for (size_t i = 0; i < visibleInstances.size(); ++i)

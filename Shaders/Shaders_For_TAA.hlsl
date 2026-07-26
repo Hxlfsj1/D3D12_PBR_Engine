@@ -32,6 +32,7 @@ VS_OUTPUT VSMain(uint vertexID : SV_VertexID)
     return output;
 }
 
+// YCoCg separates luma from chroma for neighborhood statistics and history clamping
 static const float3x3 RGB_2_YCoCg = float3x3
 (
     0.25, 0.5, 0.25,
@@ -46,6 +47,7 @@ static const float3x3 YCoCg_2_RGB = float3x3
     1.0, -1.0, -1.0
 );
 
+// Catmull–Rom interpolation uses small negative weights on the outer samples to counteract blurring
 float CatmullRomWeight(float x)
 {
     x = abs(x);
@@ -65,11 +67,7 @@ float CatmullRomWeight(float x)
     return 0.0f;
 }
 
-float4 SampleHistoryCatmullRom(
-    Texture2D historyTexture,
-    SamplerState pointSampler,
-    float2 uv,
-    float2 texelSize)
+float4 SampleHistoryCatmullRom(Texture2D historyTexture, SamplerState pointSampler, float2 uv, float2 texelSize)
 {
     float2 textureSize = 1.0f / texelSize;
     float2 samplePos = uv * textureSize - 0.5f;
@@ -89,14 +87,10 @@ float4 SampleHistoryCatmullRom(
         for (int x = -1; x <= 2; ++x)
         {
             float weightX = CatmullRomWeight((float)x - fraction.x);
-            float2 sampleUV =
-                (basePos + float2(x, y) + 0.5f) * texelSize;
+            float2 sampleUV = (basePos + float2(x, y) + 0.5f) * texelSize;
             sampleUV = clamp(sampleUV, minUV, maxUV);
 
-            result += historyTexture.SampleLevel(
-                pointSampler,
-                sampleUV,
-                0) * (weightX * weightY);
+            result += historyTexture.SampleLevel(pointSampler, sampleUV, 0) * (weightX * weightY);
         }
     }
 
@@ -109,6 +103,14 @@ struct ClosestDepthSample
     float2 uv;
 };
 
+/*
+Result of 3*3 analization :
+
+reconstructedColor : Current-frame pixel color used for blending
+averageColor : The value used to sharpen the current color
+meanYCoCg : Center of the valid range for the history color
+sigmaYCoCg : Extent of the valid range for the history color
+*/
 struct CurrentNeighborhood
 {
     float3 reconstructedColor;
@@ -117,6 +119,7 @@ struct CurrentNeighborhood
     float3 sigmaYCoCg;
 };
 
+// Used when sampling MotionUV to provide dilation and prevent background motion vectors from being sampled
 ClosestDepthSample FindClosestDepthSample(Texture2D depthTexture, float2 uv, float2 texelSize)
 {
     ClosestDepthSample closest;
@@ -142,15 +145,10 @@ ClosestDepthSample FindClosestDepthSample(Texture2D depthTexture, float2 uv, flo
     return closest;
 }
 
-float2 ReprojectHistoryUV(
-    float2 currentUV,
-    ClosestDepthSample closestDepth,
-    float4x4 currentInvViewProj,
-    float4x4 previousViewProj)
+// Matrix reprojection fallback used when MotionUV is unavailable, but the reprojection logic is same as MotionUV
+float2 ReprojectHistoryUV(float2 currentUV, ClosestDepthSample closestDepth, float4x4 currentInvViewProj, float4x4 previousViewProj)
 {
-    float2 currentNDC = float2(
-        closestDepth.uv.x * 2.0f - 1.0f,
-        1.0f - closestDepth.uv.y * 2.0f);
+    float2 currentNDC = float2(closestDepth.uv.x * 2.0f - 1.0f, 1.0f - closestDepth.uv.y * 2.0f);
     float4 currentClipPos = float4(currentNDC, closestDepth.depth, 1.0f);
 
     float4 worldPosH = mul(currentClipPos, currentInvViewProj);
@@ -158,17 +156,12 @@ float2 ReprojectHistoryUV(
 
     float4 previousClipPos = mul(float4(worldPos, 1.0f), previousViewProj);
     float2 previousNDC = previousClipPos.xy / previousClipPos.w;
-    float2 closestHistoryUV = float2(
-        previousNDC.x * 0.5f + 0.5f,
-        0.5f - previousNDC.y * 0.5f);
+    float2 closestHistoryUV = float2(previousNDC.x * 0.5f + 0.5f, 0.5f - previousNDC.y * 0.5f);
 
     return currentUV - (closestDepth.uv - closestHistoryUV);
 }
 
-CurrentNeighborhood AnalyzeCurrentNeighborhood(
-    Texture2D currentColorTexture,
-    float2 uv,
-    float2 texelSize)
+CurrentNeighborhood AnalyzeCurrentNeighborhood(Texture2D currentColorTexture, float2 uv, float2 texelSize)
 {
     float3 yCoCgSum = 0.0f;
     float3 yCoCgSquareSum = 0.0f;
@@ -182,18 +175,14 @@ CurrentNeighborhood AnalyzeCurrentNeighborhood(
         for (int y = -1; y <= 1; ++y)
         {
             float2 sampleOffset = float2(x, y);
-            float3 neighbor = currentColorTexture.SampleLevel(
-                sPoint,
-                uv + sampleOffset * texelSize,
-                0).rgb;
+            float3 neighbor = currentColorTexture.SampleLevel(sPoint, uv + sampleOffset * texelSize, 0).rgb;
             float3 neighborYCoCg = mul(RGB_2_YCoCg, neighbor);
 
             yCoCgSum += neighborYCoCg;
             yCoCgSquareSum += neighborYCoCg * neighborYCoCg;
             colorSum += neighbor;
 
-            float reconstructionWeight =
-                currentReconstructionWeights[x + 1][y + 1];
+            float reconstructionWeight = currentReconstructionWeights[x + 1][y + 1];
             reconstructedColor += neighbor * reconstructionWeight;
         }
     }
@@ -202,24 +191,19 @@ CurrentNeighborhood AnalyzeCurrentNeighborhood(
     neighborhood.reconstructedColor = reconstructedColor;
     neighborhood.averageColor = colorSum / 9.0f;
     neighborhood.meanYCoCg = yCoCgSum / 9.0f;
-    neighborhood.sigmaYCoCg = sqrt(abs(
-        yCoCgSquareSum / 9.0f -
-        neighborhood.meanYCoCg * neighborhood.meanYCoCg));
+    neighborhood.sigmaYCoCg = sqrt(abs(yCoCgSquareSum / 9.0f - neighborhood.meanYCoCg * neighborhood.meanYCoCg));
     return neighborhood;
 }
 
 float3 SharpenCurrentColor(CurrentNeighborhood neighborhood)
 {
     const float sharpenAmount = 0.25f;
-    float3 sharpenedColor =
-        neighborhood.reconstructedColor +
-        (neighborhood.reconstructedColor - neighborhood.averageColor) * sharpenAmount;
+    float3 sharpenedColor = neighborhood.reconstructedColor + (neighborhood.reconstructedColor - neighborhood.averageColor) * sharpenAmount;
     return max(0.0f, sharpenedColor);
 }
 
-float3 ClampHistoryColor(
-    float3 historyColor,
-    CurrentNeighborhood neighborhood)
+// Clamp history color just like limit it in an AABB box
+float3 ClampHistoryColor(float3 historyColor, CurrentNeighborhood neighborhood)
 {
     float3 boxMin = neighborhood.meanYCoCg - 1.25f * neighborhood.sigmaYCoCg;
     float3 boxMax = neighborhood.meanYCoCg + 1.25f * neighborhood.sigmaYCoCg;
@@ -230,16 +214,10 @@ float3 ClampHistoryColor(
 
 bool IsUVInsideViewport(float2 uv)
 {
-    return uv.x >= 0.0f && uv.x <= 1.0f &&
-        uv.y >= 0.0f && uv.y <= 1.0f;
+    return uv.x >= 0.0f && uv.x <= 1.0f && uv.y >= 0.0f && uv.y <= 1.0f;
 }
 
-float ComputeHistoryBlend(
-    float baseHistoryBlend,
-    bool hasMotionTexture,
-    float2 motionUV,
-    uint width,
-    uint height)
+float ComputeHistoryBlend(float baseHistoryBlend, bool hasMotionTexture, float2 motionUV, uint width, uint height)
 {
     if (!hasMotionTexture || baseHistoryBlend <= 0.0f)
     {
@@ -264,8 +242,7 @@ float4 PSMain(VS_OUTPUT input) : SV_TARGET
     tCurrentColor.GetDimensions(width, height);
     float2 texelSize = float2(1.0f / width, 1.0f / height);
 
-    ClosestDepthSample closestDepth =
-        FindClosestDepthSample(tDepth, uv, texelSize);
+    ClosestDepthSample closestDepth = FindClosestDepthSample(tDepth, uv, texelSize);
 
     float2 motionUV = 0.0f;
     float2 historyUV;
@@ -278,17 +255,10 @@ float4 PSMain(VS_OUTPUT input) : SV_TARGET
     }
     else
     {
-        historyUV = ReprojectHistoryUV(
-            uv,
-            closestDepth,
-            currJitteredInvViewProj,
-            prevUnjitteredViewProj);
+        historyUV = ReprojectHistoryUV(uv, closestDepth, currJitteredInvViewProj, prevUnjitteredViewProj);
     }
 
-    CurrentNeighborhood currentNeighborhood = AnalyzeCurrentNeighborhood(
-        tCurrentColor,
-        uv,
-        texelSize);
+    CurrentNeighborhood currentNeighborhood = AnalyzeCurrentNeighborhood(tCurrentColor, uv, texelSize);
     float3 sharpenedCurrent = SharpenCurrentColor(currentNeighborhood);
 
     if (blendAlpha <= 0.0f)
@@ -301,23 +271,10 @@ float4 PSMain(VS_OUTPUT input) : SV_TARGET
         return float4(sharpenedCurrent, 1.0f);
     }
 
-    float3 historyColor = SampleHistoryCatmullRom(
-        tHistoryColor,
-        sPoint,
-        historyUV,
-        texelSize).rgb;
-    float3 clampedHistoryColor =
-        ClampHistoryColor(historyColor, currentNeighborhood);
-    float historyBlend = ComputeHistoryBlend(
-        blendAlpha,
-        hasMotionTexture,
-        motionUV,
-        width,
-        height);
+    float3 historyColor = SampleHistoryCatmullRom(tHistoryColor, sPoint, historyUV, texelSize).rgb;
+    float3 clampedHistoryColor = ClampHistoryColor(historyColor, currentNeighborhood);
+    float historyBlend = ComputeHistoryBlend(blendAlpha, hasMotionTexture, motionUV, width, height);
 
-    float3 finalColor = lerp(
-        sharpenedCurrent,
-        clampedHistoryColor,
-        historyBlend);
+    float3 finalColor = lerp(sharpenedCurrent, clampedHistoryColor, historyBlend);
     return float4(finalColor, 1.0f);
 }

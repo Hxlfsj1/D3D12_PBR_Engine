@@ -5,10 +5,12 @@ cbuffer PassConstants : register(b0)
     float3 lightDir;
     float padding2;
     float3 lightColor;
-    float padding3;
+    float tanSunAngularRadius;
     
     float4x4 lightViewProj[4];
     float4 cascadeSplits;
+    float4 cascadeOrthoWidths;
+    float4 cascadeDepthRanges;
     
     uint iblPrefilterIdx;
     uint iblBRDFIdx;

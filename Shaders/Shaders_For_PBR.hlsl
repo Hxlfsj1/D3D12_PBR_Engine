@@ -9,11 +9,12 @@ cbuffer PassConstants : register(b0)
     float3 lightDir;
     float padding2;
     float3 lightColor;
-    float padding3;
+    float tanSunAngularRadius;
     
     float4x4 lightViewProj[4];
     float4 cascadeSplits;
     float4 cascadeOrthoWidths;
+    float4 cascadeDepthRanges;
     
     uint iblPrefilterIdx;
     uint iblBRDFIdx;
@@ -45,12 +46,15 @@ cbuffer MeshConstants : register(b1)
 {
     uint materialID;
     uint transparentSceneColorIdx;
+    uint transparentSceneDepthIdx;
+    uint transparentRefractionEnabled;
 };
 
 StructuredBuffer<InstanceData> gInstanceData : register(t6);
 
 SamplerState s1 : register(s0);
 SamplerComparisonState shadowSampler : register(s1);
+SamplerState shadowDepthPointSampler : register(s2);
 
 StructuredBuffer<MaterialData> gMaterialData : register(t7);
 
@@ -148,7 +152,7 @@ static const float TRANSPARENT_FRESNEL_POWER = 5.0f;
 static const float TRANSPARENT_FRESNEL_DARKEN_STRENGTH = 0.35f;
 
 static const float TRANSPARENT_REFRACTION_STRENGTH = 0.015f;
-static const float TRANSPARENT_REFRACTION_SURFACE_WEIGHT = 0.35f;
+static const float TRANSPARENT_DEPTH_EPSILON = 1e-5f;
 
 float3 ApplyTransparentFresnelDarkening(float3 color, float3 normal, float3 viewDir)
 {
@@ -165,20 +169,64 @@ float3 ApplyTransparentFresnelDarkening(float3 color, float3 normal, float3 view
 float3 ApplyTransparentSceneRefraction(float3 surfaceColor, float alpha, float4 screenPos, float3 normal, float3 albedo)
 {
 #ifdef TRANSPARENT_PASS
+    if (transparentRefractionEnabled == 0)
+    {
+        return surfaceColor;
+    }
+
     Texture2D sceneColorTexture = ResourceDescriptorHeap[transparentSceneColorIdx];
+    Texture2D sceneDepthTexture = ResourceDescriptorHeap[transparentSceneDepthIdx];
 
     uint sceneWidth;
     uint sceneHeight;
     sceneColorTexture.GetDimensions(sceneWidth, sceneHeight);
 
     float2 sceneUv = screenPos.xy / float2(sceneWidth, sceneHeight);
-    float2 refractedUv = saturate(sceneUv + normal.xy * TRANSPARENT_REFRACTION_STRENGTH);
-    float3 refractedColor = sceneColorTexture.Sample(s1, refractedUv).rgb;
+    float2 rawRefractedUv = sceneUv + normal.xy * TRANSPARENT_REFRACTION_STRENGTH;
+    bool refractedUvInBounds = all(rawRefractedUv >= 0.0f) && all(rawRefractedUv <= 1.0f);
+    float2 refractedUv = refractedUvInBounds ? rawRefractedUv : sceneUv;
 
-    float surfaceWeight = saturate(max(alpha, TRANSPARENT_REFRACTION_SURFACE_WEIGHT));
-    return lerp(refractedColor * albedo, surfaceColor, surfaceWeight);
+    if (refractedUvInBounds)
+    {
+        uint2 refractedPixel = min(uint2(refractedUv * float2(sceneWidth, sceneHeight)), uint2(sceneWidth - 1, sceneHeight - 1));
+        float refractedSceneDepth = sceneDepthTexture.Load(int3(refractedPixel, 0)).r;
+        if (refractedSceneDepth + TRANSPARENT_DEPTH_EPSILON < screenPos.z)
+        {
+            refractedUv = sceneUv;
+        }
+    }
+
+    float3 refractedColor = sceneColorTexture.Sample(s1, refractedUv).rgb;
+    return lerp(refractedColor * albedo, surfaceColor, alpha);
 #else
     return surfaceColor;
+#endif
+}
+
+float4 BuildTransparentOutput(float3 color, float alpha)
+{
+#ifdef TRANSPARENT_PASS
+    if (transparentRefractionEnabled != 0)
+    {
+        return float4(color, 1.0f);
+    }
+#endif
+
+    return BuildSurfaceOutput(color, alpha);
+}
+
+void ClipTransparentAgainstSceneDepth(float4 screenPos)
+{
+#ifdef TRANSPARENT_PASS
+    Texture2D sceneDepthTexture = ResourceDescriptorHeap[transparentSceneDepthIdx];
+
+    uint sceneWidth;
+    uint sceneHeight;
+    sceneDepthTexture.GetDimensions(sceneWidth, sceneHeight);
+
+    uint2 scenePixel = min(uint2(screenPos.xy), uint2(sceneWidth - 1, sceneHeight - 1));
+    float sceneDepth = sceneDepthTexture.Load(int3(scenePixel, 0)).r;
+    clip(sceneDepth + TRANSPARENT_DEPTH_EPSILON - screenPos.z);
 #endif
 }
 
@@ -193,6 +241,7 @@ float4 PSMain(VS_OUTPUT input, bool isFrontFace : SV_IsFrontFace) : SV_TARGET
     ApplyDepthAlphaTest(albedoSample.a);
     float3 albedo = DecodeSRGBColor(albedoSample.rgb) * mat.baseColorFactor.rgb;
     float finalAlpha = albedoSample.a;
+    ClipTransparentAgainstSceneDepth(input.pos);
     
     if (mat.isUnlit)
     {
@@ -200,7 +249,7 @@ float4 PSMain(VS_OUTPUT input, bool isFrontFace : SV_IsFrontFace) : SV_TARGET
         float3 V = normalize(camPos - input.worldPos);
         float3 transparentColor = ApplyTransparentSceneRefraction(albedo, finalAlpha, input.pos, N, albedo);
         transparentColor = ApplyTransparentFresnelDarkening(transparentColor, N, V);
-        return BuildSurfaceOutput(transparentColor, finalAlpha);
+        return BuildTransparentOutput(transparentColor, finalAlpha);
     }
 
 #if LOD_LEVEL == 2
@@ -217,7 +266,7 @@ float4 PSMain(VS_OUTPUT input, bool isFrontFace : SV_IsFrontFace) : SV_TARGET
     float3 V = normalize(camPos - input.worldPos);
     totalDiffuse = ApplyTransparentSceneRefraction(totalDiffuse, finalAlpha, input.pos, N, albedo);
     totalDiffuse = ApplyTransparentFresnelDarkening(totalDiffuse, N, V);
-    return BuildSurfaceOutput(totalDiffuse, finalAlpha);
+    return BuildTransparentOutput(totalDiffuse, finalAlpha);
 #else
     Texture2D tMR = ResourceDescriptorHeap[mat.ormIdx];
     
@@ -256,7 +305,13 @@ float4 PSMain(VS_OUTPUT input, bool isFrontFace : SV_IsFrontFace) : SV_TARGET
     uint cascadeIndex = SelectCascadeIndex(dist);
 
     float4 lightSpacePos = mul(float4(input.worldPos, 1.0f), lightViewProj[cascadeIndex]);
-    float shadow = CalcShadowFactor(lightSpacePos, cascadeIndex);
+    float4 lightSpacePosDDX = mul(float4(ddx(input.worldPos), 0.0f), lightViewProj[cascadeIndex]);
+    float4 lightSpacePosDDY = mul(float4(ddy(input.worldPos), 0.0f), lightViewProj[cascadeIndex]);
+    float shadow = CalcShadowFactor(
+        lightSpacePos,
+        lightSpacePosDDX,
+        lightSpacePosDDY,
+        cascadeIndex);
     shadow = FadeCascadeShadow(shadow, dist);
     
     // Calculate final light
@@ -302,6 +357,6 @@ float4 PSMain(VS_OUTPUT input, bool isFrontFace : SV_IsFrontFace) : SV_TARGET
     finalColor = ApplyTransparentSceneRefraction(finalColor, finalAlpha, input.pos, N, albedo);
     finalColor = ApplyTransparentFresnelDarkening(finalColor, N, V);
 
-    return BuildSurfaceOutput(finalColor, finalAlpha);
+    return BuildTransparentOutput(finalColor, finalAlpha);
 #endif
 }

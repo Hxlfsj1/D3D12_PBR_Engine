@@ -72,6 +72,7 @@ struct LightingConfig
 {
     DirectX::XMFLOAT3 lightDir = { -0.5f, -1.0f, 0.5f };
     DirectX::XMFLOAT3 lightColor = { 5.0f, 5.0f, 5.0f };
+    float sunAngularRadiusDegrees = 0.266f;
     float shadowRadius = 40.0f;
 };
 
@@ -249,6 +250,9 @@ private:
             {
                 lighting.lightColor = j["light_color"].get<DirectX::XMFLOAT3>();
             }
+            lighting.sunAngularRadiusDegrees = j.value(
+                "sun_angular_radius_degrees",
+                lighting.sunAngularRadiusDegrees);
             lighting.shadowRadius = j.value("shadow_radius", lighting.shadowRadius);
         }
         else

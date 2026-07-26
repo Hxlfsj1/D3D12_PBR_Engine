@@ -5,11 +5,12 @@ cbuffer PassConstants : register(b0)
     float3 lightDir;
     float padding2;
     float3 lightColor;
-    float padding3;
+    float tanSunAngularRadius;
     
     float4x4 lightViewProj[4];
     float4 cascadeSplits;
     float4 cascadeOrthoWidths;
+    float4 cascadeDepthRanges;
     
     uint iblPrefilterIdx;
     uint iblBRDFIdx;
@@ -34,6 +35,7 @@ cbuffer SHBuffer : register(b2)
 
 SamplerState s1 : register(s0);
 SamplerComparisonState shadowSampler : register(s1);
+SamplerState shadowDepthPointSampler : register(s2);
 
 struct VS_OUTPUT
 {
@@ -92,6 +94,8 @@ float4 PSMain(VS_OUTPUT input) : SV_TARGET
     uint cascadeIndex = SelectCascadeIndex(dist);
 
     float4 lightSpacePos = mul(float4(worldPos, 1.0f), lightViewProj[cascadeIndex]);
+    float4 lightSpacePosDDX = mul(float4(ddx(worldPos), 0.0f), lightViewProj[cascadeIndex]);
+    float4 lightSpacePosDDY = mul(float4(ddy(worldPos), 0.0f), lightViewProj[cascadeIndex]);
 
     float3 V = normalize(camPos - worldPos);
     float3 R = reflect(-V, N);
@@ -106,7 +110,11 @@ float4 PSMain(VS_OUTPUT input) : SV_TARGET
     float3 kD = ComputeDiffuseEnergy(F, metallic);
 
     // Shadow with attenuation
-    float shadow = CalcShadowFactor(lightSpacePos, cascadeIndex);
+    float shadow = CalcShadowFactor(
+        lightSpacePos,
+        lightSpacePosDDX,
+        lightSpacePosDDY,
+        cascadeIndex);
     shadow = FadeCascadeShadow(shadow, dist);
     
     float NdotL = max(dot(N, L), 0.0);
