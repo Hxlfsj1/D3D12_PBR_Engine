@@ -91,6 +91,9 @@
     <None Include="Shaders\Shaders_For_MotionVector.hlsl">
       <Filter>Shaders</Filter>
     </None>
+    <None Include="Shaders\Shaders_For_ScalarTemporal.hlsl">
+      <Filter>Shaders</Filter>
+    </None>
     <None Include="Settings\Scene.json">
       <Filter>Settings</Filter>
     </None>
@@ -183,6 +186,9 @@
     <ClInclude Include="Passes\MotionVectorPass.h">
       <Filter>Passes</Filter>
     </ClInclude>
+    <ClInclude Include="Passes\ScalarTemporalFilterPass.h">
+      <Filter>Passes</Filter>
+    </ClInclude>
     <ClInclude Include="Resources\Settings_Manager.h">
       <Filter>Resources</Filter>
     </ClInclude>
@@ -192,13 +198,5 @@
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="PBR_Render.cpp" />
-  </ItemGroup>
-  <ItemGroup>
-    <None Include="Shaders\Shaders_For_ScalarTemporal.hlsl">
-      <Filter>Shaders</Filter>
-    </None>
-    <ClInclude Include="Passes\ScalarTemporalFilterPass.h">
-      <Filter>Passes</Filter>
-    </ClInclude>
   </ItemGroup>
 </Project>
