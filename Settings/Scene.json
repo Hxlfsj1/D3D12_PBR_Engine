@@ -4,10 +4,10 @@
   "instances": [
     {
       "name": "BaseModel",
-      "model_path": "Models/Plain.glb",
-      "pos": [ 0.0, 3.0, 0.0 ],
+      "model_path": "Models/V-22.glb",
+      "pos": [ 0.0, 0.01, 0.0 ],
       "rot": [ 0.0, 0.0, 0.0 ],
-      "scale": [ 0.1, 0.1, 0.1 ],
+      "scale": [ 1.0, 1.0, 1.0 ],
       "is_transparent": false,
       "is_cutout": true
     },
@@ -18,7 +18,7 @@
       "model_path": "Models/Plain.glb",
       "pos": [ 0.0, 0.0, 0.0 ],
       "rot": [ 0.0, 0.0, 0.0 ],
-      "scale": [ 5.0, 5.0, 5.0 ],
+      "scale": [ 1.0, 1.0, 1.0 ],
       "is_transparent": false,
       "is_cutout": false
     }

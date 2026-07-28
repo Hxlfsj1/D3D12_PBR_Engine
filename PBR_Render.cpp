@@ -18,6 +18,7 @@
 #include "DeferredLightingPass.h"
 #include "MotionVectorPass.h"
 #include "TAAPass.h"
+#include "ScalarTemporalFilterPass.h"
 
 #define STB_IMAGE_IMPLEMENTATION
 #include <stb_image.h>
@@ -328,6 +329,7 @@ void D3D12App::Update()
     // Initialize passed data (camera position, light attributes, etc.)
     PassConstants passCb = {};
     passCb.camPos = camera.Position;
+    passCb.cameraForward = camera.Front;
     passCb.lightColor = m_settingsManager.lighting.lightColor;
 
     ShadowPass::FramePreparationInput shadowInput = {};

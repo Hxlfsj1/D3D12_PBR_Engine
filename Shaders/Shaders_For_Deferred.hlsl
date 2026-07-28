@@ -2,6 +2,8 @@ cbuffer PassConstants : register(b0)
 {
     float3 camPos;
     float padding1;
+    float3 cameraForward;
+    float paddingCameraForward;
     float3 lightDir;
     float padding2;
     float3 lightColor;
@@ -89,9 +91,9 @@ float4 PSMain(VS_OUTPUT input) : SV_TARGET
     float4 worldPosH = mul(clipSpacePos, invViewProj);
     float3 worldPos = worldPosH.xyz / worldPosH.w;
 
-    // Use different shadow maps depending on distance
-    float dist = distance(camPos, worldPos);
-    uint cascadeIndex = SelectCascadeIndex(dist);
+    // Match cascade selection to the camera-space depth ranges used to build the frusta.
+    float viewDepth = dot(worldPos - camPos, cameraForward);
+    uint cascadeIndex = SelectCascadeIndex(viewDepth);
 
     float4 lightSpacePos = mul(float4(worldPos, 1.0f), lightViewProj[cascadeIndex]);
     float4 lightSpacePosDDX = mul(float4(ddx(worldPos), 0.0f), lightViewProj[cascadeIndex]);
@@ -115,7 +117,7 @@ float4 PSMain(VS_OUTPUT input) : SV_TARGET
         lightSpacePosDDX,
         lightSpacePosDDY,
         cascadeIndex);
-    shadow = FadeCascadeShadow(shadow, dist);
+    shadow = FadeCascadeShadow(shadow, viewDepth);
     
     float NdotL = max(dot(N, L), 0.0);
     float3 directDiffuse = ComputeDirectDiffuse(kD, albedo, radiance, NdotL, shadow);

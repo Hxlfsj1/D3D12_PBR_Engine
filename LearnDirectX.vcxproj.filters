@@ -1,210 +1,204 @@
 <?xml version="1.0" encoding="utf-8"?>
 <Project ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
   <ItemGroup>
-    <Filter Include="源文件">
+    <Filter Include="Shaders">
       <UniqueIdentifier>{4FC737F1-C7A5-4376-A066-2A32D752A2FF}</UniqueIdentifier>
-      <Extensions>cpp;c;cc;cxx;c++;cppm;ixx;def;odl;idl;hpj;bat;asm;asmx</Extensions>
     </Filter>
-    <Filter Include="头文件">
+    <Filter Include="Core">
       <UniqueIdentifier>{93995380-89BD-4b04-88EB-625FBE52EBFB}</UniqueIdentifier>
-      <Extensions>h;hh;hpp;hxx;h++;hm;inl;inc;ipp;xsd</Extensions>
     </Filter>
-    <Filter Include="资源文件">
+    <Filter Include="Graphics">
       <UniqueIdentifier>{67DA6AB6-F800-4c08-8B7A-83BB121AAD01}</UniqueIdentifier>
-      <Extensions>rc;ico;cur;bmp;dlg;rc2;rct;bin;rgs;gif;jpg;jpeg;jpe;resx;tiff;tif;png;wav;mfcribbon-ms</Extensions>
     </Filter>
-    <Filter Include="源文件\Shaders">
+    <Filter Include="Resources">
       <UniqueIdentifier>{35159e7b-5aa0-4d18-9118-c9886cdf1ef5}</UniqueIdentifier>
     </Filter>
-    <Filter Include="头文件\Core">
+    <Filter Include="Logic">
       <UniqueIdentifier>{0fb13ea6-214a-4507-94ce-aa40a45e4116}</UniqueIdentifier>
     </Filter>
-    <Filter Include="头文件\Graphics">
+    <Filter Include="ThirdParty">
       <UniqueIdentifier>{2d1ea517-2c8a-49e3-a49d-f0a69ccec94b}</UniqueIdentifier>
     </Filter>
-    <Filter Include="头文件\Resources">
+    <Filter Include="Passes">
       <UniqueIdentifier>{945c425c-948b-42f5-9ee1-2ab5d4ce9f51}</UniqueIdentifier>
     </Filter>
-    <Filter Include="头文件\Logic">
+    <Filter Include="Settings">
       <UniqueIdentifier>{ec2d421f-3a16-4c41-b62d-744fb18d066d}</UniqueIdentifier>
     </Filter>
-    <Filter Include="头文件\ThirdParty">
+    <Filter Include="RDG">
       <UniqueIdentifier>{2a9b3764-7b83-4719-b2e1-eab783846441}</UniqueIdentifier>
-    </Filter>
-    <Filter Include="头文件\Passes">
-      <UniqueIdentifier>{f19f8f1f-3882-4b97-8c16-8ff9eb0d3e57}</UniqueIdentifier>
-    </Filter>
-    <Filter Include="源文件\Settings">
-      <UniqueIdentifier>{00a62b8a-e2be-4a29-aa41-4ad779378f97}</UniqueIdentifier>
-    </Filter>
-    <Filter Include="头文件\RDG">
-      <UniqueIdentifier>{67133a42-829f-4515-8dc3-9f17e60ff0e2}</UniqueIdentifier>
     </Filter>
   </ItemGroup>
   <ItemGroup>
     <None Include="packages.config" />
     <None Include="Shaders\Shaders_For_Cubemap.hlsl">
-      <Filter>源文件\Shaders</Filter>
+      <Filter>Shaders</Filter>
     </None>
     <None Include="Shaders\Shaders_For_Irradiance%28deprecated%29.hlsl">
-      <Filter>源文件\Shaders</Filter>
+      <Filter>Shaders</Filter>
     </None>
     <None Include="Shaders\Shaders_For_PBR.hlsl">
-      <Filter>源文件\Shaders</Filter>
+      <Filter>Shaders</Filter>
     </None>
     <None Include="Shaders\Shaders_For_Sky_Box.hlsl">
-      <Filter>源文件\Shaders</Filter>
+      <Filter>Shaders</Filter>
     </None>
     <None Include="Shaders\Shaders_For_Split_Sum.hlsl">
-      <Filter>源文件\Shaders</Filter>
+      <Filter>Shaders</Filter>
     </None>
     <None Include="Shaders\Shaders_For_SH_Calculate.hlsl">
-      <Filter>源文件\Shaders</Filter>
+      <Filter>Shaders</Filter>
     </None>
     <None Include="Shaders\Shaders_For_Shadow.hlsl">
-      <Filter>源文件\Shaders</Filter>
+      <Filter>Shaders</Filter>
     </None>
     <None Include="Shaders\Shaders_For_PostProcess.hlsl">
-      <Filter>源文件\Shaders</Filter>
+      <Filter>Shaders</Filter>
     </None>
     <None Include="Shaders\Shaders_For_ZPrepass.hlsl">
-      <Filter>源文件\Shaders</Filter>
+      <Filter>Shaders</Filter>
     </None>
     <None Include="Shaders\DepthVisibility.hlsli">
-      <Filter>源文件\Shaders</Filter>
+      <Filter>Shaders</Filter>
     </None>
     <None Include="Shaders\FullscreenTriangle.hlsli">
-      <Filter>源文件\Shaders</Filter>
+      <Filter>Shaders</Filter>
     </None>
     <None Include="Shaders\LightingCommon.hlsli">
-      <Filter>源文件\Shaders</Filter>
+      <Filter>Shaders</Filter>
     </None>
     <None Include="Shaders\MathCommon.hlsli">
-      <Filter>源文件\Shaders</Filter>
+      <Filter>Shaders</Filter>
     </None>
     <None Include="Shaders\MaterialCommon.hlsli">
-      <Filter>源文件\Shaders</Filter>
+      <Filter>Shaders</Filter>
     </None>
     <None Include="Shaders\TangentBasis.hlsli">
-      <Filter>源文件\Shaders</Filter>
+      <Filter>Shaders</Filter>
     </None>
     <None Include="Shaders\Shaders_For_GBuffer.hlsl">
-      <Filter>源文件\Shaders</Filter>
+      <Filter>Shaders</Filter>
     </None>
     <None Include="Shaders\Shaders_For_Deferred.hlsl">
-      <Filter>源文件\Shaders</Filter>
+      <Filter>Shaders</Filter>
     </None>
     <None Include="Shaders\Shaders_For_HBAO.hlsl">
-      <Filter>源文件\Shaders</Filter>
+      <Filter>Shaders</Filter>
     </None>
     <None Include="Shaders\Shaders_For_TAA.hlsl">
-      <Filter>源文件\Shaders</Filter>
+      <Filter>Shaders</Filter>
     </None>
     <None Include="Shaders\Shaders_For_MotionVector.hlsl">
-      <Filter>源文件\Shaders</Filter>
+      <Filter>Shaders</Filter>
     </None>
     <None Include="Settings\Scene.json">
-      <Filter>源文件\Settings</Filter>
+      <Filter>Settings</Filter>
     </None>
     <None Include="Settings\Lighting.json">
-      <Filter>源文件\Settings</Filter>
+      <Filter>Settings</Filter>
     </None>
     <None Include="Settings\Pipeline.json">
-      <Filter>源文件\Settings</Filter>
+      <Filter>Settings</Filter>
     </None>
     <None Include="Settings\Window.json">
-      <Filter>源文件\Settings</Filter>
+      <Filter>Settings</Filter>
     </None>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="Core\D3D12App.h">
-      <Filter>头文件\Core</Filter>
+      <Filter>Core</Filter>
     </ClInclude>
     <ClInclude Include="Core\Window.h">
-      <Filter>头文件\Core</Filter>
+      <Filter>Core</Filter>
     </ClInclude>
     <ClInclude Include="Core\stdafx.h">
-      <Filter>头文件\Core</Filter>
+      <Filter>Core</Filter>
     </ClInclude>
     <ClInclude Include="Graphics\PBR_Shader.h">
-      <Filter>头文件\Graphics</Filter>
+      <Filter>Graphics</Filter>
     </ClInclude>
     <ClInclude Include="Graphics\PipelineManager.h">
-      <Filter>头文件\Graphics</Filter>
+      <Filter>Graphics</Filter>
     </ClInclude>
     <ClInclude Include="Graphics\RenderDevice.h">
-      <Filter>头文件\Graphics</Filter>
+      <Filter>Graphics</Filter>
     </ClInclude>
     <ClInclude Include="Resources\PBR_Model.h">
-      <Filter>头文件\Resources</Filter>
+      <Filter>Resources</Filter>
     </ClInclude>
     <ClInclude Include="Resources\IBLBaker.h">
-      <Filter>头文件\Resources</Filter>
+      <Filter>Resources</Filter>
     </ClInclude>
     <ClInclude Include="Resources\ResourceManager.h">
-      <Filter>头文件\Resources</Filter>
+      <Filter>Resources</Filter>
     </ClInclude>
     <ClInclude Include="Logic\Camera.h">
-      <Filter>头文件\Logic</Filter>
+      <Filter>Logic</Filter>
     </ClInclude>
     <ClInclude Include="Logic\SceneObject.h">
-      <Filter>头文件\Logic</Filter>
+      <Filter>Logic</Filter>
     </ClInclude>
     <ClInclude Include="Logic\InputManager.h">
-      <Filter>头文件\Logic</Filter>
+      <Filter>Logic</Filter>
     </ClInclude>
     <ClInclude Include="ThirdParty\stb_image.h">
-      <Filter>头文件\ThirdParty</Filter>
+      <Filter>ThirdParty</Filter>
     </ClInclude>
     <ClInclude Include="ThirdParty\tiny_gltf.h">
-      <Filter>头文件\ThirdParty</Filter>
+      <Filter>ThirdParty</Filter>
     </ClInclude>
     <ClInclude Include="ThirdParty\json.hpp">
-      <Filter>头文件\ThirdParty</Filter>
+      <Filter>ThirdParty</Filter>
     </ClInclude>
     <ClInclude Include="Passes\RenderStructs.h">
-      <Filter>头文件\Passes</Filter>
+      <Filter>Passes</Filter>
     </ClInclude>
     <ClInclude Include="Passes\ShadowPass.h">
-      <Filter>头文件\Passes</Filter>
+      <Filter>Passes</Filter>
     </ClInclude>
     <ClInclude Include="Passes\SkyboxPass.h">
-      <Filter>头文件\Passes</Filter>
+      <Filter>Passes</Filter>
     </ClInclude>
     <ClInclude Include="Passes\PostProcessPass.h">
-      <Filter>头文件\Passes</Filter>
+      <Filter>Passes</Filter>
     </ClInclude>
     <ClInclude Include="Passes\PBRPass.h">
-      <Filter>头文件\Passes</Filter>
+      <Filter>Passes</Filter>
     </ClInclude>
     <ClInclude Include="ThirdParty\meshoptimizer.h">
-      <Filter>头文件\ThirdParty</Filter>
+      <Filter>ThirdParty</Filter>
     </ClInclude>
     <ClInclude Include="Passes\GbufferPass.h">
-      <Filter>头文件\Passes</Filter>
+      <Filter>Passes</Filter>
     </ClInclude>
     <ClInclude Include="Passes\DeferredLightingPass.h">
-      <Filter>头文件\Passes</Filter>
+      <Filter>Passes</Filter>
     </ClInclude>
     <ClInclude Include="Passes\HBAOPass.h">
-      <Filter>头文件\Passes</Filter>
+      <Filter>Passes</Filter>
     </ClInclude>
     <ClInclude Include="Passes\TAAPass.h">
-      <Filter>头文件\Passes</Filter>
+      <Filter>Passes</Filter>
     </ClInclude>
     <ClInclude Include="Passes\MotionVectorPass.h">
-      <Filter>头文件\Passes</Filter>
+      <Filter>Passes</Filter>
     </ClInclude>
     <ClInclude Include="Resources\Settings_Manager.h">
-      <Filter>头文件\Resources</Filter>
+      <Filter>Resources</Filter>
     </ClInclude>
     <ClInclude Include="RDG\RDG.h">
-      <Filter>头文件\RDG</Filter>
+      <Filter>RDG</Filter>
     </ClInclude>
   </ItemGroup>
   <ItemGroup>
-    <ClCompile Include="PBR_Render.cpp">
-      <Filter>源文件</Filter>
-    </ClCompile>
+    <ClCompile Include="PBR_Render.cpp" />
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="Shaders\Shaders_For_ScalarTemporal.hlsl">
+      <Filter>Shaders</Filter>
+    </None>
+    <ClInclude Include="Passes\ScalarTemporalFilterPass.h">
+      <Filter>Passes</Filter>
+    </ClInclude>
   </ItemGroup>
 </Project>

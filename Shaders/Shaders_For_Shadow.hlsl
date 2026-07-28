@@ -2,6 +2,8 @@ cbuffer PassConstants : register(b0)
 {
     float3 camPos;
     float padding1;
+    float3 cameraForward;
+    float paddingCameraForward;
     float3 lightDir;
     float padding2;
     float3 lightColor;

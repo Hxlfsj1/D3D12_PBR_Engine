@@ -33,6 +33,7 @@ public:
         if (!BuildDeferredPipeline(dc)) return false;
         if (!BuildHBAOPipeline(dc)) return false;
         if (!BuildMotionVectorPipeline(dc)) return false;
+        if (!BuildScalarTemporalPipeline(dc)) return false;
         if (!BuildTAAPipeline(dc)) return false;
 
         return true;
@@ -179,6 +180,16 @@ public:
     ID3D12PipelineState* GetTAAPSO()
     {
         return psoTAA.Get();
+    }
+
+    ID3D12RootSignature* GetScalarTemporalRootSignature()
+    {
+        return scalarTemporalRootSignature.Get();
+    }
+
+    ID3D12PipelineState* GetScalarTemporalPSO()
+    {
+        return scalarTemporalPSO.Get();
     }
 
     ID3D12RootSignature* GetMotionVectorRootSignature()
@@ -914,6 +925,95 @@ private:
         return true;
     }
 
+    bool BuildScalarTemporalPipeline(RenderDevice* dc)
+    {
+        CD3DX12_ROOT_PARAMETER rootParameters[1];
+        rootParameters[0].InitAsConstantBufferView(0);
+
+        D3D12_STATIC_SAMPLER_DESC samplers[2];
+        samplers[0] = CD3DX12_STATIC_SAMPLER_DESC(
+            0,
+            D3D12_FILTER_MIN_MAG_MIP_POINT,
+            D3D12_TEXTURE_ADDRESS_MODE_CLAMP,
+            D3D12_TEXTURE_ADDRESS_MODE_CLAMP,
+            D3D12_TEXTURE_ADDRESS_MODE_CLAMP);
+        samplers[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+
+        samplers[1] = CD3DX12_STATIC_SAMPLER_DESC(
+            1,
+            D3D12_FILTER_MIN_MAG_MIP_LINEAR,
+            D3D12_TEXTURE_ADDRESS_MODE_CLAMP,
+            D3D12_TEXTURE_ADDRESS_MODE_CLAMP,
+            D3D12_TEXTURE_ADDRESS_MODE_CLAMP);
+        samplers[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+
+        CD3DX12_ROOT_SIGNATURE_DESC rootSigDesc(
+            1,
+            rootParameters,
+            2,
+            samplers,
+            D3D12_ROOT_SIGNATURE_FLAG_CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED);
+
+        ComPtr<ID3DBlob> serializedRootSig;
+        ComPtr<ID3DBlob> errorBlob;
+        HRESULT hr = D3D12SerializeRootSignature(
+            &rootSigDesc,
+            D3D_ROOT_SIGNATURE_VERSION_1,
+            &serializedRootSig,
+            &errorBlob);
+        if (FAILED(hr))
+        {
+            return false;
+        }
+
+        hr = dc->GetDevice()->CreateRootSignature(
+            0,
+            serializedRootSig->GetBufferPointer(),
+            serializedRootSig->GetBufferSize(),
+            IID_PPV_ARGS(&scalarTemporalRootSignature));
+        if (FAILED(hr))
+        {
+            return false;
+        }
+
+        auto vs = ShaderCompiler::CompileFromFile(
+            L"Shaders/Shaders_For_ScalarTemporal.hlsl",
+            L"VSMain",
+            L"vs_6_6");
+        auto ps = ShaderCompiler::CompileFromFile(
+            L"Shaders/Shaders_For_ScalarTemporal.hlsl",
+            L"PSMain",
+            L"ps_6_6");
+        if (!vs || !ps)
+        {
+            return false;
+        }
+
+        D3D12_GRAPHICS_PIPELINE_STATE_DESC psoDesc = {};
+        psoDesc.InputLayout = { nullptr, 0 };
+        psoDesc.pRootSignature = scalarTemporalRootSignature.Get();
+        psoDesc.VS = CD3DX12_SHADER_BYTECODE(
+            vs->GetBufferPointer(),
+            vs->GetBufferSize());
+        psoDesc.PS = CD3DX12_SHADER_BYTECODE(
+            ps->GetBufferPointer(),
+            ps->GetBufferSize());
+        psoDesc.RasterizerState = CD3DX12_RASTERIZER_DESC(D3D12_DEFAULT);
+        psoDesc.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
+        psoDesc.BlendState = CD3DX12_BLEND_DESC(D3D12_DEFAULT);
+        psoDesc.DepthStencilState.DepthEnable = FALSE;
+        psoDesc.DepthStencilState.StencilEnable = FALSE;
+        psoDesc.SampleMask = UINT_MAX;
+        psoDesc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+        psoDesc.NumRenderTargets = 1;
+        psoDesc.RTVFormats[0] = DXGI_FORMAT_R16_FLOAT;
+        psoDesc.SampleDesc.Count = 1;
+
+        return SUCCEEDED(dc->GetDevice()->CreateGraphicsPipelineState(
+            &psoDesc,
+            IID_PPV_ARGS(&scalarTemporalPSO)));
+    }
+
     bool BuildMotionVectorPipeline(RenderDevice* dc)
     {
         CD3DX12_ROOT_PARAMETER rootParameters[1];
@@ -1016,6 +1116,9 @@ private:
 
     ComPtr<ID3D12RootSignature> taaRootSignature;
     ComPtr<ID3D12PipelineState> psoTAA;
+
+    ComPtr<ID3D12RootSignature> scalarTemporalRootSignature;
+    ComPtr<ID3D12PipelineState> scalarTemporalPSO;
 
     ComPtr<ID3D12RootSignature> motionVectorRootSignature;
     ComPtr<ID3D12PipelineState> motionVectorPSO;

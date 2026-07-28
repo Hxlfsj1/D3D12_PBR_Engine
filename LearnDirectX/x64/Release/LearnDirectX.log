@@ -30,9 +30,9 @@ D:\项目\LearnDirectX\Passes\GBufferPass.h(138,47): warning C4267: “=”: 从
   (编译源文件“PBR_Render.cpp”)
   
   正在生成代码
-  5 of 7675 functions (<0.1%) were compiled, the rest were copied from previous compilation.
-    0 functions were new in current compilation
-    32 functions had inline decision re-evaluated but remain unchanged
+  21 of 7676 functions ( 0.3%) were compiled, the rest were copied from previous compilation.
+    1 functions were new in current compilation
+    105 functions had inline decision re-evaluated but remain unchanged
   已完成代码的生成
 PBR_Render.obj : warning LNK4020: “d:\项目\learndirectx\learndirectx\x64\release\vc145.pdb”中的类型记录已损坏；某些符号和类型可能无法从调试器中访问
   LearnDirectX.vcxproj -> D:\项目\LearnDirectX\x64\Release\LearnDirectX.exe

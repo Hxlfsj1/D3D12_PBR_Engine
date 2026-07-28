@@ -163,6 +163,7 @@
     <ClInclude Include="Graphics\PBR_Shader.h" />
     <ClInclude Include="Graphics\PipelineManager.h" />
     <ClInclude Include="Passes\PostProcessPass.h" />
+    <ClInclude Include="Passes\ScalarTemporalFilterPass.h" />
     <ClInclude Include="Graphics\RenderDevice.h" />
     <ClInclude Include="Passes\RenderStructs.h" />
     <ClInclude Include="Resources\ResourceManager.h" />
@@ -256,6 +257,9 @@
   </ItemGroup>
   <ItemGroup>
     <None Include="Shaders\Shaders_For_MotionVector.hlsl">
+      <FileType>Document</FileType>
+    </None>
+    <None Include="Shaders\Shaders_For_ScalarTemporal.hlsl">
       <FileType>Document</FileType>
     </None>
   </ItemGroup>

@@ -16,6 +16,8 @@ struct alignas(D3D12_CONSTANT_BUFFER_DATA_PLACEMENT_ALIGNMENT) PassConstants
 {
     DirectX::XMFLOAT3 camPos;
     float padding1;
+    DirectX::XMFLOAT3 cameraForward;
+    float paddingCameraForward;
     DirectX::XMFLOAT3 lightDir;
     float padding2;
     DirectX::XMFLOAT3 lightColor;
@@ -30,7 +32,7 @@ struct alignas(D3D12_CONSTANT_BUFFER_DATA_PLACEMENT_ALIGNMENT) PassConstants
     UINT iblBRDFIdx;
     UINT shadowMapIdx;
 
-    UINT padTo256[37];
+    UINT padTo256[33];
 };
 
 constexpr UINT64 kPassConstantsAlignedSize = AlignConstantBufferSize(sizeof(PassConstants));
