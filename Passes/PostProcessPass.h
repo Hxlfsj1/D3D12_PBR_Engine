@@ -17,7 +17,8 @@ public:
         int frameIndex,
         const D3D12_VIEWPORT& viewport,
         const D3D12_RECT& scissorRect,
-        UINT inputSrvIdx)
+        UINT inputSrvIdx,
+        bool visualizeScalar = false)
     {
         auto cmdList = deviceContext->GetCommandList();
 
@@ -36,7 +37,8 @@ public:
             viewport,
             scissorRect,
             deviceContext->GetRTVHandle(frameIndex),
-            inputSrvIdx);
+            inputSrvIdx,
+            visualizeScalar);
 
         CD3DX12_RESOURCE_BARRIER toRtv = CD3DX12_RESOURCE_BARRIER::Transition(
             resourceManager->GetPostProcessRT(),
@@ -54,7 +56,8 @@ public:
         const D3D12_VIEWPORT& viewport,
         const D3D12_RECT& scissorRect,
         D3D12_CPU_DESCRIPTOR_HANDLE outputRtv,
-        UINT inputSrvIdx)
+        UINT inputSrvIdx,
+        bool visualizeScalar)
     {
         auto cmdList = deviceContext->GetCommandList();
 
@@ -72,8 +75,12 @@ public:
         ID3D12DescriptorHeap* heaps[] = { resourceManager->GetMainDescriptorHeap() };
         cmdList->SetDescriptorHeaps(1, heaps);
 
-        UINT sceneTexIdx = inputSrvIdx;
-        cmdList->SetGraphicsRoot32BitConstants(0, 1, &sceneTexIdx, 0);
+        UINT postProcessConstants[2] =
+        {
+            inputSrvIdx,
+            visualizeScalar ? 1u : 0u
+        };
+        cmdList->SetGraphicsRoot32BitConstants(0, 2, postProcessConstants, 0);
 
         cmdList->DrawInstanced(3, 1, 0, 0);
     }
@@ -84,7 +91,8 @@ public:
         PipelineManager* pipelineManager,
         int frameIndex,
         const D3D12_VIEWPORT& viewport,
-        const D3D12_RECT& scissorRect)
+        const D3D12_RECT& scissorRect,
+        bool visualizeScalar = false)
     {
         RDGBuilder graph(deviceContext, "PostProcessGraph");
         graph.SetTransientResourceAllocator(
@@ -133,7 +141,8 @@ public:
                 frameIndex,
                 viewport,
                 scissorRect,
-                resourceManager->GetPostProcessSrvIdx());
+                resourceManager->GetPostProcessSrvIdx(),
+                visualizeScalar);
             return;
         }
 
@@ -155,7 +164,8 @@ public:
                     viewport,
                     scissorRect,
                     backBufferRtv.cpuHandle,
-                    inputSrv.descriptorIndex);
+                    inputSrv.descriptorIndex,
+                    visualizeScalar);
             });
 
         graph.Execute(deviceContext->GetCommandList());
@@ -170,6 +180,7 @@ public:
         const D3D12_VIEWPORT& viewport,
         const D3D12_RECT& scissorRect,
         RDGTextureHandle inputTexture = {},
+        bool visualizeScalar = false,
         D3D12_RESOURCE_STATES backBufferInitialState = D3D12_RESOURCE_STATE_RENDER_TARGET,
         D3D12_RESOURCE_STATES backBufferFinalState = D3D12_RESOURCE_STATE_RENDER_TARGET)
     {
@@ -213,7 +224,8 @@ public:
                     viewport,
                     scissorRect,
                     backBufferRtv.cpuHandle,
-                    inputSrv.descriptorIndex);
+                    inputSrv.descriptorIndex,
+                    visualizeScalar);
             });
     }
 
@@ -225,7 +237,8 @@ public:
         int frameIndex,
         const D3D12_VIEWPORT& viewport,
         const D3D12_RECT& scissorRect,
-        RDGTextureHandle inputTexture = {})
+        RDGTextureHandle inputTexture = {},
+        bool visualizeScalar = false)
     {
         return AddToGraph(
             graph,
@@ -236,6 +249,7 @@ public:
             viewport,
             scissorRect,
             inputTexture,
+            visualizeScalar,
             D3D12_RESOURCE_STATE_PRESENT,
             D3D12_RESOURCE_STATE_PRESENT);
     }

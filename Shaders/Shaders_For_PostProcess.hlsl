@@ -1,6 +1,7 @@
 cbuffer PPFlags : register(b0)
 {
     uint sceneTexIdx;
+    uint visualizeScalar;
 };
 SamplerState s0 : register(s0);
 
@@ -25,6 +26,13 @@ VS_OUTPUT VSMain(uint vertexID : SV_VertexID)
 float4 PSMain(VS_OUTPUT input) : SV_TARGET
 {
     Texture2D sceneTexture = ResourceDescriptorHeap[sceneTexIdx];
+
+    if (visualizeScalar != 0)
+    {
+        float scalarValue = saturate(sceneTexture.Sample(s0, input.uv).r);
+        return float4(scalarValue.xxx, 1.0);
+    }
+
     // This HDR doesn't refer to the HDR skybox, but rather the post-processing input awaiting tone mapping
     float4 hdrColor = sceneTexture.Sample(s0, input.uv);
     float3 color = hdrColor.rgb;
@@ -38,7 +46,7 @@ float4 PSMain(VS_OUTPUT input) : SV_TARGET
     float3 maxColor = max(color, max(cTop, max(cLeft, max(cRight, cBottom))));
 
     float3 w = sqrt(saturate(minColor / max(maxColor, 1e-4f)));
-    
+
     float sharpenStrength = -0.15f;
     float3 wFinal = w * sharpenStrength;
 
@@ -52,6 +60,6 @@ float4 PSMain(VS_OUTPUT input) : SV_TARGET
     const float e = 0.14;
     color = saturate((color * (a * color + b)) / (color * (c * color + d) + e));
     color = pow(color, 1.0 / 2.2);
-    
+
     return float4(color, hdrColor.a);
 }

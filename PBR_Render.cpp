@@ -71,7 +71,9 @@ D3D12App::D3D12App(HINSTANCE hInstance) : camera(XMFLOAT3(0.0f, 3.0f, -10.0f))
 
     // Construction for TAA
     m_taaJitterFrameIndex = 0;
+    m_hbaoTemporalFrameIndex = 0;
     m_taaHistoryValid = false;
+    m_hbaoHistoryValid = false;
 
     DirectX::XMStoreFloat4x4(&m_currUnjitteredViewProjGpu, DirectX::XMMatrixIdentity());
     DirectX::XMStoreFloat4x4(&m_prevUnjitteredViewProjGpu, DirectX::XMMatrixIdentity());
@@ -371,7 +373,7 @@ void D3D12App::Update()
     XMVECTOR camPosVec = XMLoadFloat3(&camera.Position);
     XMMATRIX lightView = XMLoadFloat4x4(&shadowFrame.lightView);
     for (size_t i = 0; i < instances.size(); ++i)
-    {   
+    {
         // Use the existing Intersects library function to determine if an object should be added to the render queue or the shadow queue
         if (instances[i].pModel == nullptr || instances[i].pModel->meshes.empty())
         {
@@ -573,6 +575,7 @@ void D3D12App::Render()
 
     size_t transparentIdx = 0;
     bool taaHandledByDeferredGraph = false;
+    bool hbaoTemporalHandledByDeferredGraph = false;
     bool postProcessHandledByDeferredGraph = false;
 
     if (!m_settingsManager.pipeline.useDeferred)
@@ -657,6 +660,19 @@ void D3D12App::Render()
             useZPrepass,
             zPrepassOutput.depth);
 
+        MotionVectorPass::Output motionOutput = MotionVectorPass::AddToGraph(
+            deferredGraph,
+            &m_deviceContext,
+            &m_resourceManager,
+            &m_pipelineManager,
+            m_currJitteredInvViewProjGpu,
+            m_prevUnjitteredViewProjGpu,
+            Width,
+            Height,
+            frameIndex,
+            { gbufferOutput.depth });
+        deferredGraph.AddPassDependencies(motionOutput.pass, { gbufferOutput.pass });
+
         HBAOPass::Output hbaoOutput = HBAOPass::AddToGraph(
             deferredGraph,
             &m_deviceContext,
@@ -668,107 +684,186 @@ void D3D12App::Render()
             Width,
             Height,
             frameIndex,
+            m_hbaoTemporalFrameIndex++,
             { gbufferOutput.depth, gbufferOutput.normal });
         deferredGraph.AddPassDependencies(hbaoOutput.rawPass, { gbufferOutput.pass });
         deferredGraph.AddPassDependencies(hbaoOutput.blurPass, { hbaoOutput.rawPass });
 
-        DeferredLightingPass::Input deferredInput = {};
-        deferredInput.gbufferAlbedo = gbufferOutput.albedo;
-        deferredInput.gbufferNormal = gbufferOutput.normal;
-        deferredInput.gbufferORM = gbufferOutput.orm;
-        deferredInput.gbufferEmissive = gbufferOutput.emissive;
-        deferredInput.depth = gbufferOutput.depth;
-        deferredInput.hbaoBlurred = hbaoOutput.blurredTexture;
-        deferredInput.shadowMap = shadowOutput.shadowMapSrv;
-
-        DeferredLightingPass::Output deferredOutput = DeferredLightingPass::AddToGraph(
-            deferredGraph,
-            &m_deviceContext,
-            &m_resourceManager,
-            &m_pipelineManager,
-            m_currJitteredInvViewProjGpu,
-            Width,
-            Height,
-            frameIndex,
-            deferredInput);
-        deferredGraph.AddPassDependencies(deferredOutput.pass, { shadowOutput.pass, hbaoOutput.blurPass });
-        RDGPassHandle sceneColorProducer = deferredOutput.pass;
-
-        RDGPassHandle skyboxPass = SkyboxPass::AddToGraph(
-            deferredGraph,
-            &m_deviceContext,
-            &m_resourceManager,
-            &m_pipelineManager,
-            camera,
-            viewport,
-            scissorRect,
-            Width,
-            Height,
-            { deferredOutput.sceneColor, gbufferOutput.depth });
-        deferredGraph.AddPassDependencies(skyboxPass, { sceneColorProducer });
-        sceneColorProducer = skyboxPass;
-
-        RDGPassHandle transparentPass = PBRPass::AddTransparentToGraph(
-            deferredGraph,
-            &m_deviceContext,
-            &m_resourceManager,
-            &m_pipelineManager,
-            frameIndex,
-            viewport,
-            scissorRect,
-            g_visibleInstances,
-            transparentStartIndex,
-            { deferredOutput.sceneColor, gbufferOutput.depth, shadowOutput.shadowMapSrv });
-        sceneColorProducer = transparentPass;
-
-        if (m_useTAA)
+        RDGTextureHandle hbaoForLighting = hbaoOutput.blurredTexture;
+        RDGPassHandle hbaoProducer = hbaoOutput.blurPass;
         {
-            MotionVectorPass::Output motionOutput = MotionVectorPass::AddToGraph(
-                deferredGraph,
-                &m_deviceContext,
-                &m_resourceManager,
-                &m_pipelineManager,
-                m_currJitteredInvViewProjGpu,
-                m_prevUnjitteredViewProjGpu,
-                Width,
-                Height,
-                frameIndex,
-                { gbufferOutput.depth });
+            const int hbaoHistoryIndex = m_resourceManager.GetHBAOCurrentHistoryIdx();
+            RDGTextureHandle currentHBAOHistory = deferredGraph.RegisterExternalTexture(
+                m_resourceManager.GetHBAOHistoryRT(hbaoHistoryIndex),
+                D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+                D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+                "HBAOCurrentHistory");
+            RDGTextureHandle previousHBAOHistory = deferredGraph.RegisterExternalTexture(
+                m_resourceManager.GetHBAOHistoryRT(1 - hbaoHistoryIndex),
+                D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+                D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+                "HBAOPreviousHistory");
+            RDGTextureHandle currentHBAODepthHistory = deferredGraph.RegisterExternalTexture(
+                m_resourceManager.GetHBAODepthHistoryRT(hbaoHistoryIndex),
+                D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+                D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+                "HBAOCurrentDepthHistory");
+            RDGTextureHandle previousHBAODepthHistory = deferredGraph.RegisterExternalTexture(
+                m_resourceManager.GetHBAODepthHistoryRT(1 - hbaoHistoryIndex),
+                D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+                D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+                "HBAOPreviousDepthHistory");
+            RDGTextureHandle currentHBAONormalHistory = deferredGraph.RegisterExternalTexture(
+                m_resourceManager.GetHBAONormalHistoryRT(hbaoHistoryIndex),
+                D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+                D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+                "HBAOCurrentNormalHistory");
+            RDGTextureHandle previousHBAONormalHistory = deferredGraph.RegisterExternalTexture(
+                m_resourceManager.GetHBAONormalHistoryRT(1 - hbaoHistoryIndex),
+                D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+                D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+                "HBAOPreviousNormalHistory");
 
-            TAAPass::Output taaOutput = TAAPass::AddToGraph(
-                deferredGraph,
-                &m_deviceContext,
-                &m_resourceManager,
-                &m_pipelineManager,
-                m_currJitteredInvViewProjGpu,
-                m_prevUnjitteredViewProjGpu,
-                m_currJitterNdcX,
-                m_currJitterNdcY,
-                frameIndex,
-                Width,
-                Height,
-                m_taaHistoryValid,
-                { deferredOutput.sceneColor, gbufferOutput.depth, motionOutput.motionTexture });
-            deferredGraph.AddPassDependencies(taaOutput.pass, { sceneColorProducer });
-            sceneColorProducer = taaOutput.pass;
+            ScalarTemporalFilterPass::Input hbaoTemporalInput = {};
+            hbaoTemporalInput.currentSignal = hbaoOutput.blurredTexture;
+            hbaoTemporalInput.previousHistory = previousHBAOHistory;
+            hbaoTemporalInput.historyOutput = currentHBAOHistory;
+            hbaoTemporalInput.depth = gbufferOutput.depth;
+            hbaoTemporalInput.motion = motionOutput.motionTexture;
+            hbaoTemporalInput.normal = gbufferOutput.normal;
+            hbaoTemporalInput.previousDepth = previousHBAODepthHistory;
+            hbaoTemporalInput.previousNormal = previousHBAONormalHistory;
 
-            RDGPassHandle postProcessPass = PostProcessPass::AddFinalToGraph(
-                deferredGraph,
-                &m_deviceContext,
-                &m_resourceManager,
-                &m_pipelineManager,
-                frameIndex,
-                viewport,
-                scissorRect,
-                taaOutput.historyTexture);
-            deferredGraph.AddPassDependencies(postProcessPass, { sceneColorProducer });
+            ScalarTemporalFilterPass::Output hbaoTemporalOutput =
+                ScalarTemporalFilterPass::AddToGraph(
+                    deferredGraph,
+                    &m_deviceContext,
+                    &m_resourceManager,
+                    &m_pipelineManager,
+                    m_currJitteredInvViewProjGpu,
+                    m_prevUnjitteredViewProjGpu,
+                    frameIndex,
+                    Width,
+                    Height,
+                    m_hbaoHistoryValid,
+                    ScalarTemporalFilterPass::GetAmbientOcclusionSettings(deltaTime),
+                    hbaoTemporalInput);
 
-            taaHandledByDeferredGraph = true;
-            postProcessHandledByDeferredGraph = true;
+            if (hbaoTemporalOutput.historyTexture.IsValid() &&
+                hbaoTemporalOutput.pass.IsValid())
+            {
+                deferredGraph.AddPassDependencies(
+                    hbaoTemporalOutput.pass,
+                    { hbaoOutput.blurPass, motionOutput.pass });
+
+                deferredGraph.MarkTextureAsOutput(currentHBAODepthHistory);
+                deferredGraph.MarkTextureAsOutput(currentHBAONormalHistory);
+
+                RDGPassParameters geometryHistoryCopyParameters;
+                geometryHistoryCopyParameters.ReadCopySrc(gbufferOutput.depth);
+                geometryHistoryCopyParameters.ReadCopySrc(gbufferOutput.normal);
+                geometryHistoryCopyParameters.WriteCopyDst(currentHBAODepthHistory);
+                geometryHistoryCopyParameters.WriteCopyDst(currentHBAONormalHistory);
+
+                ID3D12Resource* sceneDepthResource =
+                    deferredGraph.GetTextureResource(gbufferOutput.depth);
+                ID3D12Resource* sceneNormalResource =
+                    deferredGraph.GetTextureResource(gbufferOutput.normal);
+                ID3D12Resource* depthHistoryResource =
+                    deferredGraph.GetTextureResource(currentHBAODepthHistory);
+                ID3D12Resource* normalHistoryResource =
+                    deferredGraph.GetTextureResource(currentHBAONormalHistory);
+
+                RDGPassHandle geometryHistoryCopyPass = deferredGraph.AddPass(
+                    "HBAOGeometryHistoryCopy",
+                    ERDGPassFlags::Copy,
+                    geometryHistoryCopyParameters,
+                    [=](ID3D12GraphicsCommandList* cmdList)
+                    {
+                        D3D12_TEXTURE_COPY_LOCATION sourceDepth = {};
+                        sourceDepth.pResource = sceneDepthResource;
+                        sourceDepth.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+                        sourceDepth.SubresourceIndex = 0;
+
+                        D3D12_TEXTURE_COPY_LOCATION destinationDepth = {};
+                        destinationDepth.pResource = depthHistoryResource;
+                        destinationDepth.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+                        destinationDepth.SubresourceIndex = 0;
+
+                        cmdList->CopyTextureRegion(
+                            &destinationDepth,
+                            0,
+                            0,
+                            0,
+                            &sourceDepth,
+                            nullptr);
+
+                        D3D12_TEXTURE_COPY_LOCATION sourceNormal = {};
+                        sourceNormal.pResource = sceneNormalResource;
+                        sourceNormal.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+                        sourceNormal.SubresourceIndex = 0;
+
+                        D3D12_TEXTURE_COPY_LOCATION destinationNormal = {};
+                        destinationNormal.pResource = normalHistoryResource;
+                        destinationNormal.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+                        destinationNormal.SubresourceIndex = 0;
+
+                        cmdList->CopyTextureRegion(
+                            &destinationNormal,
+                            0,
+                            0,
+                            0,
+                            &sourceNormal,
+                            nullptr);
+                    });
+                deferredGraph.AddPassDependencies(
+                    geometryHistoryCopyPass,
+                    { hbaoTemporalOutput.pass });
+
+                hbaoForLighting = hbaoTemporalOutput.historyTexture;
+                hbaoProducer = hbaoTemporalOutput.pass;
+                hbaoTemporalHandledByDeferredGraph = true;
+            }
         }
-        else
+
         {
-            RDGPassHandle postProcessPass = PostProcessPass::AddFinalToGraph(
+            DeferredLightingPass::Input deferredInput = {};
+            deferredInput.gbufferAlbedo = gbufferOutput.albedo;
+            deferredInput.gbufferNormal = gbufferOutput.normal;
+            deferredInput.gbufferORM = gbufferOutput.orm;
+            deferredInput.gbufferEmissive = gbufferOutput.emissive;
+            deferredInput.depth = gbufferOutput.depth;
+            deferredInput.hbaoBlurred = hbaoForLighting;
+            deferredInput.shadowMap = shadowOutput.shadowMapSrv;
+
+            DeferredLightingPass::Output deferredOutput = DeferredLightingPass::AddToGraph(
+                deferredGraph,
+                &m_deviceContext,
+                &m_resourceManager,
+                &m_pipelineManager,
+                m_currJitteredInvViewProjGpu,
+                Width,
+                Height,
+                frameIndex,
+                deferredInput);
+            deferredGraph.AddPassDependencies(deferredOutput.pass, { shadowOutput.pass, hbaoProducer });
+            RDGPassHandle sceneColorProducer = deferredOutput.pass;
+
+            RDGPassHandle skyboxPass = SkyboxPass::AddToGraph(
+                deferredGraph,
+                &m_deviceContext,
+                &m_resourceManager,
+                &m_pipelineManager,
+                camera,
+                viewport,
+                scissorRect,
+                Width,
+                Height,
+                { deferredOutput.sceneColor, gbufferOutput.depth });
+            deferredGraph.AddPassDependencies(skyboxPass, { sceneColorProducer });
+            sceneColorProducer = skyboxPass;
+
+            RDGPassHandle transparentPass = PBRPass::AddTransparentToGraph(
                 deferredGraph,
                 &m_deviceContext,
                 &m_resourceManager,
@@ -776,14 +871,69 @@ void D3D12App::Render()
                 frameIndex,
                 viewport,
                 scissorRect,
-                deferredOutput.sceneColor);
-            deferredGraph.AddPassDependencies(postProcessPass, { sceneColorProducer });
+                g_visibleInstances,
+                transparentStartIndex,
+                { deferredOutput.sceneColor, gbufferOutput.depth, shadowOutput.shadowMapSrv });
+            sceneColorProducer = transparentPass;
 
-            postProcessHandledByDeferredGraph = true;
+            if (m_useTAA)
+            {
+                TAAPass::Output taaOutput = TAAPass::AddToGraph(
+                    deferredGraph,
+                    &m_deviceContext,
+                    &m_resourceManager,
+                    &m_pipelineManager,
+                    m_currJitteredInvViewProjGpu,
+                    m_prevUnjitteredViewProjGpu,
+                    m_currJitterNdcX,
+                    m_currJitterNdcY,
+                    frameIndex,
+                    Width,
+                    Height,
+                    m_taaHistoryValid,
+                    { deferredOutput.sceneColor, gbufferOutput.depth, motionOutput.motionTexture });
+                deferredGraph.AddPassDependencies(taaOutput.pass, { sceneColorProducer });
+                sceneColorProducer = taaOutput.pass;
+
+                RDGPassHandle postProcessPass = PostProcessPass::AddFinalToGraph(
+                    deferredGraph,
+                    &m_deviceContext,
+                    &m_resourceManager,
+                    &m_pipelineManager,
+                    frameIndex,
+                    viewport,
+                    scissorRect,
+                    taaOutput.historyTexture);
+                deferredGraph.AddPassDependencies(postProcessPass, { sceneColorProducer });
+
+                taaHandledByDeferredGraph = true;
+                postProcessHandledByDeferredGraph = true;
+            }
+            else
+            {
+                RDGPassHandle postProcessPass = PostProcessPass::AddFinalToGraph(
+                    deferredGraph,
+                    &m_deviceContext,
+                    &m_resourceManager,
+                    &m_pipelineManager,
+                    frameIndex,
+                    viewport,
+                    scissorRect,
+                    deferredOutput.sceneColor);
+                deferredGraph.AddPassDependencies(postProcessPass, { sceneColorProducer });
+
+                postProcessHandledByDeferredGraph = true;
+            }
         }
 
         // Execute the entire graph after all passes have been added
         deferredGraph.Execute(m_deviceContext.GetCommandList());
+
+        if (hbaoTemporalHandledByDeferredGraph)
+        {
+            m_resourceManager.FlipHBAOHistoryIndex();
+            m_hbaoHistoryValid = true;
+        }
 
         if (taaHandledByDeferredGraph)
         {

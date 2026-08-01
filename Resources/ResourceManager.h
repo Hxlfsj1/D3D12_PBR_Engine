@@ -539,6 +539,60 @@ public:
             dc->GetDevice()->CreateShaderResourceView(m_taaHistoryRT[i].Get(), nullptr, hSrv);
         }
 
+        D3D12_RESOURCE_DESC hbaoHistoryDesc = CD3DX12_RESOURCE_DESC::Tex2D(
+            DXGI_FORMAT_R16_FLOAT, (UINT64)width, (UINT)height,
+            1, 1, 1, 0, D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET);
+
+        D3D12_CLEAR_VALUE hbaoHistoryClearValue = {};
+        hbaoHistoryClearValue.Format = DXGI_FORMAT_R16_FLOAT;
+        hbaoHistoryClearValue.Color[0] = 1.0f;
+
+        for (int i = 0; i < 2; ++i)
+        {
+            if (FAILED(dc->GetDevice()->CreateCommittedResource(
+                &defHeap,
+                D3D12_HEAP_FLAG_NONE,
+                &hbaoHistoryDesc,
+                D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+                &hbaoHistoryClearValue,
+                IID_PPV_ARGS(&m_hbaoHistoryRT[i]))))
+            {
+                return false;
+            }
+        }
+
+        D3D12_RESOURCE_DESC hbaoDepthHistoryDesc = CD3DX12_RESOURCE_DESC::Tex2D(
+            DXGI_FORMAT_R32_TYPELESS, (UINT64)width, (UINT)height,
+            1, 1);
+        D3D12_RESOURCE_DESC hbaoNormalHistoryDesc = CD3DX12_RESOURCE_DESC::Tex2D(
+            DXGI_FORMAT_R16G16B16A16_FLOAT, (UINT64)width, (UINT)height,
+            1, 1);
+
+        for (int i = 0; i < 2; ++i)
+        {
+            if (FAILED(dc->GetDevice()->CreateCommittedResource(
+                &defHeap,
+                D3D12_HEAP_FLAG_NONE,
+                &hbaoDepthHistoryDesc,
+                D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+                nullptr,
+                IID_PPV_ARGS(&m_hbaoDepthHistoryRT[i]))))
+            {
+                return false;
+            }
+
+            if (FAILED(dc->GetDevice()->CreateCommittedResource(
+                &defHeap,
+                D3D12_HEAP_FLAG_NONE,
+                &hbaoNormalHistoryDesc,
+                D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+                nullptr,
+                IID_PPV_ARGS(&m_hbaoNormalHistoryRT[i]))))
+            {
+                return false;
+            }
+        }
+
         return true;
     }
 
@@ -592,6 +646,16 @@ public:
     void FlipTAAHistoryIndex()
     {
         m_taaCurrentHistoryIdx = 1 - m_taaCurrentHistoryIdx;
+    }
+
+    int GetHBAOCurrentHistoryIdx()
+    {
+        return m_hbaoCurrentHistoryIdx;
+    }
+
+    void FlipHBAOHistoryIndex()
+    {
+        m_hbaoCurrentHistoryIdx = 1 - m_hbaoCurrentHistoryIdx;
     }
 
     D3D12_GPU_VIRTUAL_ADDRESS GetSHBufferGPUAddress()
@@ -892,6 +956,21 @@ public:
         return CD3DX12_CPU_DESCRIPTOR_HANDLE(m_taaRtvHeap->GetCPUDescriptorHandleForHeapStart(), idx, m_rtvDescriptorSize);
     }
 
+    ID3D12Resource* GetHBAOHistoryRT(int idx)
+    {
+        return m_hbaoHistoryRT[idx].Get();
+    }
+
+    ID3D12Resource* GetHBAODepthHistoryRT(int idx)
+    {
+        return m_hbaoDepthHistoryRT[idx].Get();
+    }
+
+    ID3D12Resource* GetHBAONormalHistoryRT(int idx)
+    {
+        return m_hbaoNormalHistoryRT[idx].Get();
+    }
+
 private:
     struct RDGTransientResourcePoolEntry
     {
@@ -1026,6 +1105,11 @@ private:
     Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> m_taaRtvHeap;
     UINT m_taaHistorySrvIdx[2];
     int m_taaCurrentHistoryIdx = 0;
+
+    Microsoft::WRL::ComPtr<ID3D12Resource> m_hbaoHistoryRT[2];
+    Microsoft::WRL::ComPtr<ID3D12Resource> m_hbaoDepthHistoryRT[2];
+    Microsoft::WRL::ComPtr<ID3D12Resource> m_hbaoNormalHistoryRT[2];
+    int m_hbaoCurrentHistoryIdx = 0;
 };
 
 #endif

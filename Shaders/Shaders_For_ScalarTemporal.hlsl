@@ -1,31 +1,38 @@
+/*
+Key differences between the simplified TAA and the original TAA:
+
+1. No Gaussian reconstruction is applied to reconstruct the current-frame signal from neighboring samples.
+2. No color clamping is performed to constrain the history color to the current neighborhood.
+3. No Catmull-Rom reconstruction is used for high-quality subpixel sampling of the history buffer.
+4. No sharpening pass is applied to compensate for the softness introduced by temporal accumulation.
+*/
+
 cbuffer ScalarTemporalConstants : register(b0)
 {
     float4x4 currJitteredInvViewProj;
     float4x4 prevUnjitteredViewProj;
 
     float historyWeight;
-    float varianceGamma;
-    float clampEpsilon;
     float depthThreshold;
-
     float normalThreshold;
     float motionSensitivity;
+
     float signalDifferenceSensitivity;
     float backgroundValue;
-
     float2 resolution;
+
     uint historyValid;
     uint useGeometryRejection;
-
     uint currentSignalTextureIdx;
     uint previousHistoryTextureIdx;
+
     uint depthTextureIdx;
     uint motionTextureIdx;
-
     uint normalTextureIdx;
     uint previousDepthTextureIdx;
+
     uint previousNormalTextureIdx;
-    uint padding;
+    uint3 padding;
 };
 
 SamplerState sPoint : register(s0);
@@ -46,15 +53,6 @@ struct ClosestDepthSample
 {
     float depth;
     float2 uv;
-};
-
-struct CurrentNeighborhood
-{
-    float center;
-    float minimum;
-    float maximum;
-    float mean;
-    float sigma;
 };
 
 struct Reprojection
@@ -150,73 +148,6 @@ Reprojection ReprojectClosestDepth(ClosestDepthSample closestDepth, float2 curre
     return result;
 }
 
-CurrentNeighborhood AnalyzeCurrentNeighborhood(
-    Texture2D currentSignal,
-    float2 uv)
-{
-    uint width;
-    uint height;
-    currentSignal.GetDimensions(width, height);
-
-    int2 centerPixel = ClampPixel(int2(uv * float2(width, height)), width, height);
-    float sum = 0.0f;
-    float squareSum = 0.0f;
-    float minimum = 1.0f;
-    float maximum = 0.0f;
-
-    [unroll]
-    for (int y = -1; y <= 1; ++y)
-    {
-        [unroll]
-        for (int x = -1; x <= 1; ++x)
-        {
-            int2 samplePixel = ClampPixel(centerPixel + int2(x, y), width, height);
-            float sampleValue = saturate(currentSignal.Load(int3(samplePixel, 0)).r);
-            sum += sampleValue;
-            squareSum += sampleValue * sampleValue;
-            minimum = min(minimum, sampleValue);
-            maximum = max(maximum, sampleValue);
-        }
-    }
-
-    CurrentNeighborhood result;
-    result.center = saturate(currentSignal.Load(int3(centerPixel, 0)).r);
-    result.minimum = minimum;
-    result.maximum = maximum;
-    result.mean = sum / 9.0f;
-    result.sigma = sqrt(max(squareSum / 9.0f - result.mean * result.mean, 0.0f));
-    return result;
-}
-
-float SampleClampedHistoryBilinear(
-    Texture2D previousHistory,
-    float2 uv,
-    float historyMinimum,
-    float historyMaximum)
-{
-    uint width;
-    uint height;
-    previousHistory.GetDimensions(width, height);
-
-    float2 samplePosition = uv * float2(width, height) - 0.5f;
-    int2 basePixel = int2(floor(samplePosition));
-    float2 fraction = samplePosition - floor(samplePosition);
-
-    int2 p00 = ClampPixel(basePixel, width, height);
-    int2 p10 = ClampPixel(basePixel + int2(1, 0), width, height);
-    int2 p01 = ClampPixel(basePixel + int2(0, 1), width, height);
-    int2 p11 = ClampPixel(basePixel + int2(1, 1), width, height);
-
-    float h00 = clamp(previousHistory.Load(int3(p00, 0)).r, historyMinimum, historyMaximum);
-    float h10 = clamp(previousHistory.Load(int3(p10, 0)).r, historyMinimum, historyMaximum);
-    float h01 = clamp(previousHistory.Load(int3(p01, 0)).r, historyMinimum, historyMaximum);
-    float h11 = clamp(previousHistory.Load(int3(p11, 0)).r, historyMinimum, historyMaximum);
-
-    float row0 = lerp(h00, h10, fraction.x);
-    float row1 = lerp(h01, h11, fraction.x);
-    return lerp(row0, row1, fraction.y);
-}
-
 float ComputeGeometryConfidence(
     Texture2D currentNormal,
     Texture2D previousDepth,
@@ -257,24 +188,25 @@ float PSMain(VS_OUTPUT input) : SV_TARGET
     Texture2D previousHistory = ResourceDescriptorHeap[previousHistoryTextureIdx];
     Texture2D depthTexture = ResourceDescriptorHeap[depthTextureIdx];
 
-    ClosestDepthSample closestDepth = FindClosestDepthSample(depthTexture, input.uv);
-    if (closestDepth.depth >= BACKGROUND_DEPTH)
+    float centerDepth = depthTexture.SampleLevel(sPoint, input.uv, 0).r;
+    if (centerDepth >= BACKGROUND_DEPTH)
     {
         return saturate(backgroundValue);
     }
 
-    CurrentNeighborhood neighborhood =
-        AnalyzeCurrentNeighborhood(currentSignal, input.uv);
+    ClosestDepthSample closestDepth = FindClosestDepthSample(depthTexture, input.uv);
+    float currentValue =
+        saturate(currentSignal.SampleLevel(sPoint, input.uv, 0).r);
 
     if (historyValid == 0)
     {
-        return neighborhood.center;
+        return currentValue;
     }
 
     Reprojection reprojection = ReprojectClosestDepth(closestDepth, input.uv);
     if (!reprojection.valid)
     {
-        return neighborhood.center;
+        return currentValue;
     }
 
     float2 motionUV = input.uv - reprojection.historyUV;
@@ -287,25 +219,11 @@ float PSMain(VS_OUTPUT input) : SV_TARGET
 
     if (!IsUVInsideViewport(reprojection.historyUV))
     {
-        return neighborhood.center;
+        return currentValue;
     }
 
-    float varianceMinimum =
-        neighborhood.mean - varianceGamma * neighborhood.sigma;
-    float varianceMaximum =
-        neighborhood.mean + varianceGamma * neighborhood.sigma;
-    float historyMinimum = saturate(max(
-        neighborhood.minimum - clampEpsilon,
-        varianceMinimum - clampEpsilon));
-    float historyMaximum = saturate(min(
-        neighborhood.maximum + clampEpsilon,
-        varianceMaximum + clampEpsilon));
-
-    float history = SampleClampedHistoryBilinear(
-        previousHistory,
-        reprojection.historyUV,
-        historyMinimum,
-        historyMaximum);
+    float history = saturate(
+        previousHistory.SampleLevel(sLinear, reprojection.historyUV, 0).r);
 
     float geometryConfidence = 1.0f;
     if (useGeometryRejection != 0)
@@ -326,7 +244,7 @@ float PSMain(VS_OUTPUT input) : SV_TARGET
         rcp(1.0f + motionPixels * max(motionSensitivity, 0.0f));
     float signalConfidence =
         1.0f - saturate(
-            abs(history - neighborhood.center) *
+            abs(history - currentValue) *
             max(signalDifferenceSensitivity, 0.0f));
 
     float finalHistoryWeight = saturate(historyWeight) *
@@ -335,7 +253,7 @@ float PSMain(VS_OUTPUT input) : SV_TARGET
         signalConfidence;
 
     return saturate(lerp(
-        neighborhood.center,
+        currentValue,
         history,
         finalHistoryWeight));
 }

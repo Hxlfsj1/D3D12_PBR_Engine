@@ -638,7 +638,7 @@ private:
     bool BuildPostProcessPipeline(RenderDevice* dc)
     {
         CD3DX12_ROOT_PARAMETER rootParam;
-        rootParam.InitAsConstants(1, 0, 0, D3D12_SHADER_VISIBILITY_ALL);
+        rootParam.InitAsConstants(2, 0, 0, D3D12_SHADER_VISIBILITY_ALL);
 
         D3D12_STATIC_SAMPLER_DESC sampler = CD3DX12_STATIC_SAMPLER_DESC(0, D3D12_FILTER_MIN_MAG_MIP_LINEAR);
 

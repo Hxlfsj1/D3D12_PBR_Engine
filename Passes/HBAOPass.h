@@ -35,6 +35,7 @@ public:
         int width,
         int height,
         int frameIndex,
+        UINT temporalFrameIndex,
         D3D12_CPU_DESCRIPTOR_HANDLE hbaoRtv,
         UINT depthSrvIdx,
         UINT gbufferNormalSrvIdx)
@@ -69,6 +70,7 @@ public:
         hbaoCb.power = 2.0f;
         hbaoCb.resolutionX = (float)width;
         hbaoCb.resolutionY = (float)height;
+        hbaoCb.temporalFrameIndex = temporalFrameIndex;
 
         memcpy(cbvCpuAddress, &hbaoCb, sizeof(HBAOConstants));
 
@@ -131,6 +133,7 @@ public:
         int width,
         int height,
         int frameIndex,
+        UINT temporalFrameIndex,
         const Input& input)
     {
         if (!input.depth.IsValid() || !input.gbufferNormal.IsValid())
@@ -209,6 +212,7 @@ public:
                     width,
                     height,
                     frameIndex,
+                    temporalFrameIndex,
                     hbaoRawRtv.cpuHandle,
                     depthSrv.descriptorIndex,
                     gbufferNormalSrv.descriptorIndex);

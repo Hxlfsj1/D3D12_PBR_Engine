@@ -92,7 +92,9 @@ private:
     int m_frustumInstanceCount = 0;
     bool m_useTAA;
     UINT m_taaJitterFrameIndex;
+    UINT m_hbaoTemporalFrameIndex;
     bool m_taaHistoryValid = false;
+    bool m_hbaoHistoryValid = false;
 
     DirectX::XMFLOAT4X4 m_currViewGpu;
     DirectX::XMFLOAT4X4 m_currUnjitteredProjGpu;

@@ -85,7 +85,8 @@ struct alignas(D3D12_CONSTANT_BUFFER_DATA_PLACEMENT_ALIGNMENT) HBAOConstants
     float resolutionX;
 
     float resolutionY;
-    UINT padTo256[11];
+    UINT temporalFrameIndex;
+    UINT padTo256[10];
 };
 
 struct alignas(D3D12_CONSTANT_BUFFER_DATA_PLACEMENT_ALIGNMENT) TAAConstants

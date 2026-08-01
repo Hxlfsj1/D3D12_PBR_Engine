@@ -7,6 +7,9 @@
 #include "PipelineManager.h"
 #include "RDG.h"
 
+#include <algorithm>
+#include <cmath>
+
 class ScalarTemporalFilterPass
 {
 public:
@@ -21,8 +24,6 @@ public:
     {
         Signal signal = Signal::AmbientOcclusion;
         float historyWeight = 0.90f;
-        float varianceGamma = 1.50f;
-        float clampEpsilon = 0.02f;
         float depthThreshold = 0.0015f;
         float normalThreshold = 0.85f;
         float motionSensitivity = 0.02f;
@@ -53,9 +54,18 @@ public:
         RDGPassHandle pass;
     };
 
-    static Settings GetAmbientOcclusionSettings()
+    static Settings GetAmbientOcclusionSettings(float frameDeltaSeconds)
     {
-        return {};
+        Settings settings;
+        constexpr float historyHalfLifeSeconds = 0.20f;
+        const float safeDeltaSeconds =
+            std::clamp(frameDeltaSeconds, 1.0f / 10000.0f, 0.10f);
+
+        settings.historyWeight = std::exp2(
+            -safeDeltaSeconds / historyHalfLifeSeconds);
+        settings.motionSensitivity = 0.005f;
+        settings.signalDifferenceSensitivity = 0.25f;
+        return settings;
     }
 
     static Settings GetShadowVisibilitySettings()
@@ -63,8 +73,6 @@ public:
         Settings settings;
         settings.signal = Signal::ShadowVisibility;
         settings.historyWeight = 0.85f;
-        settings.varianceGamma = 1.25f;
-        settings.clampEpsilon = 0.04f;
         settings.signalDifferenceSensitivity = 2.0f;
         return settings;
     }
@@ -221,28 +229,26 @@ private:
         DirectX::XMFLOAT4X4 prevUnjitteredViewProj;
 
         float historyWeight;
-        float varianceGamma;
-        float clampEpsilon;
         float depthThreshold;
-
         float normalThreshold;
         float motionSensitivity;
+
         float signalDifferenceSensitivity;
         float backgroundValue;
-
         DirectX::XMFLOAT2 resolution;
+
         UINT historyValid;
         UINT useGeometryRejection;
-
         UINT currentSignalTextureIdx;
         UINT previousHistoryTextureIdx;
+
         UINT depthTextureIdx;
         UINT motionTextureIdx;
-
         UINT normalTextureIdx;
         UINT previousDepthTextureIdx;
+
         UINT previousNormalTextureIdx;
-        UINT padding;
+        UINT padding[3];
     };
 
     static_assert(sizeof(Constants) == D3D12_CONSTANT_BUFFER_DATA_PLACEMENT_ALIGNMENT);
@@ -301,8 +307,6 @@ private:
         constants.currJitteredInvViewProj = currJitteredInvViewProj;
         constants.prevUnjitteredViewProj = prevUnjitteredViewProj;
         constants.historyWeight = settings.historyWeight;
-        constants.varianceGamma = settings.varianceGamma;
-        constants.clampEpsilon = settings.clampEpsilon;
         constants.depthThreshold = settings.depthThreshold;
         constants.normalThreshold = settings.normalThreshold;
         constants.motionSensitivity = settings.motionSensitivity;
