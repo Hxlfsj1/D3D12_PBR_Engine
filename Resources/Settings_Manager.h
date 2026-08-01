@@ -58,14 +58,22 @@ struct WindowConfig
     int width = 2240;
     int height = 1400;
     bool fullScreen = false;
+    float tsrUpscaleFactor = 2.0f;
     std::string title = "PBR IBL Model Viewer";
+};
+
+enum class AntiAliasingMode
+{
+    None,
+    TAA,
+    TSR
 };
 
 struct PipelineConfig
 {
     bool useDeferred = true;
     bool useZPrepass = false;
-    bool useTAA = false;
+    AntiAliasingMode antiAliasing = AntiAliasingMode::None;
 };
 
 struct LightingConfig
@@ -73,7 +81,6 @@ struct LightingConfig
     DirectX::XMFLOAT3 lightDir = { -0.5f, -1.0f, 0.5f };
     DirectX::XMFLOAT3 lightColor = { 5.0f, 5.0f, 5.0f };
     float sunAngularRadiusDegrees = 0.266f;
-    float shadowRadius = 40.0f;
 };
 
 class SettingsManager
@@ -192,6 +199,7 @@ private:
             window.width = j.value("width", window.width);
             window.height = j.value("height", window.height);
             window.fullScreen = j.value("fullscreen", window.fullScreen);
+            window.tsrUpscaleFactor = j.value("tsr_upscale_factor", window.tsrUpscaleFactor);
             window.title = j.value("title", window.title);
         }
         else
@@ -218,7 +226,24 @@ private:
 
             pipeline.useDeferred = j.value("use_deferred", pipeline.useDeferred);
             pipeline.useZPrepass = j.value("use_z_prepass", pipeline.useZPrepass);
-            pipeline.useTAA = j.value("use_taa", pipeline.useTAA);
+
+            const std::string antiAliasing = j.value("anti_aliasing", std::string("None"));
+            if (antiAliasing == "TAA")
+            {
+                pipeline.antiAliasing = AntiAliasingMode::TAA;
+            }
+            else if (antiAliasing == "TSR")
+            {
+                pipeline.antiAliasing = AntiAliasingMode::TSR;
+            }
+            else
+            {
+                pipeline.antiAliasing = AntiAliasingMode::None;
+                if (antiAliasing != "None")
+                {
+                    OutputDebugStringA(("Warning: Unknown anti_aliasing value '" + antiAliasing + "'; using None.\n").c_str());
+                }
+            }
         }
         else
         {
@@ -253,7 +278,6 @@ private:
             lighting.sunAngularRadiusDegrees = j.value(
                 "sun_angular_radius_degrees",
                 lighting.sunAngularRadiusDegrees);
-            lighting.shadowRadius = j.value("shadow_radius", lighting.shadowRadius);
         }
         else
         {

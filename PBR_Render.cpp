@@ -27,6 +27,7 @@
 #include <WICTextureLoader.h>
 
 #include <array>
+#include <algorithm>
 #include <cmath>
 
 using namespace DirectX;
@@ -100,7 +101,29 @@ bool D3D12App::Initialize(int nShowCmd)
     Width = m_settingsManager.window.width;
     Height = m_settingsManager.window.height;
     FullScreen = m_settingsManager.window.fullScreen;
-    m_useTAA = m_settingsManager.pipeline.useTAA;
+    m_antiAliasingMode = m_settingsManager.pipeline.antiAliasing;
+
+    if (m_antiAliasingMode == AntiAliasingMode::TSR &&
+        !m_settingsManager.pipeline.useDeferred)
+    {
+        OutputDebugStringA("Warning: TSR currently requires the deferred pipeline; falling back to TAA.\n");
+        m_antiAliasingMode = AntiAliasingMode::TAA;
+    }
+
+    float tsrUpscaleFactor = m_settingsManager.window.tsrUpscaleFactor;
+    if (!std::isfinite(tsrUpscaleFactor))
+    {
+        tsrUpscaleFactor = 2.0f;
+    }
+    tsrUpscaleFactor = std::clamp(tsrUpscaleFactor, 1.0f, 4.0f);
+
+    SceneWidth = Width;
+    SceneHeight = Height;
+    if (m_antiAliasingMode == AntiAliasingMode::TSR)
+    {
+        SceneWidth = (std::max)(1, static_cast<int>(std::ceil(Width / tsrUpscaleFactor)));
+        SceneHeight = (std::max)(1, static_cast<int>(std::ceil(Height / tsrUpscaleFactor)));
+    }
 
     std::string titleStr = m_settingsManager.window.title;
     g_wWindowTitle = std::wstring(titleStr.begin(), titleStr.end());
@@ -209,7 +232,12 @@ bool D3D12App::InitD3D()
 
     if (!m_resourceManager.InitShadowResources(&m_deviceContext)) return false;
 
-    if (!m_resourceManager.InitPostProcess(&m_deviceContext, Width, Height)) return false;
+    if (!m_resourceManager.InitPostProcess(
+        &m_deviceContext,
+        SceneWidth,
+        SceneHeight,
+        Width,
+        Height)) return false;
 
     if (!m_resourceManager.InitDepthBufferSRV(&m_deviceContext)) return false;
 
@@ -217,6 +245,8 @@ bool D3D12App::InitD3D()
 
     viewport = CD3DX12_VIEWPORT(0.0f, 0.0f, (float)Width, (float)Height);
     scissorRect = CD3DX12_RECT(0, 0, Width, Height);
+    sceneViewport = CD3DX12_VIEWPORT(0.0f, 0.0f, (float)SceneWidth, (float)SceneHeight);
+    sceneScissorRect = CD3DX12_RECT(0, 0, SceneWidth, SceneHeight);
 
     return true;
 }
@@ -278,7 +308,7 @@ void D3D12App::Update()
     }
 
     // Calculate current jitter value
-    if (m_useTAA)
+    if (m_antiAliasingMode != AntiAliasingMode::None)
     {
         static const float haltonX[8] = { 0.5f, 0.25f, 0.75f, 0.125f, 0.625f, 0.375f, 0.875f, 0.0625f };
         static const float haltonY[8] = { 0.333333f, 0.666667f, 0.111111f, 0.444444f, 0.777778f, 0.222222f, 0.555556f, 0.888889f };
@@ -286,8 +316,8 @@ void D3D12App::Update()
 
         float currJitterPixelX = (haltonX[m_taaJitterFrameIndex % 8] - 0.5f) * jitterScale;
         float currJitterPixelY = (haltonY[m_taaJitterFrameIndex % 8] - 0.5f) * jitterScale;
-        m_currJitterNdcX = (currJitterPixelX * 2.0f) / Width;
-        m_currJitterNdcY = (currJitterPixelY * 2.0f) / Height;
+        m_currJitterNdcX = (currJitterPixelX * 2.0f) / SceneWidth;
+        m_currJitterNdcY = (currJitterPixelY * 2.0f) / SceneHeight;
         m_taaJitterFrameIndex++;
     }
     else
@@ -338,7 +368,6 @@ void D3D12App::Update()
     shadowInput.camera = &camera;
     shadowInput.lightDir = m_settingsManager.lighting.lightDir;
     shadowInput.aspectRatio = static_cast<float>(Width) / Height;
-    shadowInput.shadowRadius = m_settingsManager.lighting.shadowRadius;
 
     ShadowPass::FrameData shadowFrame = ShadowPass::PrepareFrame(shadowInput);
     passCb.lightDir = shadowFrame.lightDir;
@@ -424,8 +453,7 @@ void D3D12App::Update()
 
         for (UINT cascadeIdx = 0; cascadeIdx < NUM_CASCADES; ++cascadeIdx)
         {
-            if (shadowFrame.shadowArea.Intersects(lightSpaceBox) &&
-                shadowFrame.cascadeShadowAreas[cascadeIdx].Intersects(lightSpaceBox))
+            if (shadowFrame.cascadeShadowAreas[cascadeIdx].Intersects(lightSpaceBox))
             {
                 g_shadowVisibleInstancesByCascade[cascadeIdx].push_back(&instances[i]);
             }
@@ -521,7 +549,7 @@ void D3D12App::Update()
 void D3D12App::BeginFrame(bool backBufferHandledByFrameGraph)
 {
     m_resourceManager.ResetTransientSrvUavDescriptors(frameIndex);
-    m_resourceManager.BeginRDGFrame(frameIndex);
+    m_resourceManager.BeginRDGFrame(&m_deviceContext, frameIndex);
 
     // Reset the command sequence from the previous frame
     m_deviceContext.GetCommandAllocator(frameIndex)->Reset();
@@ -570,7 +598,9 @@ void D3D12App::EndFrame(bool backBufferAlreadyPresent)
 void D3D12App::Render()
 {
     const bool backBufferHandledByFrameGraph = m_settingsManager.pipeline.useDeferred;
-    const bool useZPrepass = m_settingsManager.pipeline.useZPrepass;
+    const bool useZPrepass =
+        m_settingsManager.pipeline.useZPrepass &&
+        m_antiAliasingMode != AntiAliasingMode::TSR;
     BeginFrame(backBufferHandledByFrameGraph);
 
     size_t transparentIdx = 0;
@@ -602,7 +632,7 @@ void D3D12App::Render()
                 D3D12_RESOURCE_STATES initialState,
                 D3D12_RESOURCE_STATES finalState,
                 const D3D12_CLEAR_VALUE* clearValue,
-                Microsoft::WRL::ComPtr<ID3D12Resource>* outResource)
+                RDGTransientResourceLease* outResource)
             {
                 return m_resourceManager.AllocateRDGTransientResource(
                     &m_deviceContext,
@@ -641,8 +671,8 @@ void D3D12App::Render()
                 &m_resourceManager,
                 &m_pipelineManager,
                 frameIndex,
-                viewport,
-                scissorRect,
+                sceneViewport,
+                sceneScissorRect,
                 g_visibleInstances,
                 transparentStartIndex);
         }
@@ -653,8 +683,8 @@ void D3D12App::Render()
             &m_resourceManager,
             &m_pipelineManager,
             frameIndex,
-            viewport,
-            scissorRect,
+            sceneViewport,
+            sceneScissorRect,
             g_visibleInstances,
             transparentStartIndex,
             useZPrepass,
@@ -667,8 +697,8 @@ void D3D12App::Render()
             &m_pipelineManager,
             m_currJitteredInvViewProjGpu,
             m_prevUnjitteredViewProjGpu,
-            Width,
-            Height,
+            SceneWidth,
+            SceneHeight,
             frameIndex,
             { gbufferOutput.depth });
         deferredGraph.AddPassDependencies(motionOutput.pass, { gbufferOutput.pass });
@@ -681,8 +711,8 @@ void D3D12App::Render()
             m_currViewGpu,
             m_currJitteredProjGpu,
             m_currJitteredInvProjGpu,
-            Width,
-            Height,
+            SceneWidth,
+            SceneHeight,
             frameIndex,
             m_hbaoTemporalFrameIndex++,
             { gbufferOutput.depth, gbufferOutput.normal });
@@ -743,8 +773,8 @@ void D3D12App::Render()
                     m_currJitteredInvViewProjGpu,
                     m_prevUnjitteredViewProjGpu,
                     frameIndex,
-                    Width,
-                    Height,
+                    SceneWidth,
+                    SceneHeight,
                     m_hbaoHistoryValid,
                     ScalarTemporalFilterPass::GetAmbientOcclusionSettings(deltaTime),
                     hbaoTemporalInput);
@@ -842,8 +872,8 @@ void D3D12App::Render()
                 &m_resourceManager,
                 &m_pipelineManager,
                 m_currJitteredInvViewProjGpu,
-                Width,
-                Height,
+                SceneWidth,
+                SceneHeight,
                 frameIndex,
                 deferredInput);
             deferredGraph.AddPassDependencies(deferredOutput.pass, { shadowOutput.pass, hbaoProducer });
@@ -855,10 +885,10 @@ void D3D12App::Render()
                 &m_resourceManager,
                 &m_pipelineManager,
                 camera,
-                viewport,
-                scissorRect,
-                Width,
-                Height,
+                sceneViewport,
+                sceneScissorRect,
+                SceneWidth,
+                SceneHeight,
                 { deferredOutput.sceneColor, gbufferOutput.depth });
             deferredGraph.AddPassDependencies(skyboxPass, { sceneColorProducer });
             sceneColorProducer = skyboxPass;
@@ -869,14 +899,14 @@ void D3D12App::Render()
                 &m_resourceManager,
                 &m_pipelineManager,
                 frameIndex,
-                viewport,
-                scissorRect,
+                sceneViewport,
+                sceneScissorRect,
                 g_visibleInstances,
                 transparentStartIndex,
                 { deferredOutput.sceneColor, gbufferOutput.depth, shadowOutput.shadowMapSrv });
             sceneColorProducer = transparentPass;
 
-            if (m_useTAA)
+            if (m_antiAliasingMode != AntiAliasingMode::None)
             {
                 TAAPass::Output taaOutput = TAAPass::AddToGraph(
                     deferredGraph,
@@ -888,6 +918,9 @@ void D3D12App::Render()
                     m_currJitterNdcX,
                     m_currJitterNdcY,
                     frameIndex,
+                    m_antiAliasingMode,
+                    SceneWidth,
+                    SceneHeight,
                     Width,
                     Height,
                     m_taaHistoryValid,
@@ -953,7 +986,7 @@ void D3D12App::Render()
 
     UINT finalPostInputSRV = m_resourceManager.GetPostProcessSrvIdx();
 
-    if (m_useTAA && !taaHandledByDeferredGraph)
+    if (m_antiAliasingMode == AntiAliasingMode::TAA && !taaHandledByDeferredGraph)
     {
         finalPostInputSRV = TAAPass::ExecuteRDG(&m_deviceContext, &m_resourceManager, &m_pipelineManager, m_currJitteredInvViewProjGpu, m_prevUnjitteredViewProjGpu, m_currJitterNdcX, m_currJitterNdcY, frameIndex, Width, Height, m_taaHistoryValid);
         m_taaHistoryValid = true;
@@ -961,7 +994,7 @@ void D3D12App::Render()
 
     if (!postProcessHandledByDeferredGraph)
     {
-        if (!m_useTAA)
+        if (m_antiAliasingMode == AntiAliasingMode::None)
         {
             PostProcessPass::ExecuteRDG(&m_deviceContext, &m_resourceManager, &m_pipelineManager, frameIndex, viewport, scissorRect);
         }

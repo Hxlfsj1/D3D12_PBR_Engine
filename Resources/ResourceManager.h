@@ -8,6 +8,7 @@
 #include "IBLBaker.h"
 #include "Settings_Manager.h"
 #include "RenderStructs.h"
+#include "RDGResourceLease.h"
 
 #include <map>
 #include <vector>
@@ -439,7 +440,12 @@ public:
         return true;
     }
 
-    bool InitPostProcess(RenderDevice* dc, int width, int height)
+    bool InitPostProcess(
+        RenderDevice* dc,
+        int sceneWidth,
+        int sceneHeight,
+        int outputWidth,
+        int outputHeight)
     {
         D3D12_DESCRIPTOR_HEAP_DESC rtvHeapDesc = {};
         rtvHeapDesc.NumDescriptors = 1;
@@ -452,7 +458,7 @@ public:
 
         D3D12_RESOURCE_DESC texDesc = CD3DX12_RESOURCE_DESC::Tex2D(
             DXGI_FORMAT_R16G16B16A16_FLOAT,
-            (UINT64)width, (UINT)height,
+            (UINT64)sceneWidth, (UINT)sceneHeight,
             1, 1, 1, 0,
             D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET
         );
@@ -489,7 +495,7 @@ public:
 
         D3D12_RESOURCE_DESC transparentCopyDesc = CD3DX12_RESOURCE_DESC::Tex2D(
             DXGI_FORMAT_R16G16B16A16_FLOAT,
-            (UINT64)width, (UINT)height,
+            (UINT64)sceneWidth, (UINT)sceneHeight,
             1, 1, 1, 0,
             D3D12_RESOURCE_FLAG_NONE);
 
@@ -519,7 +525,7 @@ public:
         m_rtvDescriptorSize = dc->GetDevice()->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
 
         D3D12_RESOURCE_DESC taaDesc = CD3DX12_RESOURCE_DESC::Tex2D(
-            DXGI_FORMAT_R16G16B16A16_FLOAT, (UINT64)width, (UINT)height,
+            DXGI_FORMAT_R16G16B16A16_FLOAT, (UINT64)outputWidth, (UINT)outputHeight,
             1, 1, 1, 0, D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET);
 
         D3D12_CLEAR_VALUE taaClearVal = {};
@@ -540,7 +546,7 @@ public:
         }
 
         D3D12_RESOURCE_DESC hbaoHistoryDesc = CD3DX12_RESOURCE_DESC::Tex2D(
-            DXGI_FORMAT_R16_FLOAT, (UINT64)width, (UINT)height,
+            DXGI_FORMAT_R16_FLOAT, (UINT64)sceneWidth, (UINT)sceneHeight,
             1, 1, 1, 0, D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET);
 
         D3D12_CLEAR_VALUE hbaoHistoryClearValue = {};
@@ -562,10 +568,10 @@ public:
         }
 
         D3D12_RESOURCE_DESC hbaoDepthHistoryDesc = CD3DX12_RESOURCE_DESC::Tex2D(
-            DXGI_FORMAT_R32_TYPELESS, (UINT64)width, (UINT)height,
+            DXGI_FORMAT_R32_TYPELESS, (UINT64)sceneWidth, (UINT)sceneHeight,
             1, 1);
         D3D12_RESOURCE_DESC hbaoNormalHistoryDesc = CD3DX12_RESOURCE_DESC::Tex2D(
-            DXGI_FORMAT_R16G16B16A16_FLOAT, (UINT64)width, (UINT)height,
+            DXGI_FORMAT_R16G16B16A16_FLOAT, (UINT64)sceneWidth, (UINT)sceneHeight,
             1, 1);
 
         for (int i = 0; i < 2; ++i)
@@ -732,7 +738,7 @@ public:
         D3D12_RESOURCE_STATES initialState,
         D3D12_RESOURCE_STATES finalState,
         const D3D12_CLEAR_VALUE* clearValue,
-        ComPtr<ID3D12Resource>* outResource)
+        RDGTransientResourceLease* outResource)
     {
         if (dc == nullptr ||
             dc->GetDevice() == nullptr ||
@@ -743,13 +749,25 @@ public:
             return false;
         }
 
-        std::vector<RDGTransientResourcePoolEntry>& framePool =
+        outResource->reset();
+
+        std::vector<std::shared_ptr<RDGTransientResourcePoolEntry>>& framePool =
             m_rdgTransientResourcePools[frameIndex];
 
         // Matching final-to-initial state keeps RDG's state model aligned with the reused resource.
-        for (RDGTransientResourcePoolEntry& entry : framePool)
+        for (const std::shared_ptr<RDGTransientResourcePoolEntry>& entryLease : framePool)
         {
+            // The pool owns one reference. Any additional reference means an RDG graph
+            // (or another lease holder) still owns this resource.
+            if (!entryLease ||
+                entryLease.use_count() != 1)
+            {
+                continue;
+            }
+
+            RDGTransientResourcePoolEntry& entry = *entryLease;
             if (entry.usedThisFrame ||
+                !entry.reusable ||
                 !entry.resource ||
                 entry.finalState != initialState ||
                 !AreRDGResourceDescsEqual(entry.desc, resourceDesc) ||
@@ -760,7 +778,9 @@ public:
 
             entry.usedThisFrame = true;
             entry.finalState = finalState;
-            *outResource = entry.resource;
+            entry.idleSinceFrame = InvalidRDGFrame;
+            entry.lastUseFenceValue = dc->GetFenceValue(frameIndex) + 1;
+            *outResource = entryLease;
             return true;
         }
 
@@ -780,33 +800,83 @@ public:
             return false;
         }
 
-        RDGTransientResourcePoolEntry entry;
-        entry.desc = resourceDesc;
-        entry.hasClearValue = clearValue != nullptr;
+        std::shared_ptr<RDGTransientResourcePoolEntry> entry =
+            std::make_shared<RDGTransientResourcePoolEntry>();
+        entry->desc = resourceDesc;
+        entry->hasClearValue = clearValue != nullptr;
         if (clearValue != nullptr)
         {
-            entry.clearValue = *clearValue;
+            entry->clearValue = *clearValue;
         }
-        entry.resource = resource;
-        entry.finalState = finalState;
-        entry.usedThisFrame = true;
+        entry->resource = resource;
+        entry->finalState = finalState;
+        entry->usedThisFrame = true;
+        entry->lastUseFenceValue = dc->GetFenceValue(frameIndex) + 1;
 
-        framePool.push_back(std::move(entry));
-        *outResource = resource;
+        framePool.push_back(entry);
+        *outResource = entry;
         return true;
     }
 
-    void BeginRDGFrame(int frameIndex)
+    void BeginRDGFrame(RenderDevice* dc, int frameIndex)
     {
-        if (frameIndex < 0 || frameIndex >= static_cast<int>(m_rdgTransientResourcePools.size()))
+        if (dc == nullptr ||
+            frameIndex < 0 ||
+            frameIndex >= static_cast<int>(m_rdgTransientResourcePools.size()))
         {
             return;
         }
 
-        // BeginFrame reaches this point only after this frame slot's fence has completed.
-        for (RDGTransientResourcePoolEntry& entry : m_rdgTransientResourcePools[frameIndex])
+        ID3D12Fence* frameFence = dc->GetFence(frameIndex);
+        if (frameFence == nullptr ||
+            frameFence->GetCompletedValue() < dc->GetFenceValue(frameIndex))
         {
+            return;
+        }
+
+        ++m_rdgFrameSerial;
+
+        std::vector<std::shared_ptr<RDGTransientResourcePoolEntry>>& framePool =
+            m_rdgTransientResourcePools[frameIndex];
+        const UINT64 completedFenceValue = frameFence->GetCompletedValue();
+
+        for (auto iterator = framePool.begin(); iterator != framePool.end();)
+        {
+            const std::shared_ptr<RDGTransientResourcePoolEntry>& entryLease = *iterator;
+            if (!entryLease)
+            {
+                iterator = framePool.erase(iterator);
+                continue;
+            }
+
+            RDGTransientResourcePoolEntry& entry = *entryLease;
+            if (entryLease.use_count() == 1)
+            {
+                // Arm the keep-alive countdown once the pool becomes the sole owner.
+                if (entry.idleSinceFrame == InvalidRDGFrame)
+                {
+                    entry.idleSinceFrame = m_rdgFrameSerial;
+                }
+
+                const bool idleExpired =
+                    m_rdgFrameSerial - entry.idleSinceFrame >= RDGTransientResourceKeepAliveFrames;
+                const bool gpuFinished =
+                    completedFenceValue >= entry.lastUseFenceValue;
+
+                if (idleExpired && gpuFinished)
+                {
+                    iterator = framePool.erase(iterator);
+                    continue;
+                }
+            }
+            else
+            {
+                entry.idleSinceFrame = InvalidRDGFrame;
+            }
+
+            // BeginFrame reaches this point only after this frame slot's fence has completed.
             entry.usedThisFrame = false;
+            ++iterator;
         }
     }
 
@@ -972,14 +1042,15 @@ public:
     }
 
 private:
-    struct RDGTransientResourcePoolEntry
+    struct RDGTransientResourcePoolEntry : public RDGTransientResourceLeaseState
     {
         D3D12_RESOURCE_DESC desc = {};
         bool hasClearValue = false;
         D3D12_CLEAR_VALUE clearValue = {};
-        ComPtr<ID3D12Resource> resource;
         D3D12_RESOURCE_STATES finalState = D3D12_RESOURCE_STATE_COMMON;
         bool usedThisFrame = false;
+        uint64_t idleSinceFrame = UINT64_MAX;
+        UINT64 lastUseFenceValue = 0;
     };
 
     static bool AreRDGResourceDescsEqual(
@@ -1038,12 +1109,15 @@ private:
     }
 
     static constexpr UINT MaxSrvUavDescriptors = 1024;
+    static constexpr uint64_t InvalidRDGFrame = UINT64_MAX;
+    static constexpr uint64_t RDGTransientResourceKeepAliveFrames = 120;
     UINT persistentSrvUavDescriptorCount = 0;
     UINT transientSrvUavDescriptorEnd = MaxSrvUavDescriptors;
     UINT m_srvFrameBufferCount = 1;
     UINT srvIdx;
     UINT srvDescriptorSize;
-    std::vector<std::vector<RDGTransientResourcePoolEntry>> m_rdgTransientResourcePools;
+    uint64_t m_rdgFrameSerial = 0;
+    std::vector<std::vector<std::shared_ptr<RDGTransientResourcePoolEntry>>> m_rdgTransientResourcePools;
 
     ComPtr<ID3D12DescriptorHeap> mainDescriptorHeap;
 

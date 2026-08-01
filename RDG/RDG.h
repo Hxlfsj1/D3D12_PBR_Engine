@@ -12,6 +12,7 @@
 
 #include <wrl/client.h>
 #include "RenderDevice.h"
+#include "RDGResourceLease.h"
 
 enum class ERDGPassFlags : uint32_t
 {
@@ -163,7 +164,7 @@ using RDGTransientResourceAllocator =
         D3D12_RESOURCE_STATES,
         D3D12_RESOURCE_STATES,
         const D3D12_CLEAR_VALUE*,
-        Microsoft::WRL::ComPtr<ID3D12Resource>*)>;
+        RDGTransientResourceLease*)>;
 
 struct RDGPassParameters
 {
@@ -298,7 +299,7 @@ struct RDGBufferDesc
 struct RDGTexture
 {
     RDGTextureDesc desc;
-    Microsoft::WRL::ComPtr<ID3D12Resource> ownedResource;
+    RDGTransientResourceLease transientResource;
     ID3D12Resource* resource = nullptr;
     D3D12_RESOURCE_STATES initialState = D3D12_RESOURCE_STATE_COMMON;
     D3D12_RESOURCE_STATES currentState = D3D12_RESOURCE_STATE_COMMON;
@@ -315,7 +316,7 @@ struct RDGTexture
 struct RDGBuffer
 {
     RDGBufferDesc desc;
-    Microsoft::WRL::ComPtr<ID3D12Resource> ownedResource;
+    RDGTransientResourceLease transientResource;
     ID3D12Resource* resource = nullptr;
     D3D12_RESOURCE_STATES initialState = D3D12_RESOURCE_STATE_COMMON;
     D3D12_RESOURCE_STATES currentState = D3D12_RESOURCE_STATE_COMMON;
@@ -506,12 +507,12 @@ public:
             initialState,
             finalState,
             clearValue,
-            &texture.ownedResource))
+            &texture.transientResource))
         {
             return handle;
         }
 
-        texture.resource = texture.ownedResource.Get();
+        texture.resource = texture.transientResource->resource.Get();
 
         handle.index = static_cast<uint32_t>(m_textures.size());
         m_textures.push_back(std::move(texture));
@@ -588,12 +589,12 @@ public:
             initialState,
             finalState,
             nullptr,
-            &buffer.ownedResource))
+            &buffer.transientResource))
         {
             return handle;
         }
 
-        buffer.resource = buffer.ownedResource.Get();
+        buffer.resource = buffer.transientResource->resource.Get();
 
         handle.index = static_cast<uint32_t>(m_buffers.size());
         m_buffers.push_back(std::move(buffer));
@@ -1434,7 +1435,7 @@ private:
         D3D12_RESOURCE_STATES initialState,
         D3D12_RESOURCE_STATES finalState,
         const D3D12_CLEAR_VALUE* clearValue,
-        Microsoft::WRL::ComPtr<ID3D12Resource>* outResource)
+        RDGTransientResourceLease* outResource)
     {
         if (outResource == nullptr || !m_transientResourceAllocator)
         {
@@ -1621,9 +1622,10 @@ private:
 
             const RDGTexture& texture = m_textures[extraction.texture.index];
 
-            if (texture.ownedResource)
+            if (texture.transientResource && texture.transientResource->resource)
             {
-                *extraction.output = texture.ownedResource;
+                texture.transientResource->reusable = false;
+                *extraction.output = texture.transientResource->resource;
             }
         }
 
@@ -1638,9 +1640,10 @@ private:
 
             const RDGBuffer& buffer = m_buffers[extraction.buffer.index];
 
-            if (buffer.ownedResource)
+            if (buffer.transientResource && buffer.transientResource->resource)
             {
-                *extraction.output = buffer.ownedResource;
+                buffer.transientResource->reusable = false;
+                *extraction.output = buffer.transientResource->resource;
             }
         }
     }

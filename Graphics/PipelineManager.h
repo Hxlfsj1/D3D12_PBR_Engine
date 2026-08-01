@@ -182,6 +182,11 @@ public:
         return psoTAA.Get();
     }
 
+    ID3D12PipelineState* GetTSRPSO()
+    {
+        return psoTSR.Get();
+    }
+
     ID3D12RootSignature* GetScalarTemporalRootSignature()
     {
         return scalarTemporalRootSignature.Get();
@@ -893,10 +898,11 @@ private:
 
         auto vs = ShaderCompiler::CompileFromFile(L"Shaders/Shaders_For_TAA.hlsl", L"VSMain", L"vs_6_6");
         auto ps = ShaderCompiler::CompileFromFile(L"Shaders/Shaders_For_TAA.hlsl", L"PSMain", L"ps_6_6");
+        auto psTSR = ShaderCompiler::CompileFromFile(L"Shaders/Shaders_For_TSR.hlsl", L"PSMain", L"ps_6_6");
 
-        if (!vs || !ps)
+        if (!vs || !ps || !psTSR)
         {
-            MessageBox(NULL, L"TAA Shader compilation failed! Please check if Shaders_For_TAA.hlsl exists in the Shaders directory.", L"Engine Error", MB_OK);
+            MessageBox(NULL, L"Temporal anti-aliasing shader compilation failed. Please check the TAA and TSR shaders.", L"Engine Error", MB_OK);
             return false;
         }
 
@@ -919,6 +925,13 @@ private:
         if (FAILED(dc->GetDevice()->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(&psoTAA))))
         {
             MessageBox(NULL, L"Failed to create TAA PSO!", L"Engine Error", MB_OK);
+            return false;
+        }
+
+        psoDesc.PS = CD3DX12_SHADER_BYTECODE(psTSR->GetBufferPointer(), psTSR->GetBufferSize());
+        if (FAILED(dc->GetDevice()->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(&psoTSR))))
+        {
+            MessageBox(NULL, L"Failed to create TSR PSO!", L"Engine Error", MB_OK);
             return false;
         }
 
@@ -1116,6 +1129,7 @@ private:
 
     ComPtr<ID3D12RootSignature> taaRootSignature;
     ComPtr<ID3D12PipelineState> psoTAA;
+    ComPtr<ID3D12PipelineState> psoTSR;
 
     ComPtr<ID3D12RootSignature> scalarTemporalRootSignature;
     ComPtr<ID3D12PipelineState> scalarTemporalPSO;

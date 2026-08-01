@@ -12,7 +12,6 @@
 #include "RDG.h"
 #include <algorithm>
 #include <array>
-#include <cfloat>
 #include <cmath>
 #include <vector>
 
@@ -24,7 +23,6 @@ public:
         Camera* camera = nullptr;
         DirectX::XMFLOAT3 lightDir = {};
         float aspectRatio = 1.0f;
-        float shadowRadius = 0.0f;
         float shadowMaxDistance = 100.0f;
         float shadowMapSize = 4096.0f;
     };
@@ -37,7 +35,6 @@ public:
         DirectX::XMFLOAT4 cascadeSplits = {};
         DirectX::XMFLOAT4 cascadeOrthoWidths = {};
         DirectX::XMFLOAT4 cascadeDepthRanges = {};
-        DirectX::BoundingBox shadowArea = {};
         std::array<DirectX::BoundingBox, NUM_CASCADES> cascadeShadowAreas = {};
     };
 
@@ -76,32 +73,7 @@ public:
         XMStoreFloat4x4(&frameData.lightView, lightView);
 
         constexpr float nearClip = 0.1f;
-        BoundingFrustum shadowFrustum = input.camera->GetWorldSpaceFrustum(
-            input.aspectRatio,
-            nearClip,
-            input.shadowMaxDistance);
-
-        XMFLOAT3 frustumCorners[8];
-        shadowFrustum.GetCorners(frustumCorners);
-
-        float minZ = FLT_MAX;
-        float maxZ = -FLT_MAX;
-        for (const XMFLOAT3& corner : frustumCorners)
-        {
-            XMVECTOR lightSpaceCorner = XMVector3Transform(XMLoadFloat3(&corner), lightView);
-            minZ = (std::min)(minZ, XMVectorGetZ(lightSpaceCorner));
-            maxZ = (std::max)(maxZ, XMVectorGetZ(lightSpaceCorner));
-        }
-
         constexpr float shadowDepthPadding = 50.0f;
-        minZ -= shadowDepthPadding;
-        maxZ += shadowDepthPadding;
-
-        frameData.shadowArea.Center = XMFLOAT3(0.0f, 0.0f, (minZ + maxZ) * 0.5f);
-        frameData.shadowArea.Extents = XMFLOAT3(
-            input.shadowRadius,
-            input.shadowRadius,
-            (maxZ - minZ) * 0.5f);
 
         const std::array<float, NUM_CASCADES + 1> cascadeSplits = {
             nearClip,
@@ -418,7 +390,7 @@ public:
                 D3D12_RESOURCE_STATES initialState,
                 D3D12_RESOURCE_STATES finalState,
                 const D3D12_CLEAR_VALUE* clearValue,
-                Microsoft::WRL::ComPtr<ID3D12Resource>* outResource)
+                RDGTransientResourceLease* outResource)
             {
                 return resourceManager->AllocateRDGTransientResource(
                     deviceContext,

@@ -64,6 +64,9 @@
     <None Include="Shaders\FullscreenTriangle.hlsli">
       <Filter>Shaders</Filter>
     </None>
+    <None Include="Shaders\TemporalAACommon.hlsli">
+      <Filter>Shaders</Filter>
+    </None>
     <None Include="Shaders\LightingCommon.hlsli">
       <Filter>Shaders</Filter>
     </None>
@@ -86,6 +89,9 @@
       <Filter>Shaders</Filter>
     </None>
     <None Include="Shaders\Shaders_For_TAA.hlsl">
+      <Filter>Shaders</Filter>
+    </None>
+    <None Include="Shaders\Shaders_For_TSR.hlsl">
       <Filter>Shaders</Filter>
     </None>
     <None Include="Shaders\Shaders_For_MotionVector.hlsl">
@@ -193,6 +199,9 @@
       <Filter>Resources</Filter>
     </ClInclude>
     <ClInclude Include="RDG\RDG.h">
+      <Filter>RDG</Filter>
+    </ClInclude>
+    <ClInclude Include="RDG\RDGResourceLease.h">
       <Filter>RDG</Filter>
     </ClInclude>
   </ItemGroup>

@@ -95,6 +95,7 @@ MSBuild.exe LearnDirectX.vcxproj /p:Configuration=Debug /p:Platform=x64 /m
   "width": 2240,
   "height": 1400,
   "fullscreen": false,
+  "tsr_upscale_factor": 2.0,
   "title": "PBR IBL Model Viewer"
 }
 ```
@@ -104,22 +105,22 @@ MSBuild.exe LearnDirectX.vcxproj /p:Configuration=Debug /p:Platform=x64 /m
 ```json
 {
   "use_deferred": true,
-  "use_z_prepass": true,
-  "use_taa": false
+  "use_z_prepass": false,
+  "anti_aliasing": "TSR"
 }
 ```
 
 - `use_deferred`: 使用 Deferred 路径。关闭后走 Forward/PBR 路径。
 - `use_z_prepass`: 启用 Z Prepass。
-- `use_taa`: 启用 TAA。默认关闭。
+- `anti_aliasing`: 抗锯齿模式，可选 `None`、`TAA`、`TSR`。
+- `tsr_upscale_factor`: TSR 的分辨率放大倍率，默认 `2.0`；仅在 `TSR` 模式下生效。
 
 ### `Settings/Lighting.json`
 
 ```json
 {
   "light_dir": [ -0.5, -1.0, 0.5 ],
-  "light_color": [ 5.0, 5.0, 5.0 ],
-  "shadow_radius": 40.0
+  "light_color": [ 5.0, 5.0, 5.0 ]
 }
 ```
 
@@ -221,6 +222,6 @@ Present
 - 当前工程仍依赖 Assimp 解析网格和内嵌贴图，同时用 tinygltf 读取部分 glTF 元数据。
 - `Vertex` 中保留了骨骼字段，但当前渲染路径没有实现动画/蒙皮更新。
 - 透明物体为了正确混合会按距离排序，这会牺牲一部分 batching。
-- TAA 默认关闭，开启后会使用 history buffer 和 jitter。
+- TAA 与 TSR 共用 history buffer、jitter、运动重投影和历史颜色钳制；当前 TSR 仅支持 Deferred 路径。
 - 配置和 shader 没有热重载，修改后需要重新运行程序。
 - 资源路径大量使用相对路径，工作目录不正确时会出现找不到 shader、模型或 JSON 的问题。

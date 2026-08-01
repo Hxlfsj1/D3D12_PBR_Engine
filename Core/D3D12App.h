@@ -61,6 +61,8 @@ private:
     LPCTSTR WindowTitle;
     int Width;
     int Height;
+    int SceneWidth;
+    int SceneHeight;
     bool FullScreen;
     bool Running;
     // Populated when Initialize() is invoked
@@ -79,6 +81,8 @@ private:
 
     D3D12_VIEWPORT viewport;
     D3D12_RECT scissorRect;
+    D3D12_VIEWPORT sceneViewport;
+    D3D12_RECT sceneScissorRect;
 
     // Runtime game state, user input, and spatial transformations
     Camera camera;
@@ -90,7 +94,7 @@ private:
 
     int m_visibleInstanceCount = 0;
     int m_frustumInstanceCount = 0;
-    bool m_useTAA;
+    AntiAliasingMode m_antiAliasingMode = AntiAliasingMode::None;
     UINT m_taaJitterFrameIndex;
     UINT m_hbaoTemporalFrameIndex;
     bool m_taaHistoryValid = false;

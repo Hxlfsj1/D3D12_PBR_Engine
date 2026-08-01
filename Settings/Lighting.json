@@ -1,6 +1,5 @@
 {
-  "light_dir": [ 0.5, -0.5, 0.0 ],
-  "light_color": [ 6.0, 6.0, 6.0 ],
-  "sun_angular_radius_degrees": 0.266,
-  "shadow_radius": 40.0
+  "light_dir": [ 0.5, -0.5, 1.0 ],
+  "light_color": [ 5.0, 5.0, 5.0 ],
+  "sun_angular_radius_degrees": 0.266
 }

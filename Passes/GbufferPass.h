@@ -63,6 +63,16 @@ public:
         cmdList->ClearRenderTargetView(rtvHandles[1], clearColorBlack, 0, nullptr);
         cmdList->ClearRenderTargetView(rtvHandles[2], clearColorBlack, 0, nullptr);
         cmdList->ClearRenderTargetView(rtvHandles[3], clearColorBlack, 0, nullptr);
+        if (!useZPrepass)
+        {
+            cmdList->ClearDepthStencilView(
+                dsvHandle,
+                D3D12_CLEAR_FLAG_DEPTH,
+                1.0f,
+                0,
+                0,
+                nullptr);
+        }
 
         cmdList->SetGraphicsRootSignature(pipelineManager->GetRootSignature());
         ID3D12DescriptorHeap* heaps[] = { resourceManager->GetMainDescriptorHeap() };
@@ -166,11 +176,37 @@ public:
         bool consumeZPrepassDepth = useZPrepass && depth.IsValid();
         if (!depth.IsValid())
         {
-            depth = graph.RegisterExternalTexture(
-                deviceContext->GetDepthStencilBuffer(),
-                D3D12_RESOURCE_STATE_DEPTH_WRITE,
-                D3D12_RESOURCE_STATE_DEPTH_WRITE,
-                "SceneDepth");
+            ID3D12Resource* deviceDepth = deviceContext->GetDepthStencilBuffer();
+            const D3D12_RESOURCE_DESC deviceDepthDesc = deviceDepth->GetDesc();
+            const UINT sceneWidth = static_cast<UINT>(viewport.Width);
+            const UINT sceneHeight = static_cast<UINT>(viewport.Height);
+
+            if (deviceDepthDesc.Width == sceneWidth && deviceDepthDesc.Height == sceneHeight)
+            {
+                depth = graph.RegisterExternalTexture(
+                    deviceDepth,
+                    D3D12_RESOURCE_STATE_DEPTH_WRITE,
+                    D3D12_RESOURCE_STATE_DEPTH_WRITE,
+                    "SceneDepth");
+            }
+            else
+            {
+                RDGTextureDesc depthTextureDesc;
+                depthTextureDesc.width = sceneWidth;
+                depthTextureDesc.height = sceneHeight;
+                depthTextureDesc.format = DXGI_FORMAT_R32_TYPELESS;
+                depthTextureDesc.flags = D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL;
+                depthTextureDesc.hasClearValue = true;
+                depthTextureDesc.clearValue.Format = DXGI_FORMAT_D32_FLOAT;
+                depthTextureDesc.clearValue.DepthStencil.Depth = 1.0f;
+                depthTextureDesc.clearValue.DepthStencil.Stencil = 0;
+
+                depth = graph.CreateTexture(
+                    depthTextureDesc,
+                    D3D12_RESOURCE_STATE_DEPTH_WRITE,
+                    D3D12_RESOURCE_STATE_DEPTH_WRITE,
+                    "SceneDepth");
+            }
         }
 
         const RDGTextureDesc* depthDesc = graph.GetTextureDesc(depth);
@@ -288,7 +324,7 @@ public:
                 D3D12_RESOURCE_STATES initialState,
                 D3D12_RESOURCE_STATES finalState,
                 const D3D12_CLEAR_VALUE* clearValue,
-                Microsoft::WRL::ComPtr<ID3D12Resource>* outResource)
+                RDGTransientResourceLease* outResource)
             {
                 return resourceManager->AllocateRDGTransientResource(
                     deviceContext,

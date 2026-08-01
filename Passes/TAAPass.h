@@ -6,6 +6,7 @@
 #include "ResourceManager.h"
 #include "PipelineManager.h"
 #include "RenderStructs.h"
+#include "Settings_Manager.h"
 #include "MotionVectorPass.h"
 #include "RDG.h"
 
@@ -71,6 +72,9 @@ public:
             currJitterNdcX,
             currJitterNdcY,
             frameIndex,
+            AntiAliasingMode::TAA,
+            width,
+            height,
             width,
             height,
             historyValid,
@@ -102,7 +106,10 @@ public:
         const DirectX::XMFLOAT4X4& currJitteredInvViewProjGpu,
         const DirectX::XMFLOAT4X4& prevUnjitteredViewProjGpu,
         float currJitterNdcX, float currJitterNdcY,
-        int frameIndex, int width, int height,
+        int frameIndex,
+        AntiAliasingMode antiAliasingMode,
+        int inputWidth, int inputHeight,
+        int outputWidth, int outputHeight,
         bool historyValid,
         const TextureViews& views)
     {
@@ -110,13 +117,16 @@ public:
 
         cmdList->OMSetRenderTargets(1, &views.outputRtv, FALSE, nullptr);
 
-        D3D12_VIEWPORT viewport = { 0.0f, 0.0f, (float)width, (float)height, 0.0f, 1.0f };
-        D3D12_RECT scissorRect = { 0, 0, width, height };
+        D3D12_VIEWPORT viewport = { 0.0f, 0.0f, (float)outputWidth, (float)outputHeight, 0.0f, 1.0f };
+        D3D12_RECT scissorRect = { 0, 0, outputWidth, outputHeight };
         cmdList->RSSetViewports(1, &viewport);
         cmdList->RSSetScissorRects(1, &scissorRect);
 
         cmdList->SetGraphicsRootSignature(pipelineManager->GetTAARootSignature());
-        cmdList->SetPipelineState(pipelineManager->GetTAAPSO());
+        cmdList->SetPipelineState(
+            antiAliasingMode == AntiAliasingMode::TSR
+                ? pipelineManager->GetTSRPSO()
+                : pipelineManager->GetTAAPSO());
 
         ID3D12DescriptorHeap* heaps[] = { resourceManager->GetMainDescriptorHeap() };
         cmdList->SetDescriptorHeaps(1, heaps);
@@ -128,12 +138,13 @@ public:
         cb.currJitteredInvViewProj = currJitteredInvViewProjGpu;
         cb.prevUnjitteredViewProj = prevUnjitteredViewProjGpu;
         cb.blendAlpha = historyValid ? 0.95f : 0.0f;
-        cb.varianceScale = 1.5f;
 
         const float jitterPixelX =
-            currJitterNdcX * 0.5f * static_cast<float>(width);
+            currJitterNdcX * 0.5f * static_cast<float>(inputWidth);
         const float jitterPixelY =
-            -currJitterNdcY * 0.5f * static_cast<float>(height);
+            -currJitterNdcY * 0.5f * static_cast<float>(inputHeight);
+
+        cb.currentJitterPixels = DirectX::XMFLOAT2(jitterPixelX, jitterPixelY);
 
         float reconstructionWeights[3][3] = {};
         float reconstructionWeightSum = 0.0f;
@@ -195,7 +206,7 @@ public:
                 D3D12_RESOURCE_STATES initialState,
                 D3D12_RESOURCE_STATES finalState,
                 const D3D12_CLEAR_VALUE* clearValue,
-                Microsoft::WRL::ComPtr<ID3D12Resource>* outResource)
+                RDGTransientResourceLease* outResource)
             {
                 return resourceManager->AllocateRDGTransientResource(
                     deviceContext,
@@ -318,6 +329,9 @@ public:
                     currJitterNdcX,
                     currJitterNdcY,
                     frameIndex,
+                    AntiAliasingMode::TAA,
+                    width,
+                    height,
                     width,
                     height,
                     historyValid,
@@ -339,7 +353,10 @@ public:
         const DirectX::XMFLOAT4X4& currJitteredInvViewProjGpu,
         const DirectX::XMFLOAT4X4& prevUnjitteredViewProjGpu,
         float currJitterNdcX, float currJitterNdcY,
-        int frameIndex, int width, int height,
+        int frameIndex,
+        AntiAliasingMode antiAliasingMode,
+        int inputWidth, int inputHeight,
+        int outputWidth, int outputHeight,
         bool historyValid,
         const Input& input = {})
     {
@@ -421,8 +438,11 @@ public:
         }
         params.WriteRTV(historyRtv);
 
+        const char* passName =
+            antiAliasingMode == AntiAliasingMode::TSR ? "TSR" : "TAA";
+
         RDGPassHandle pass = graph.AddPass(
-            "TAA",
+            passName,
             ERDGPassFlags::Graphics,
             params,
             [=](ID3D12GraphicsCommandList* cmdList)
@@ -436,8 +456,11 @@ public:
                     currJitterNdcX,
                     currJitterNdcY,
                     frameIndex,
-                    width,
-                    height,
+                    antiAliasingMode,
+                    inputWidth,
+                    inputHeight,
+                    outputWidth,
+                    outputHeight,
                     historyValid,
                     views);
             });

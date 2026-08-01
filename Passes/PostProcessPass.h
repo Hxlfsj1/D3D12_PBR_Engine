@@ -101,7 +101,7 @@ public:
                 D3D12_RESOURCE_STATES initialState,
                 D3D12_RESOURCE_STATES finalState,
                 const D3D12_CLEAR_VALUE* clearValue,
-                Microsoft::WRL::ComPtr<ID3D12Resource>* outResource)
+                RDGTransientResourceLease* outResource)
             {
                 return resourceManager->AllocateRDGTransientResource(
                     deviceContext,
