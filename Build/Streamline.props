@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <PropertyGroup>
+    <StreamlineRoot>$(MSBuildThisFileDirectory)..\ThirdParty\NVIDIA\Streamline\</StreamlineRoot>
+    <StreamlineRuntimeDir Condition="'$(Configuration)'=='Debug'">$(StreamlineRoot)bin\x64\development\</StreamlineRuntimeDir>
+    <StreamlineRuntimeDir Condition="'$(Configuration)'!='Debug'">$(StreamlineRoot)bin\x64\</StreamlineRuntimeDir>
+  </PropertyGroup>
+
+  <ItemDefinitionGroup>
+    <ClCompile>
+      <AdditionalIncludeDirectories>$(StreamlineRoot)include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <PreprocessorDefinitions>LEARNDIRECTX_ENABLE_STREAMLINE=1;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+    </ClCompile>
+    <Link>
+      <AdditionalLibraryDirectories>$(StreamlineRoot)lib\x64;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
+      <AdditionalDependencies>sl.interposer.lib;%(AdditionalDependencies)</AdditionalDependencies>
+    </Link>
+  </ItemDefinitionGroup>
+
+  <ItemGroup>
+    <StreamlineRuntime Include="$(StreamlineRuntimeDir)sl.interposer.dll" />
+    <StreamlineRuntime Include="$(StreamlineRuntimeDir)sl.common.dll" />
+    <StreamlineRuntime Include="$(StreamlineRuntimeDir)sl.dlss.dll" />
+    <StreamlineRuntime Include="$(StreamlineRuntimeDir)nvngx_dlss.dll" />
+    <StreamlineRuntime Include="$(StreamlineRuntimeDir)nvngx_dlss.license.txt" />
+    <StreamlineRuntime Include="$(StreamlineRuntimeDir)WinPixEventRuntime.dll" Condition="'$(Configuration)'=='Debug'" />
+  </ItemGroup>
+
+  <Target Name="CopyStreamlineRuntime" AfterTargets="Build">
+    <Copy SourceFiles="@(StreamlineRuntime)"
+          DestinationFolder="$(TargetDir)"
+          SkipUnchangedFiles="true" />
+  </Target>
+</Project>

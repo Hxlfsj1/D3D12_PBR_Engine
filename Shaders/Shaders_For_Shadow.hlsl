@@ -85,6 +85,10 @@ VS_OUTPUT VSMain(VS_INPUT input)
 #ifdef ALPHA_TEST
 void PSMain(VS_OUTPUT input)
 {
-    ClipByDepthVisibility(input.instanceID, materialID, input.texCoord);
+    ClipByDepthVisibility(
+        input.instanceID,
+        materialID,
+        input.texCoord,
+        0.0f);
 }
 #endif

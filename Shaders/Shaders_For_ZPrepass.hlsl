@@ -19,6 +19,12 @@ struct MaterialData
     uint3 pad;
 };
 
+cbuffer PassConstants : register(b0)
+{
+    float3 unusedCamPos;
+    float materialMipBias;
+};
+
 cbuffer MeshConstants : register(b1)
 {
     uint materialID;
@@ -62,6 +68,10 @@ VS_OUTPUT VSMain(VS_INPUT input)
 #ifdef ALPHA_TEST
 void PSMain(VS_OUTPUT input)
 {
-    ClipByDepthVisibility(input.instanceID, materialID, input.texCoord);
+    ClipByDepthVisibility(
+        input.instanceID,
+        materialID,
+        input.texCoord,
+        materialMipBias);
 }
 #endif

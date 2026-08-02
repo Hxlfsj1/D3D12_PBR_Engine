@@ -38,6 +38,49 @@ static std::vector<ModelInstance*> g_visibleInstances;
 static std::array<std::vector<ModelInstance*>, NUM_CASCADES> g_shadowVisibleInstancesByCascade;
 static std::array<size_t, NUM_CASCADES> g_shadowInstanceOffsets;
 
+static float Halton(UINT index, UINT base)
+{
+    float result = 0.0f;
+    float fraction = 1.0f;
+
+    while (index > 0)
+    {
+        fraction /= static_cast<float>(base);
+        result += fraction * static_cast<float>(index % base);
+        index /= base;
+    }
+
+    return result;
+}
+
+static UINT CalculateTSRJitterSampleCount(float primaryResolutionFraction)
+{
+    constexpr UINT baseSampleCount = 8;
+    static constexpr UINT primeTable[] =
+    {
+        2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41, 43, 47, 53, 59, 61, 67, 71,
+        73, 79, 83, 89, 97, 101, 103, 107, 109, 113, 127, 131, 137, 139, 149, 151, 157,
+        163, 167, 173, 179, 181, 191, 193, 197, 199, 211, 223, 227, 229, 233, 239, 241, 251
+    };
+
+    const float safeResolutionFraction = (std::max)(primaryResolutionFraction, 1.0f / 16.0f);
+    const float resolutionMultiplier = (std::max)(
+        1.0f,
+        1.0f / (safeResolutionFraction * safeResolutionFraction));
+    const UINT requestedSampleCount = static_cast<UINT>(
+        std::lround(static_cast<float>(baseSampleCount) * resolutionMultiplier));
+
+    for (UINT prime : primeTable)
+    {
+        if (prime >= requestedSampleCount)
+        {
+            return prime;
+        }
+    }
+
+    return primeTable[std::size(primeTable) - 1];
+}
+
 // Global hook for Win32 message routing
 D3D12App* g_App = nullptr;
 
@@ -310,12 +353,29 @@ void D3D12App::Update()
     // Calculate current jitter value
     if (m_antiAliasingMode != AntiAliasingMode::None)
     {
-        static const float haltonX[8] = { 0.5f, 0.25f, 0.75f, 0.125f, 0.625f, 0.375f, 0.875f, 0.0625f };
-        static const float haltonY[8] = { 0.333333f, 0.666667f, 0.111111f, 0.444444f, 0.777778f, 0.222222f, 0.555556f, 0.888889f };
-        constexpr float jitterScale = 0.75f;
+        float currJitterPixelX = 0.0f;
+        float currJitterPixelY = 0.0f;
 
-        float currJitterPixelX = (haltonX[m_taaJitterFrameIndex % 8] - 0.5f) * jitterScale;
-        float currJitterPixelY = (haltonY[m_taaJitterFrameIndex % 8] - 0.5f) * jitterScale;
+        if (m_antiAliasingMode == AntiAliasingMode::TSR)
+        {
+            const float primaryResolutionFraction =
+                static_cast<float>(SceneWidth) / static_cast<float>(Width);
+            const UINT jitterSampleCount = CalculateTSRJitterSampleCount(primaryResolutionFraction);
+            const UINT jitterSampleIndex = m_taaJitterFrameIndex % jitterSampleCount;
+
+            currJitterPixelX = Halton(jitterSampleIndex + 1, 2) - 0.5f;
+            currJitterPixelY = Halton(jitterSampleIndex + 1, 3) - 0.5f;
+        }
+        else
+        {
+            static const float haltonX[8] = { 0.5f, 0.25f, 0.75f, 0.125f, 0.625f, 0.375f, 0.875f, 0.0625f };
+            static const float haltonY[8] = { 0.333333f, 0.666667f, 0.111111f, 0.444444f, 0.777778f, 0.222222f, 0.555556f, 0.888889f };
+            constexpr float jitterScale = 0.75f;
+
+            currJitterPixelX = (haltonX[m_taaJitterFrameIndex % 8] - 0.5f) * jitterScale;
+            currJitterPixelY = (haltonY[m_taaJitterFrameIndex % 8] - 0.5f) * jitterScale;
+        }
+
         m_currJitterNdcX = (currJitterPixelX * 2.0f) / SceneWidth;
         m_currJitterNdcY = (currJitterPixelY * 2.0f) / SceneHeight;
         m_taaJitterFrameIndex++;
@@ -361,6 +421,18 @@ void D3D12App::Update()
     // Initialize passed data (camera position, light attributes, etc.)
     PassConstants passCb = {};
     passCb.camPos = camera.Position;
+    if (m_antiAliasingMode == AntiAliasingMode::TSR)
+    {
+        constexpr float minAutomaticViewMipBias = -2.0f;
+        constexpr float automaticViewMipBiasOffset = -0.3f;
+        const float primaryResolutionFraction =
+            static_cast<float>(SceneWidth) / static_cast<float>(Width);
+        const float resolutionMipBias =
+            (std::max)(-std::log2(primaryResolutionFraction), 0.0f);
+        passCb.materialMipBias = (std::max)(
+            -(resolutionMipBias + automaticViewMipBiasOffset),
+            minAutomaticViewMipBias);
+    }
     passCb.cameraForward = camera.Front;
     passCb.lightColor = m_settingsManager.lighting.lightColor;
 

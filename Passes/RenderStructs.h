@@ -15,7 +15,7 @@ constexpr UINT64 AlignConstantBufferSize(UINT64 byteSize)
 struct alignas(D3D12_CONSTANT_BUFFER_DATA_PLACEMENT_ALIGNMENT) PassConstants
 {
     DirectX::XMFLOAT3 camPos;
-    float padding1;
+    float materialMipBias;
     DirectX::XMFLOAT3 cameraForward;
     float paddingCameraForward;
     DirectX::XMFLOAT3 lightDir;

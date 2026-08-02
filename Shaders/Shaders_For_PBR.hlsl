@@ -5,7 +5,7 @@
 cbuffer PassConstants : register(b0)
 {
     float3 camPos;
-    float padding1;
+    float materialMipBias;
     float3 cameraForward;
     float paddingCameraForward;
     float3 lightDir;
@@ -134,7 +134,10 @@ float3 getNormalFromMap(VS_OUTPUT input, bool isFrontFace)
 
     uint normalIdx = gMaterialData[finalMatID].normalIdx;
     Texture2D tNormal = ResourceDescriptorHeap[normalIdx];
-    float3 tangentNormal = tNormal.Sample(s1, input.texCoord).xyz * 2.0 - 1.0;
+    float3 tangentNormal = tNormal.SampleBias(
+        s1,
+        input.texCoord,
+        materialMipBias).xyz * 2.0 - 1.0;
     tangentNormal.y = -tangentNormal.y;
 
     float3 N;
@@ -239,7 +242,10 @@ float4 PSMain(VS_OUTPUT input, bool isFrontFace : SV_IsFrontFace) : SV_TARGET
     
     MaterialData mat = gMaterialData[finalMatID];
     
-    float4 albedoSample = SampleDepthAlbedo(finalMatID, input.texCoord);
+    float4 albedoSample = SampleDepthAlbedo(
+        finalMatID,
+        input.texCoord,
+        materialMipBias);
     ApplyDepthAlphaTest(albedoSample.a);
     float3 albedo = DecodeSRGBColor(albedoSample.rgb) * mat.baseColorFactor.rgb;
     float finalAlpha = albedoSample.a;
@@ -276,7 +282,7 @@ float4 PSMain(VS_OUTPUT input, bool isFrontFace : SV_IsFrontFace) : SV_TARGET
     float roughness = 0.5;
     float metallic = 0.0;
     
-    float4 mrSample = tMR.Sample(s1, input.texCoord);
+    float4 mrSample = tMR.SampleBias(s1, input.texCoord, materialMipBias);
     ao = max(mrSample.r, 0.01);
     roughness = ClampPerceptualRoughness(mrSample.g);
     metallic = mrSample.b;
@@ -350,7 +356,9 @@ float4 PSMain(VS_OUTPUT input, bool isFrontFace : SV_IsFrontFace) : SV_TARGET
     
     // Add emissive (if applicable)
     Texture2D tEmissive = ResourceDescriptorHeap[mat.emissiveIdx];
-    float3 emissive = hasEmissive ? DecodeSRGBColor(tEmissive.Sample(s1, input.texCoord).rgb) : float3(0.0, 0.0, 0.0);
+    float3 emissive = hasEmissive
+        ? DecodeSRGBColor(tEmissive.SampleBias(s1, input.texCoord, materialMipBias).rgb)
+        : float3(0.0, 0.0, 0.0);
     
     float3 totalDiffuse = directDiffuse + ambientDiffuse;
     float3 totalSpecular = directSpecular + ambientSpecular;

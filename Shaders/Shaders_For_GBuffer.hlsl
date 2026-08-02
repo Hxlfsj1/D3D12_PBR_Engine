@@ -32,6 +32,12 @@ struct InstanceData
     uint3 pad;
 };
 
+cbuffer PassConstants : register(b0)
+{
+    float3 unusedCamPos;
+    float materialMipBias;
+};
+
 cbuffer MeshConstants : register(b1)
 {
     uint materialID;
@@ -100,7 +106,10 @@ GBufferOutput PSMain(VS_OUTPUT input, bool isFrontFace : SV_IsFrontFace)
     uint finalMatID = ResolveDepthMaterialID(input.instanceID, materialID);
     MaterialData mat = gMaterialData[finalMatID];
     bool isUnlit = mat.isUnlit != 0;
-    float4 albedoSample = SampleDepthAlbedo(finalMatID, input.texCoord);
+    float4 albedoSample = SampleDepthAlbedo(
+        finalMatID,
+        input.texCoord,
+        materialMipBias);
     ApplyDepthAlphaTest(albedoSample.a);
     
     float3 baseAlbedo = DecodeSRGBColor(albedoSample.rgb) * mat.baseColorFactor.rgb;
@@ -110,13 +119,17 @@ GBufferOutput PSMain(VS_OUTPUT input, bool isFrontFace : SV_IsFrontFace)
     if (!isUnlit)
     {
         Texture2D tEmissive = ResourceDescriptorHeap[mat.emissiveIdx];
-        float3 emissiveSample = DecodeSRGBColor(tEmissive.Sample(s1, input.texCoord).rgb);
+        float3 emissiveSample = DecodeSRGBColor(
+            tEmissive.SampleBias(s1, input.texCoord, materialMipBias).rgb);
         output.emissive = float4(emissiveSample, 1.0f);
     }
     
 #if LOD_LEVEL == 0
     Texture2D tNormal = ResourceDescriptorHeap[mat.normalIdx];
-    float3 normalMap = tNormal.Sample(s1, input.texCoord).xyz * 2.0 - 1.0;
+    float3 normalMap = tNormal.SampleBias(
+        s1,
+        input.texCoord,
+        materialMipBias).xyz * 2.0 - 1.0;
     normalMap.y = -normalMap.y;
     float3 N;
     float3 T;
@@ -133,7 +146,10 @@ GBufferOutput PSMain(VS_OUTPUT input, bool isFrontFace : SV_IsFrontFace)
 #endif
 
     Texture2D tORM = ResourceDescriptorHeap[mat.ormIdx];
-    float3 ormSample = tORM.Sample(s1, input.texCoord).rgb;
+    float3 ormSample = tORM.SampleBias(
+        s1,
+        input.texCoord,
+        materialMipBias).rgb;
     output.orm = float4(ormSample, 1.0f);
     output.orm.a = isUnlit ? 0.0f : 1.0f;
     
