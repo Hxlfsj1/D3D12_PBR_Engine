@@ -14,13 +14,7 @@
 
 #include "d3dx12.h"
 
-#if defined(LEARNDIRECTX_ENABLE_STREAMLINE)
-#include <sl.h>
-#include <sl_consts.h>
-#include <sl_dlss.h>
-#else
 #pragma comment(lib, "d3d12.lib")
 #pragma comment(lib, "dxgi.lib")
-#endif
 #pragma comment(lib, "dxcompiler.lib")
 #pragma comment(lib, "dxguid.lib")

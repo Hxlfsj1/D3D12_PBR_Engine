@@ -32,9 +32,11 @@ void ComputeBasis(float3 dir, out float Y[9])
     float z = n.z;
 
     Y[0] = 0.282095f;
+    
     Y[1] = 0.488603f * y;
     Y[2] = 0.488603f * z;
     Y[3] = 0.488603f * x;
+    
     Y[4] = 1.092548f * x * y;
     Y[5] = 1.092548f * y * z;
     Y[6] = 0.315392f * (3.0f * z * z - 1.0f);

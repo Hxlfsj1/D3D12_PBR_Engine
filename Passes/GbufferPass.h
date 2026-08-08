@@ -215,11 +215,14 @@ public:
             return {};
         }
 
+        const uint32_t gbufferWidth = depthDesc->width;
+        const uint32_t gbufferHeight = depthDesc->height;
+
         auto createGBufferTexture = [&](DXGI_FORMAT format, const char* name)
             {
                 RDGTextureDesc desc;
-                desc.width = depthDesc->width;
-                desc.height = depthDesc->height;
+                desc.width = gbufferWidth;
+                desc.height = gbufferHeight;
                 desc.format = format;
                 desc.flags = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
                 desc.hasClearValue = true;

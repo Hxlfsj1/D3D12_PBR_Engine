@@ -2,6 +2,6 @@
   "width": 2560,
   "height": 1600,
   "fullscreen": false,
-  "tsr_upscale_factor": 1.5,
+  "tsr_upscale_factor": 2.0,
   "title": "Self Made Render Engine"
 }
