@@ -14,7 +14,9 @@
 
 #include "d3dx12.h"
 
+#if !defined(_WIN64)
 #pragma comment(lib, "d3d12.lib")
 #pragma comment(lib, "dxgi.lib")
+#endif
 #pragma comment(lib, "dxcompiler.lib")
 #pragma comment(lib, "dxguid.lib")
