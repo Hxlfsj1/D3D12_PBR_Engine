@@ -443,9 +443,7 @@ public:
     bool InitPostProcess(
         RenderDevice* dc,
         int sceneWidth,
-        int sceneHeight,
-        int outputWidth,
-        int outputHeight)
+        int sceneHeight)
     {
         D3D12_DESCRIPTOR_HEAP_DESC rtvHeapDesc = {};
         rtvHeapDesc.NumDescriptors = 1;
@@ -518,32 +516,7 @@ public:
 
         dc->GetDevice()->CreateShaderResourceView(m_transparentSceneColorCopy.Get(), &srvDesc, hTransparentCopySrv);
 
-        D3D12_DESCRIPTOR_HEAP_DESC taaRtvHeapDesc = {};
-        taaRtvHeapDesc.NumDescriptors = 2;
-        taaRtvHeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
-        dc->GetDevice()->CreateDescriptorHeap(&taaRtvHeapDesc, IID_PPV_ARGS(&m_taaRtvHeap));
-        m_rtvDescriptorSize = dc->GetDevice()->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
-
-        D3D12_RESOURCE_DESC taaDesc = CD3DX12_RESOURCE_DESC::Tex2D(
-            DXGI_FORMAT_R16G16B16A16_FLOAT, (UINT64)outputWidth, (UINT)outputHeight,
-            1, 1, 1, 0, D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET);
-
-        D3D12_CLEAR_VALUE taaClearVal = {};
-        taaClearVal.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
         auto defHeap = CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_DEFAULT);
-
-        for (int i = 0; i < 2; ++i)
-        {
-            dc->GetDevice()->CreateCommittedResource(&defHeap, D3D12_HEAP_FLAG_NONE, &taaDesc,
-                D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, &taaClearVal, IID_PPV_ARGS(&m_taaHistoryRT[i]));
-
-            CD3DX12_CPU_DESCRIPTOR_HANDLE rtvHandle(m_taaRtvHeap->GetCPUDescriptorHandleForHeapStart(), i, m_rtvDescriptorSize);
-            dc->GetDevice()->CreateRenderTargetView(m_taaHistoryRT[i].Get(), nullptr, rtvHandle);
-
-            m_taaHistorySrvIdx[i] = srvIdx++;
-            CD3DX12_CPU_DESCRIPTOR_HANDLE hSrv(mainDescriptorHeap->GetCPUDescriptorHandleForHeapStart(), m_taaHistorySrvIdx[i], srvDescriptorSize);
-            dc->GetDevice()->CreateShaderResourceView(m_taaHistoryRT[i].Get(), nullptr, hSrv);
-        }
 
         D3D12_RESOURCE_DESC hbaoHistoryDesc = CD3DX12_RESOURCE_DESC::Tex2D(
             DXGI_FORMAT_R16_FLOAT, (UINT64)sceneWidth, (UINT)sceneHeight,
@@ -602,6 +575,114 @@ public:
         return true;
     }
 
+    bool InitTemporalHistoryResources(RenderDevice* dc, int width, int height)
+    {
+        if (dc == nullptr || dc->GetDevice() == nullptr || width <= 0 || height <= 0)
+        {
+            return false;
+        }
+
+        D3D12_DESCRIPTOR_HEAP_DESC rtvHeapDesc = {};
+        rtvHeapDesc.NumDescriptors = 2;
+        rtvHeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
+        if (FAILED(dc->GetDevice()->CreateDescriptorHeap(
+            &rtvHeapDesc,
+            IID_PPV_ARGS(&m_temporalRtvHeap))))
+        {
+            return false;
+        }
+        m_temporalRtvDescriptorSize = dc->GetDevice()->GetDescriptorHandleIncrementSize(
+            D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
+
+        D3D12_RESOURCE_DESC historyDesc = CD3DX12_RESOURCE_DESC::Tex2D(
+            DXGI_FORMAT_R16G16B16A16_FLOAT,
+            static_cast<UINT64>(width),
+            static_cast<UINT>(height),
+            1,
+            1,
+            1,
+            0,
+            D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET);
+        D3D12_CLEAR_VALUE clearValue = {};
+        clearValue.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
+        const CD3DX12_HEAP_PROPERTIES defaultHeap(D3D12_HEAP_TYPE_DEFAULT);
+
+        for (int index = 0; index < 2; ++index)
+        {
+            if (FAILED(dc->GetDevice()->CreateCommittedResource(
+                &defaultHeap,
+                D3D12_HEAP_FLAG_NONE,
+                &historyDesc,
+                D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+                &clearValue,
+                IID_PPV_ARGS(&m_temporalHistoryRT[index]))))
+            {
+                return false;
+            }
+
+            CD3DX12_CPU_DESCRIPTOR_HANDLE rtvHandle(
+                m_temporalRtvHeap->GetCPUDescriptorHandleForHeapStart(),
+                index,
+                m_temporalRtvDescriptorSize);
+            dc->GetDevice()->CreateRenderTargetView(m_temporalHistoryRT[index].Get(), nullptr, rtvHandle);
+
+            m_temporalHistorySrvIdx[index] = srvIdx++;
+            CD3DX12_CPU_DESCRIPTOR_HANDLE srvHandle(
+                mainDescriptorHeap->GetCPUDescriptorHandleForHeapStart(),
+                m_temporalHistorySrvIdx[index],
+                srvDescriptorSize);
+            dc->GetDevice()->CreateShaderResourceView(m_temporalHistoryRT[index].Get(), nullptr, srvHandle);
+        }
+
+        return true;
+    }
+
+    bool InitDLSSResources(RenderDevice* dc, int outputWidth, int outputHeight)
+    {
+        if (dc == nullptr || dc->GetDevice() == nullptr ||
+            outputWidth <= 0 || outputHeight <= 0)
+        {
+            return false;
+        }
+
+        D3D12_RESOURCE_DESC outputDesc = CD3DX12_RESOURCE_DESC::Tex2D(
+            DXGI_FORMAT_R16G16B16A16_FLOAT,
+            static_cast<UINT64>(outputWidth),
+            static_cast<UINT>(outputHeight),
+            1,
+            1,
+            1,
+            0,
+            D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
+
+        const CD3DX12_HEAP_PROPERTIES defaultHeap(D3D12_HEAP_TYPE_DEFAULT);
+        ComPtr<ID3D12Resource> output;
+        const HRESULT result = dc->GetDevice()->CreateCommittedResource(
+            &defaultHeap,
+            D3D12_HEAP_FLAG_NONE,
+            &outputDesc,
+            D3D12_RESOURCE_STATE_COMMON,
+            nullptr,
+            IID_PPV_ARGS(&output));
+        if (FAILED(result))
+        {
+            OutputDebugStringA("DLSS: failed to create the output resource.\n");
+            return false;
+        }
+
+        output->SetName(L"DLSSOutput");
+        m_dlssOutput = std::move(output);
+
+        char message[160] = {};
+        sprintf_s(
+            message,
+            "DLSS: output resource created at %dx%d (R16G16B16A16_FLOAT, UAV).\n",
+            outputWidth,
+            outputHeight);
+        OutputDebugStringA(message);
+        return true;
+    }
+
     bool InitDepthBufferSRV(RenderDevice* dc)
     {
         if (dc == nullptr ||
@@ -644,14 +725,14 @@ public:
         }
     }
 
-    int GetTAACurrentHistoryIdx()
+    int GetTemporalCurrentHistoryIdx()
     {
-        return m_taaCurrentHistoryIdx;
+        return m_temporalCurrentHistoryIdx;
     }
 
-    void FlipTAAHistoryIndex()
+    void FlipTemporalHistoryIndex()
     {
-        m_taaCurrentHistoryIdx = 1 - m_taaCurrentHistoryIdx;
+        m_temporalCurrentHistoryIdx = 1 - m_temporalCurrentHistoryIdx;
     }
 
     int GetHBAOCurrentHistoryIdx()
@@ -981,6 +1062,11 @@ public:
         return m_offscreenRT.Get();
     }
 
+    ID3D12Resource* GetDLSSOutput()
+    {
+        return m_dlssOutput.Get();
+    }
+
     CD3DX12_CPU_DESCRIPTOR_HANDLE GetPostProcessRtvHandle()
     {
         return CD3DX12_CPU_DESCRIPTOR_HANDLE(m_postRtvHeap->GetCPUDescriptorHandleForHeapStart());
@@ -1011,19 +1097,22 @@ public:
         return m_depthBufferSrvIdx;
     }
 
-    ID3D12Resource* GetTAAHistoryRT(int idx)
+    ID3D12Resource* GetTemporalHistoryRT(int idx)
     {
-        return m_taaHistoryRT[idx].Get();
+        return m_temporalHistoryRT[idx].Get();
     }
 
-    UINT GetTAAHistorySrvIdx(int idx)
+    UINT GetTemporalHistorySrvIdx(int idx)
     {
-        return m_taaHistorySrvIdx[idx];
+        return m_temporalHistorySrvIdx[idx];
     }
 
-    CD3DX12_CPU_DESCRIPTOR_HANDLE GetTAARtvHandle(int idx)
+    CD3DX12_CPU_DESCRIPTOR_HANDLE GetTemporalRtvHandle(int idx)
     {
-        return CD3DX12_CPU_DESCRIPTOR_HANDLE(m_taaRtvHeap->GetCPUDescriptorHandleForHeapStart(), idx, m_rtvDescriptorSize);
+        return CD3DX12_CPU_DESCRIPTOR_HANDLE(
+            m_temporalRtvHeap->GetCPUDescriptorHandleForHeapStart(),
+            idx,
+            m_temporalRtvDescriptorSize);
     }
 
     ID3D12Resource* GetHBAOHistoryRT(int idx)
@@ -1162,6 +1251,7 @@ private:
     const UINT m_shadowMapSize = 4096;
 
     Microsoft::WRL::ComPtr<ID3D12Resource> m_offscreenRT;
+    Microsoft::WRL::ComPtr<ID3D12Resource> m_dlssOutput;
     Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> m_postRtvHeap;
     UINT m_offscreenSrvIdx;
 
@@ -1171,14 +1261,13 @@ private:
     ComPtr<ID3D12Resource> m_materialBuffer;
     ComPtr<ID3D12Resource> m_materialUploadBuffer;
 
-    UINT m_rtvDescriptorSize = 0;
-
     UINT m_depthBufferSrvIdx = 0;
 
-    Microsoft::WRL::ComPtr<ID3D12Resource> m_taaHistoryRT[2];
-    Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> m_taaRtvHeap;
-    UINT m_taaHistorySrvIdx[2];
-    int m_taaCurrentHistoryIdx = 0;
+    Microsoft::WRL::ComPtr<ID3D12Resource> m_temporalHistoryRT[2];
+    Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> m_temporalRtvHeap;
+    UINT m_temporalHistorySrvIdx[2];
+    UINT m_temporalRtvDescriptorSize = 0;
+    int m_temporalCurrentHistoryIdx = 0;
 
     Microsoft::WRL::ComPtr<ID3D12Resource> m_hbaoHistoryRT[2];
     Microsoft::WRL::ComPtr<ID3D12Resource> m_hbaoDepthHistoryRT[2];

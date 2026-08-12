@@ -1,6 +1,6 @@
 # LearnDirectX
 
-一个基于 DirectX 12 的实时渲染学习项目。当前工程已经不只是早期的 D3D12 入门示例，而是一个围绕 PBR、IBL、Deferred Rendering、级联阴影、HBAO、TAA 和 Render Dependency Graph 组织起来的模型查看器/小型渲染器。
+一个基于 DirectX 12 的实时渲染学习项目。当前工程已经不只是早期的 D3D12 入门示例，而是一个围绕 PBR、IBL、Deferred Rendering、级联阴影、HBAO、时域抗锯齿/重建和 Render Dependency Graph 组织起来的模型查看器/小型渲染器。
 
 默认场景从 `Settings/Scene.json` 读取，默认窗口标题为 `PBR IBL Model Viewer`。
 
@@ -14,7 +14,7 @@
 - 自动 LOD：通过 `meshoptimizer` 为每个 mesh 生成多级索引。
 - 可见性裁剪：主相机视锥裁剪，阴影级联裁剪。
 - 阴影：4 级 Cascaded Shadow Maps，带 texel snapping 以减少阴影抖动。
-- Deferred 路径：GBuffer、HBAO、Deferred Lighting、Skybox、Transparent、TAA、PostProcess。
+- Deferred 路径：GBuffer、HBAO、Deferred Lighting、Skybox、Transparent、可选 TAA/TSR/DLSS、PostProcess。
 - Forward/PBR 路径：可关闭 Deferred，用 PBR pass 直接渲染不透明物体。
 - RDG：`RDG/RDG.h` 提供 pass 依赖、资源状态转换、外部资源注册和瞬时资源生命周期管理。
 - 运行时 shader 编译：通过 DXC 编译 Shader Model 6.6 的 HLSL 文件。
@@ -26,8 +26,8 @@
 | `PBR_Render.cpp` | WinMain、应用初始化、主循环、每帧更新和渲染调度。 |
 | `Core/` | D3D12App、Win32 窗口和公共 D3D12 预编译头。 |
 | `Graphics/` | `RenderDevice` 和 `PipelineManager`，负责 D3D12 设备、PSO、Root Signature、shader 编译。 |
-| `Resources/` | 模型、贴图、IBL、GBuffer、HBAO、TAA 历史缓冲等资源管理。 |
-| `Passes/` | Shadow、PBR、GBuffer、DeferredLighting、HBAO、Skybox、TAA、PostProcess 等渲染 pass。 |
+| `Resources/` | 模型、贴图、IBL、GBuffer、HBAO，以及彼此独立的 TAA、TSR、DLSS 资源管理。 |
+| `Passes/` | Shadow、PBR、GBuffer、DeferredLighting、HBAO、Skybox、TAA、TSR、DLSS、PostProcess 等渲染 pass。 |
 | `RDG/` | Render Dependency Graph 实现。 |
 | `Logic/` | Camera、InputManager、SceneObject。 |
 | `Shaders/` | 运行时编译的 HLSL shader。 |
@@ -112,7 +112,7 @@ MSBuild.exe LearnDirectX.vcxproj /p:Configuration=Debug /p:Platform=x64 /m
 
 - `use_deferred`: 使用 Deferred 路径。关闭后走 Forward/PBR 路径。
 - `use_z_prepass`: 启用 Z Prepass。
-- `anti_aliasing`: 抗锯齿模式，可选 `None`、`TAA`、`TSR`。
+- `anti_aliasing`: 抗锯齿模式，可选 `None`、`TAA`、`TSR`、`DLSS`。三者是互斥、并列的独立模式；TAA 与 TSR 共用中立的 jitter 生成函数和一套 temporal history，pass、shader/PSO、Root Signature 与常量仍分别实现。DLSS 拥有独立的 jitter、输出资源和 NGX 状态；只有显式选择 `DLSS` 才会初始化 NGX，失败时不会切换到 TAA 或 TSR。
 - `tsr_upscale_factor`: TSR 的分辨率放大倍率，默认 `2.0`；仅在 `TSR` 模式下生效。
 
 ### `Settings/Lighting.json`
@@ -165,7 +165,7 @@ MSBuild.exe LearnDirectX.vcxproj /p:Configuration=Debug /p:Platform=x64 /m
 程序每帧大致执行：
 
 1. 等待当前 back buffer 对应的 GPU fence。
-2. 更新相机输入、View/Projection、TAA jitter、上一帧矩阵。
+2. 更新相机输入、View/Projection、当前所选模式自己的 jitter、上一帧矩阵。
 3. 计算 directional light 和 4 级 CSM 矩阵。
 4. 进行主相机视锥裁剪、阴影级联裁剪和 LOD 选择。
 5. 按透明/不透明、模型指针、LOD、cutout 状态排序，尽量保持实例化批次。
@@ -182,7 +182,7 @@ HBAO + Blur
 DeferredLighting
 Skybox
 Transparent
-TAA optional
+TAA or TSR or DLSS optional
 PostProcess
 Present
 ```
@@ -222,6 +222,6 @@ Present
 - 当前工程仍依赖 Assimp 解析网格和内嵌贴图，同时用 tinygltf 读取部分 glTF 元数据。
 - `Vertex` 中保留了骨骼字段，但当前渲染路径没有实现动画/蒙皮更新。
 - 透明物体为了正确混合会按距离排序，这会牺牲一部分 batching。
-- TAA 与 TSR 共用 history buffer、jitter、运动重投影和历史颜色钳制；当前 TSR 仅支持 Deferred 路径。
+- TAA 与 TSR 共用 `TemporalReconstructionShared.h` 中的 jitter 函数、`ResourceManager` 中的一套双缓冲 temporal history，以及 `TemporalReconstructionCommon.hlsli` 中的纯 shader 函数。两者不互调 pass，也不共用 shader、PSO、Root Signature 或常量。DLSS 不参与这些共享。当前 TSR 和 DLSS 执行路径仅支持 Deferred，TAA 同时支持 Deferred 与 Forward。
 - 配置和 shader 没有热重载，修改后需要重新运行程序。
 - 资源路径大量使用相对路径，工作目录不正确时会出现找不到 shader、模型或 JSON 的问题。

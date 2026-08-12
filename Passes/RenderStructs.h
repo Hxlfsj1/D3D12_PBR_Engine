@@ -89,26 +89,10 @@ struct alignas(D3D12_CONSTANT_BUFFER_DATA_PLACEMENT_ALIGNMENT) HBAOConstants
     UINT padTo256[10];
 };
 
-struct alignas(D3D12_CONSTANT_BUFFER_DATA_PLACEMENT_ALIGNMENT) TAAConstants
-{
-    DirectX::XMFLOAT4X4 currJitteredInvViewProj;
-    DirectX::XMFLOAT4X4 prevUnjitteredViewProj;
-    DirectX::XMFLOAT4 currentReconstructionWeights[3];
-
-    float blendAlpha;
-
-    UINT colorTextureIdx;
-    UINT historyTextureIdx;
-    UINT depthTextureIdx;
-    UINT motionTextureIdx;
-
-    DirectX::XMFLOAT2 currentJitterPixels;
-    UINT pad;
-};
-
 struct alignas(D3D12_CONSTANT_BUFFER_DATA_PLACEMENT_ALIGNMENT) MotionVectorConstants
 {
     DirectX::XMFLOAT4X4 currJitteredInvViewProj;
+    DirectX::XMFLOAT4X4 currUnjitteredViewProj;
     DirectX::XMFLOAT4X4 prevUnjitteredViewProj;
 
     UINT depthTextureIdx;

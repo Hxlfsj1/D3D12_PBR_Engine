@@ -1,8 +1,0 @@
-NVIDIA Streamline SDK 2.12.0
-Release: https://github.com/NVIDIA-RTX/Streamline/releases/tag/v2.12.0
-Archive: streamline-sdk-v2.12.0.zip
-SHA256: F5C0A3D870707DDDC3570FB4BCD3655CF48A8A68C3A9D342910CFA21B77DCF48
-
-This project retains the headers, x64 import library, DLSS Super Resolution
-runtime binaries for development and production, integration documentation,
-and the accompanying license files from the official release archive.

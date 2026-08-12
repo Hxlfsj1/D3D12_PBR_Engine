@@ -1,5 +1,5 @@
 {
   "use_deferred": true,
   "use_z_prepass": false,
-  "anti_aliasing": "TSR"
+  "anti_aliasing": "DLSS"
 }

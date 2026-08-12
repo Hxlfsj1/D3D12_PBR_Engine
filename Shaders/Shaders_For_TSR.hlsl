@@ -1,8 +1,7 @@
-cbuffer TAAConstants : register(b0)
+cbuffer TSRConstants : register(b0)
 {
     float4x4 currJitteredInvViewProj;
     float4x4 prevUnjitteredViewProj;
-    float4 currentReconstructionWeights[3];
 
     float blendAlpha;
     uint colorTextureIdx;
@@ -21,7 +20,15 @@ struct VS_OUTPUT
 };
 
 #include "FullscreenTriangle.hlsli"
-#include "TemporalAACommon.hlsli"
+#include "TemporalReconstructionCommon.hlsli"
+
+VS_OUTPUT VSMain(uint vertexID : SV_VertexID)
+{
+    VS_OUTPUT output;
+    output.uv = GetFullscreenTriangleTexCoord(vertexID);
+    output.pos = GetFullscreenTrianglePosition(output.uv);
+    return output;
+}
 
 CurrentNeighborhood ReconstructTSRCurrentNeighborhood(
     Texture2D currentColorTexture,
@@ -108,7 +115,8 @@ float4 PSMain(VS_OUTPUT input) : SV_TARGET
     {
         Texture2D tMotionUV = ResourceDescriptorHeap[motionTextureIdx];
         motionUV = tMotionUV.SampleLevel(sPoint, closestDepth.uv, 0).rg;
-        historyUV = uv - motionUV;
+        float2 currentJitterUV = currentJitterPixels * inputTexelSize;
+        historyUV = uv - motionUV - currentJitterUV;
     }
     else
     {

@@ -21,7 +21,7 @@ struct VS_OUTPUT
 };
 
 #include "FullscreenTriangle.hlsli"
-#include "TemporalAACommon.hlsli"
+#include "TemporalReconstructionCommon.hlsli"
 
 VS_OUTPUT VSMain(uint vertexID : SV_VertexID)
 {
@@ -93,7 +93,8 @@ float4 PSMain(VS_OUTPUT input) : SV_TARGET
     {
         Texture2D tMotionUV = ResourceDescriptorHeap[motionTextureIdx];
         motionUV = tMotionUV.SampleLevel(sPoint, closestDepth.uv, 0).rg;
-        historyUV = uv - motionUV;
+        float2 currentJitterUV = currentJitterPixels * texelSize;
+        historyUV = uv - motionUV - currentJitterUV;
     }
     else
     {

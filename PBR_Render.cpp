@@ -18,7 +18,10 @@
 #include "DeferredLightingPass.h"
 #include "MotionVectorPass.h"
 #include "TAAPass.h"
+#include "TSRPass.h"
+#include "TemporalReconstructionShared.h"
 #include "ScalarTemporalFilterPass.h"
+#include "DLSSPass.h"
 
 #define STB_IMAGE_IMPLEMENTATION
 #include <stb_image.h>
@@ -70,10 +73,10 @@ D3D12App::D3D12App(HINSTANCE hInstance) : camera(XMFLOAT3(0.0f, 3.0f, -10.0f))
     frameIndex = 0;
     deltaTime = 0.0f;
 
-    // Construction for TAA
-    m_taaJitterFrameIndex = 0;
+    m_temporalJitterFrameIndex = 0;
+    m_dlssJitterFrameIndex = 0;
     m_hbaoTemporalFrameIndex = 0;
-    m_taaHistoryValid = false;
+    m_temporalHistoryValid = false;
     m_hbaoHistoryValid = false;
 
     DirectX::XMStoreFloat4x4(&m_currUnjitteredViewProjGpu, DirectX::XMMatrixIdentity());
@@ -83,6 +86,8 @@ D3D12App::D3D12App(HINSTANCE hInstance) : camera(XMFLOAT3(0.0f, 3.0f, -10.0f))
 
     m_currJitterNdcX = 0.0f;
     m_currJitterNdcY = 0.0f;
+    m_currJitterPixelX = 0.0f;
+    m_currJitterPixelY = 0.0f;
 }
 
 D3D12App::~D3D12App()
@@ -90,6 +95,7 @@ D3D12App::~D3D12App()
     if (m_deviceContext.GetDevice() != nullptr)
     {
         WaitForPreviousFrame();
+        m_dlssManager.Shutdown();
     }
 }
 
@@ -106,23 +112,8 @@ bool D3D12App::Initialize(int nShowCmd)
     if (m_antiAliasingMode == AntiAliasingMode::TSR &&
         !m_settingsManager.pipeline.useDeferred)
     {
-        OutputDebugStringA("Warning: TSR currently requires the deferred pipeline; falling back to TAA.\n");
-        m_antiAliasingMode = AntiAliasingMode::TAA;
-    }
-
-    float tsrUpscaleFactor = m_settingsManager.window.tsrUpscaleFactor;
-    if (!std::isfinite(tsrUpscaleFactor))
-    {
-        tsrUpscaleFactor = 2.0f;
-    }
-    tsrUpscaleFactor = std::clamp(tsrUpscaleFactor, 1.0f, 4.0f);
-
-    SceneWidth = Width;
-    SceneHeight = Height;
-    if (m_antiAliasingMode == AntiAliasingMode::TSR)
-    {
-        SceneWidth = (std::max)(1, static_cast<int>(std::ceil(Width / tsrUpscaleFactor)));
-        SceneHeight = (std::max)(1, static_cast<int>(std::ceil(Height / tsrUpscaleFactor)));
+        OutputDebugStringA("Warning: TSR requires the deferred pipeline; disabling anti-aliasing.\n");
+        m_antiAliasingMode = AntiAliasingMode::None;
     }
 
     std::string titleStr = m_settingsManager.window.title;
@@ -219,10 +210,57 @@ bool D3D12App::InitD3D()
     // Bootstrap Hardware : Initialize DXGI infrastructure, Device, Command Queue, and Swap Chain
     if (!m_deviceContext.Initialize(hwnd, Width, Height, frameBufferCount)) return false;
 
+    // DLSS is an explicit mode. TSR and the other AA modes never initialize NGX.
+    const bool dlssRequested = m_antiAliasingMode == AntiAliasingMode::DLSS;
+    bool dlssConfigured = false;
+    if (dlssRequested && m_settingsManager.pipeline.useDeferred)
+    {
+        const bool ngxInitialized = m_dlssManager.Initialize(m_deviceContext.GetDevice());
+        const bool dlssAvailable = ngxInitialized && m_dlssManager.QueryDLSSCapability();
+        dlssConfigured =
+            dlssAvailable &&
+            m_dlssManager.ConfigureFeature(
+                static_cast<unsigned int>(Width),
+                static_cast<unsigned int>(Height));
+
+        if (!dlssConfigured)
+        {
+            OutputDebugStringA("DLSS: unavailable; continuing at native resolution without DLSS.\n");
+        }
+    }
+    else if (dlssRequested)
+    {
+        OutputDebugStringA("DLSS: the current evaluation path requires deferred rendering; continuing without DLSS.\n");
+    }
+
+    float tsrUpscaleFactor = m_settingsManager.window.tsrUpscaleFactor;
+    if (!std::isfinite(tsrUpscaleFactor))
+    {
+        tsrUpscaleFactor = 2.0f;
+    }
+    tsrUpscaleFactor = std::clamp(tsrUpscaleFactor, 1.0f, 4.0f);
+
+    SceneWidth = Width;
+    SceneHeight = Height;
+    if (dlssConfigured)
+    {
+        SceneWidth = static_cast<int>(m_dlssManager.GetRenderWidth());
+        SceneHeight = static_cast<int>(m_dlssManager.GetRenderHeight());
+    }
+    else if (m_antiAliasingMode == AntiAliasingMode::TSR)
+    {
+        SceneWidth = (std::max)(1, static_cast<int>(std::ceil(Width / tsrUpscaleFactor)));
+        SceneHeight = (std::max)(1, static_cast<int>(std::ceil(Height / tsrUpscaleFactor)));
+    }
+
     frameIndex = m_deviceContext.GetSwapChain()->GetCurrentBackBufferIndex();
 
     // Compile Pipeline States: Precompute Root Signatures and PSOs for both Graphics and Compute pipelines
     if (!m_pipelineManager.Initialize(&m_deviceContext)) return false;
+    if (m_antiAliasingMode == AntiAliasingMode::TAA &&
+        !m_pipelineManager.InitializeTAA(&m_deviceContext)) return false;
+    if (m_antiAliasingMode == AntiAliasingMode::TSR &&
+        !m_pipelineManager.InitializeTSR(&m_deviceContext)) return false;
 
     // Stream Assets & Build IBL: Load 3D models and HDR textures into VRAM and bake IBL components
     if (!m_resourceManager.LoadAssets(&m_deviceContext, SettingsManager::LoadSceneFromJson("Settings/Scene.json"), frameBufferCount)) return false;
@@ -235,9 +273,22 @@ bool D3D12App::InitD3D()
     if (!m_resourceManager.InitPostProcess(
         &m_deviceContext,
         SceneWidth,
-        SceneHeight,
-        Width,
-        Height)) return false;
+        SceneHeight)) return false;
+
+    const bool temporalReconstructionRequested =
+        m_antiAliasingMode == AntiAliasingMode::TAA ||
+        m_antiAliasingMode == AntiAliasingMode::TSR;
+    if (temporalReconstructionRequested &&
+        !m_resourceManager.InitTemporalHistoryResources(&m_deviceContext, Width, Height))
+    {
+        return false;
+    }
+
+    if (dlssConfigured &&
+        !m_resourceManager.InitDLSSResources(&m_deviceContext, Width, Height))
+    {
+        return false;
+    }
 
     if (!m_resourceManager.InitDepthBufferSRV(&m_deviceContext)) return false;
 
@@ -308,28 +359,42 @@ void D3D12App::Update()
     }
 
     // Calculate current jitter value
-    if (m_antiAliasingMode != AntiAliasingMode::None)
+    const bool dlssSamplingActive =
+        m_antiAliasingMode == AntiAliasingMode::DLSS &&
+        m_dlssManager.IsFeatureConfigured() &&
+        (!m_dlssManager.WasFeatureCreationAttempted() ||
+            m_dlssManager.CanEvaluate() ||
+            m_dlssManager.WasLastEvaluationSuccessful());
+    DirectX::XMFLOAT2 jitterPixels = {};
+    bool jitterEnabled = false;
+    if (m_antiAliasingMode == AntiAliasingMode::TAA ||
+        m_antiAliasingMode == AntiAliasingMode::TSR)
     {
-        float currJitterPixelX = 0.0f;
-        float currJitterPixelY = 0.0f;
+        jitterPixels = TemporalReconstruction::CalculateJitter(m_temporalJitterFrameIndex++);
+        jitterEnabled = true;
+    }
+    else if (dlssSamplingActive)
+    {
+        jitterPixels = DLSSPass::CalculateJitter(
+            m_dlssJitterFrameIndex++,
+            SceneWidth,
+            Width);
+        jitterEnabled = true;
+    }
 
-        static constexpr float haltonX[8] = { 0.5f, 0.25f, 0.75f, 0.125f, 0.625f, 0.375f, 0.875f, 0.0625f };
-        static constexpr float haltonY[8] = { 0.333333f, 0.666667f, 0.111111f, 0.444444f, 0.777778f, 0.222222f, 0.555556f, 0.888889f };
-        constexpr UINT jitterSampleCount = static_cast<UINT>(std::size(haltonX));
-        constexpr float jitterScale = 0.75f;
-        const UINT jitterSampleIndex = m_taaJitterFrameIndex % jitterSampleCount;
-
-        currJitterPixelX = (haltonX[jitterSampleIndex] - 0.5f) * jitterScale;
-        currJitterPixelY = (haltonY[jitterSampleIndex] - 0.5f) * jitterScale;
-
-        m_currJitterNdcX = (currJitterPixelX * 2.0f) / SceneWidth;
-        m_currJitterNdcY = (currJitterPixelY * 2.0f) / SceneHeight;
-        m_taaJitterFrameIndex++;
+    if (jitterEnabled)
+    {
+        m_currJitterNdcX = (jitterPixels.x * 2.0f) / SceneWidth;
+        m_currJitterNdcY = (jitterPixels.y * 2.0f) / SceneHeight;
+        m_currJitterPixelX = jitterPixels.x;
+        m_currJitterPixelY = -jitterPixels.y;
     }
     else
     {
         m_currJitterNdcX = 0.0f;
         m_currJitterNdcY = 0.0f;
+        m_currJitterPixelX = 0.0f;
+        m_currJitterPixelY = 0.0f;
     }
 
     // Apply jitter value to matrix and set them to GPU
@@ -367,7 +432,13 @@ void D3D12App::Update()
     // Initialize passed data (camera position, light attributes, etc.)
     PassConstants passCb = {};
     passCb.camPos = camera.Position;
-    if (m_antiAliasingMode == AntiAliasingMode::TSR)
+    if (dlssSamplingActive)
+    {
+        const float primaryResolutionFraction =
+            static_cast<float>(SceneWidth) / static_cast<float>((std::max)(Width, 1));
+        passCb.materialMipBias = std::log2(primaryResolutionFraction) - 1.0f;
+    }
+    else if (m_antiAliasingMode == AntiAliasingMode::TSR)
     {
         constexpr float minAutomaticViewMipBias = -2.0f;
         constexpr float automaticViewMipBiasOffset = -0.3f;
@@ -531,7 +602,7 @@ void D3D12App::Update()
     }
 
     // ====================================================================================================
-    // Instance data Submission and TAA offset matirx calculating
+    // Instance-data submission and active camera-jitter matrix calculation
     // ====================================================================================================
     InstanceData* mappedInstanceData = reinterpret_cast<InstanceData*>(cbvAddress + kPassConstantsAlignedSize);
 
@@ -621,10 +692,22 @@ void D3D12App::Render()
         m_antiAliasingMode != AntiAliasingMode::TSR;
     BeginFrame(backBufferHandledByFrameGraph);
 
+    if (m_antiAliasingMode == AntiAliasingMode::DLSS &&
+        m_dlssManager.IsFeatureConfigured() &&
+        !m_dlssManager.WasFeatureCreationAttempted() &&
+        !m_dlssManager.CreateFeature(m_deviceContext.GetCommandList()))
+    {
+        OutputDebugStringA("DLSS: feature creation failed; continuing with the scene-color output.\n");
+    }
+
     size_t transparentIdx = 0;
-    bool taaHandledByDeferredGraph = false;
+    bool temporalHistoryWrittenByDeferredGraph = false;
     bool hbaoTemporalHandledByDeferredGraph = false;
     bool postProcessHandledByDeferredGraph = false;
+    bool dlssEvaluatedByDeferredGraph = false;
+    const bool dlssModeActive = m_antiAliasingMode == AntiAliasingMode::DLSS;
+    const bool dlssOutputWasReady =
+        dlssModeActive && m_dlssManager.WasLastEvaluationSuccessful();
 
     if (!m_settingsManager.pipeline.useDeferred)
     {
@@ -714,6 +797,7 @@ void D3D12App::Render()
             &m_resourceManager,
             &m_pipelineManager,
             m_currJitteredInvViewProjGpu,
+            m_currUnjitteredViewProjGpu,
             m_prevUnjitteredViewProjGpu,
             SceneWidth,
             SceneHeight,
@@ -790,6 +874,7 @@ void D3D12App::Render()
                     &m_pipelineManager,
                     m_currJitteredInvViewProjGpu,
                     m_prevUnjitteredViewProjGpu,
+                    DirectX::XMFLOAT2(m_currJitterPixelX, m_currJitterPixelY),
                     frameIndex,
                     SceneWidth,
                     SceneHeight,
@@ -924,7 +1009,46 @@ void D3D12App::Render()
                 { deferredOutput.sceneColor, gbufferOutput.depth, shadowOutput.shadowMapSrv });
             sceneColorProducer = transparentPass;
 
-            if (m_antiAliasingMode != AntiAliasingMode::None)
+            DLSSPass::Output dlssOutput = {};
+            if (dlssModeActive && m_dlssManager.CanEvaluate())
+            {
+                dlssOutput = DLSSPass::AddToGraph(
+                    deferredGraph,
+                    &m_dlssManager,
+                    &m_resourceManager,
+                    m_currJitterPixelX,
+                    m_currJitterPixelY,
+                    (std::max)(deltaTime * 1000.0f, 0.0f),
+                    !m_dlssHistoryValid,
+                    { deferredOutput.sceneColor, gbufferOutput.depth, motionOutput.motionTexture });
+
+                if (dlssOutput.outputTexture.IsValid() && dlssOutput.pass.IsValid())
+                {
+                    deferredGraph.AddPassDependencies(
+                        dlssOutput.pass,
+                        { sceneColorProducer, motionOutput.pass });
+                    dlssEvaluatedByDeferredGraph = true;
+                }
+            }
+
+            if (dlssOutputWasReady &&
+                dlssOutput.outputTexture.IsValid() &&
+                dlssOutput.pass.IsValid())
+            {
+                RDGPassHandle postProcessPass = PostProcessPass::AddFinalToGraph(
+                    deferredGraph,
+                    &m_deviceContext,
+                    &m_resourceManager,
+                    &m_pipelineManager,
+                    frameIndex,
+                    viewport,
+                    scissorRect,
+                    dlssOutput.outputTexture);
+                deferredGraph.AddPassDependencies(postProcessPass, { dlssOutput.pass });
+
+                postProcessHandledByDeferredGraph = true;
+            }
+            else if (m_antiAliasingMode == AntiAliasingMode::TAA)
             {
                 TAAPass::Output taaOutput = TAAPass::AddToGraph(
                     deferredGraph,
@@ -936,12 +1060,9 @@ void D3D12App::Render()
                     m_currJitterNdcX,
                     m_currJitterNdcY,
                     frameIndex,
-                    m_antiAliasingMode,
-                    SceneWidth,
-                    SceneHeight,
                     Width,
                     Height,
-                    m_taaHistoryValid,
+                    m_temporalHistoryValid,
                     { deferredOutput.sceneColor, gbufferOutput.depth, motionOutput.motionTexture });
                 deferredGraph.AddPassDependencies(taaOutput.pass, { sceneColorProducer });
                 sceneColorProducer = taaOutput.pass;
@@ -957,7 +1078,42 @@ void D3D12App::Render()
                     taaOutput.historyTexture);
                 deferredGraph.AddPassDependencies(postProcessPass, { sceneColorProducer });
 
-                taaHandledByDeferredGraph = true;
+                temporalHistoryWrittenByDeferredGraph = true;
+                postProcessHandledByDeferredGraph = true;
+            }
+            else if (m_antiAliasingMode == AntiAliasingMode::TSR)
+            {
+                TSRPass::Output tsrOutput = TSRPass::AddToGraph(
+                    deferredGraph,
+                    &m_deviceContext,
+                    &m_resourceManager,
+                    &m_pipelineManager,
+                    m_currJitteredInvViewProjGpu,
+                    m_prevUnjitteredViewProjGpu,
+                    m_currJitterNdcX,
+                    m_currJitterNdcY,
+                    frameIndex,
+                    SceneWidth,
+                    SceneHeight,
+                    Width,
+                    Height,
+                    m_temporalHistoryValid,
+                    { deferredOutput.sceneColor, gbufferOutput.depth, motionOutput.motionTexture });
+                deferredGraph.AddPassDependencies(tsrOutput.pass, { sceneColorProducer });
+                sceneColorProducer = tsrOutput.pass;
+
+                RDGPassHandle postProcessPass = PostProcessPass::AddFinalToGraph(
+                    deferredGraph,
+                    &m_deviceContext,
+                    &m_resourceManager,
+                    &m_pipelineManager,
+                    frameIndex,
+                    viewport,
+                    scissorRect,
+                    tsrOutput.historyTexture);
+                deferredGraph.AddPassDependencies(postProcessPass, { sceneColorProducer });
+
+                temporalHistoryWrittenByDeferredGraph = true;
                 postProcessHandledByDeferredGraph = true;
             }
             else
@@ -980,16 +1136,28 @@ void D3D12App::Render()
         // Execute the entire graph after all passes have been added
         deferredGraph.Execute(m_deviceContext.GetCommandList());
 
+        if (dlssEvaluatedByDeferredGraph)
+        {
+            if (m_dlssManager.WasLastEvaluationSuccessful())
+            {
+                m_dlssHistoryValid = true;
+            }
+            else
+            {
+                m_dlssHistoryValid = false;
+            }
+        }
+
         if (hbaoTemporalHandledByDeferredGraph)
         {
             m_resourceManager.FlipHBAOHistoryIndex();
             m_hbaoHistoryValid = true;
         }
 
-        if (taaHandledByDeferredGraph)
+        if (temporalHistoryWrittenByDeferredGraph)
         {
-            m_resourceManager.FlipTAAHistoryIndex();
-            m_taaHistoryValid = true;
+            m_resourceManager.FlipTemporalHistoryIndex();
+            m_temporalHistoryValid = true;
         }
 
         transparentIdx = transparentStartIndex;
@@ -1004,10 +1172,11 @@ void D3D12App::Render()
 
     UINT finalPostInputSRV = m_resourceManager.GetPostProcessSrvIdx();
 
-    if (m_antiAliasingMode == AntiAliasingMode::TAA && !taaHandledByDeferredGraph)
+    if (m_antiAliasingMode == AntiAliasingMode::TAA &&
+        !temporalHistoryWrittenByDeferredGraph)
     {
-        finalPostInputSRV = TAAPass::ExecuteRDG(&m_deviceContext, &m_resourceManager, &m_pipelineManager, m_currJitteredInvViewProjGpu, m_prevUnjitteredViewProjGpu, m_currJitterNdcX, m_currJitterNdcY, frameIndex, Width, Height, m_taaHistoryValid);
-        m_taaHistoryValid = true;
+        finalPostInputSRV = TAAPass::ExecuteRDG(&m_deviceContext, &m_resourceManager, &m_pipelineManager, m_currJitteredInvViewProjGpu, m_currUnjitteredViewProjGpu, m_prevUnjitteredViewProjGpu, m_currJitterNdcX, m_currJitterNdcY, frameIndex, Width, Height, m_temporalHistoryValid);
+        m_temporalHistoryValid = true;
     }
 
     if (!postProcessHandledByDeferredGraph)

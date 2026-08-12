@@ -64,7 +64,7 @@
     <None Include="Shaders\FullscreenTriangle.hlsli">
       <Filter>Shaders</Filter>
     </None>
-    <None Include="Shaders\TemporalAACommon.hlsli">
+    <None Include="Shaders\TemporalReconstructionCommon.hlsli">
       <Filter>Shaders</Filter>
     </None>
     <None Include="Shaders\LightingCommon.hlsli">
@@ -132,6 +132,9 @@
     <ClInclude Include="Graphics\RenderDevice.h">
       <Filter>Graphics</Filter>
     </ClInclude>
+    <ClInclude Include="Graphics\DLSSManager.h">
+      <Filter>Graphics</Filter>
+    </ClInclude>
     <ClInclude Include="Resources\PBR_Model.h">
       <Filter>Resources</Filter>
     </ClInclude>
@@ -189,7 +192,16 @@
     <ClInclude Include="Passes\TAAPass.h">
       <Filter>Passes</Filter>
     </ClInclude>
+    <ClInclude Include="Passes\TemporalReconstructionShared.h">
+      <Filter>Passes</Filter>
+    </ClInclude>
+    <ClInclude Include="Passes\TSRPass.h">
+      <Filter>Passes</Filter>
+    </ClInclude>
     <ClInclude Include="Passes\MotionVectorPass.h">
+      <Filter>Passes</Filter>
+    </ClInclude>
+    <ClInclude Include="Passes\DLSSPass.h">
       <Filter>Passes</Filter>
     </ClInclude>
     <ClInclude Include="Passes\ScalarTemporalFilterPass.h">

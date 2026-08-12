@@ -84,6 +84,7 @@ public:
         PipelineManager* pipelineManager,
         const DirectX::XMFLOAT4X4& currJitteredInvViewProj,
         const DirectX::XMFLOAT4X4& prevUnjitteredViewProj,
+        const DirectX::XMFLOAT2& currentJitterPixels,
         int frameIndex,
         int width,
         int height,
@@ -198,6 +199,7 @@ public:
                     pipelineManager,
                     currJitteredInvViewProj,
                     prevUnjitteredViewProj,
+                    currentJitterPixels,
                     frameIndex,
                     width,
                     height,
@@ -248,7 +250,8 @@ private:
         UINT previousDepthTextureIdx;
 
         UINT previousNormalTextureIdx;
-        UINT padding[3];
+        DirectX::XMFLOAT2 currentJitterPixels;
+        UINT padding;
     };
 
     static_assert(sizeof(Constants) == D3D12_CONSTANT_BUFFER_DATA_PLACEMENT_ALIGNMENT);
@@ -259,6 +262,7 @@ private:
         PipelineManager* pipelineManager,
         const DirectX::XMFLOAT4X4& currJitteredInvViewProj,
         const DirectX::XMFLOAT4X4& prevUnjitteredViewProj,
+        const DirectX::XMFLOAT2& currentJitterPixels,
         int frameIndex,
         int width,
         int height,
@@ -324,6 +328,7 @@ private:
         constants.normalTextureIdx = views.normalSrvIdx;
         constants.previousDepthTextureIdx = views.previousDepthSrvIdx;
         constants.previousNormalTextureIdx = views.previousNormalSrvIdx;
+        constants.currentJitterPixels = currentJitterPixels;
 
         UINT8* constantsCpuAddress =
             resourceManager->GetCBVAddress(frameIndex) + constantsOffset;

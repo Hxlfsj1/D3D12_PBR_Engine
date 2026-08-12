@@ -28,6 +28,7 @@ public:
         ResourceManager* resourceManager,
         PipelineManager* pipelineManager,
         const DirectX::XMFLOAT4X4& currJitteredInvViewProjGpu,
+        const DirectX::XMFLOAT4X4& currUnjitteredViewProjGpu,
         const DirectX::XMFLOAT4X4& prevUnjitteredViewProjGpu,
         int width,
         int height,
@@ -93,6 +94,7 @@ public:
                     resourceManager,
                     pipelineManager,
                     currJitteredInvViewProjGpu,
+                    currUnjitteredViewProjGpu,
                     prevUnjitteredViewProjGpu,
                     width,
                     height,
@@ -110,6 +112,7 @@ private:
         ResourceManager* resourceManager,
         PipelineManager* pipelineManager,
         const DirectX::XMFLOAT4X4& currJitteredInvViewProjGpu,
+        const DirectX::XMFLOAT4X4& currUnjitteredViewProjGpu,
         const DirectX::XMFLOAT4X4& prevUnjitteredViewProjGpu,
         int width,
         int height,
@@ -140,6 +143,7 @@ private:
 
         MotionVectorConstants motionCb = {};
         motionCb.currJitteredInvViewProj = currJitteredInvViewProjGpu;
+        motionCb.currUnjitteredViewProj = currUnjitteredViewProjGpu;
         motionCb.prevUnjitteredViewProj = prevUnjitteredViewProjGpu;
         motionCb.depthTextureIdx = depthSrvIdx;
 

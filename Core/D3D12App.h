@@ -14,6 +14,7 @@
 #include <vector>
 #include "stdafx.h"
 #include "Camera.h"
+#include "DLSSManager.h"
 #include "RenderDevice.h"
 #include "ResourceManager.h"
 #include "InputManager.h"
@@ -74,6 +75,7 @@ private:
 
     // Core Managers
     RenderDevice m_deviceContext;
+    DLSSManager m_dlssManager;
     ResourceManager m_resourceManager;
     InputManager m_inputManager;
     PipelineManager m_pipelineManager;
@@ -95,10 +97,12 @@ private:
     int m_visibleInstanceCount = 0;
     int m_frustumInstanceCount = 0;
     AntiAliasingMode m_antiAliasingMode = AntiAliasingMode::None;
-    UINT m_taaJitterFrameIndex;
+    UINT m_temporalJitterFrameIndex = 0;
+    UINT m_dlssJitterFrameIndex = 0;
     UINT m_hbaoTemporalFrameIndex;
-    bool m_taaHistoryValid = false;
+    bool m_temporalHistoryValid = false;
     bool m_hbaoHistoryValid = false;
+    bool m_dlssHistoryValid = false;
 
     DirectX::XMFLOAT4X4 m_currViewGpu;
     DirectX::XMFLOAT4X4 m_currUnjitteredProjGpu;
@@ -112,6 +116,8 @@ private:
     bool m_hasPrevUnjitteredViewProj = false;
     float m_currJitterNdcX = 0.0f;
     float m_currJitterNdcY = 0.0f;
+    float m_currJitterPixelX = 0.0f;
+    float m_currJitterPixelY = 0.0f;
 };
 
 #endif

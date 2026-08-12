@@ -83,7 +83,7 @@
     <Link>
       <SubSystem>Windows</SubSystem>
       <GenerateDebugInformation>true</GenerateDebugInformation>
-      <AdditionalDependencies>meshoptimizer.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>d3d12.lib;dxgi.lib;meshoptimizer.lib;%(AdditionalDependencies)</AdditionalDependencies>
       <AdditionalLibraryDirectories>$(SolutionDir)x64\Debug;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
     </Link>
   </ItemDefinitionGroup>
@@ -101,7 +101,7 @@
     <Link>
       <SubSystem>Windows</SubSystem>
       <GenerateDebugInformation>true</GenerateDebugInformation>
-      <AdditionalDependencies>meshoptimizer.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>d3d12.lib;dxgi.lib;meshoptimizer.lib;%(AdditionalDependencies)</AdditionalDependencies>
       <AdditionalLibraryDirectories>$(SolutionDir)x64\Release;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
     </Link>
   </ItemDefinitionGroup>
@@ -112,13 +112,13 @@
       <PreprocessorDefinitions>_DEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
       <LanguageStandard>stdcpp20</LanguageStandard>
-      <AdditionalIncludeDirectories>Core;Graphics;Resources;Logic;ThirdParty;Passes;RDG;$(ProjectDir)ThirdParty\NVIDIA\Streamline\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>Core;Graphics;Resources;Logic;ThirdParty;Passes;RDG;$(ProjectDir)ThirdParty\NVIDIA\DLSS\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ClCompile>
     <Link>
       <SubSystem>Windows</SubSystem>
       <GenerateDebugInformation>true</GenerateDebugInformation>
-      <AdditionalDependencies>sl.interposer.lib;meshoptimizer.lib;%(AdditionalDependencies)</AdditionalDependencies>
-      <AdditionalLibraryDirectories>$(ProjectDir)ThirdParty\NVIDIA\Streamline\lib\x64;$(SolutionDir)x64\Debug;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
+      <AdditionalDependencies>nvsdk_ngx_d_dbg.lib;d3d12.lib;dxgi.lib;meshoptimizer.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalLibraryDirectories>$(ProjectDir)ThirdParty\NVIDIA\DLSS\lib\Windows_x86_64\x64;$(SolutionDir)x64\Debug;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
     </Link>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
@@ -130,13 +130,13 @@
       <PreprocessorDefinitions>NDEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
       <LanguageStandard>stdcpp20</LanguageStandard>
-      <AdditionalIncludeDirectories>Core;Graphics;Resources;Logic;ThirdParty;Passes;RDG;$(ProjectDir)ThirdParty\NVIDIA\Streamline\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>Core;Graphics;Resources;Logic;ThirdParty;Passes;RDG;$(ProjectDir)ThirdParty\NVIDIA\DLSS\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ClCompile>
     <Link>
       <SubSystem>Windows</SubSystem>
       <GenerateDebugInformation>true</GenerateDebugInformation>
-      <AdditionalDependencies>sl.interposer.lib;meshoptimizer.lib;%(AdditionalDependencies)</AdditionalDependencies>
-      <AdditionalLibraryDirectories>$(ProjectDir)ThirdParty\NVIDIA\Streamline\lib\x64;$(SolutionDir)x64\Release;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
+      <AdditionalDependencies>nvsdk_ngx_d.lib;d3d12.lib;dxgi.lib;meshoptimizer.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalLibraryDirectories>$(ProjectDir)ThirdParty\NVIDIA\DLSS\lib\Windows_x86_64\x64;$(SolutionDir)x64\Release;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
@@ -155,6 +155,7 @@
     <ClInclude Include="Passes\GbufferPass.h" />
     <ClInclude Include="Passes\HBAOPass.h" />
     <ClInclude Include="Passes\MotionVectorPass.h" />
+    <ClInclude Include="Passes\DLSSPass.h" />
     <ClInclude Include="Resources\IBLBaker.h" />
     <ClInclude Include="Logic\InputManager.h" />
     <ClInclude Include="ThirdParty\json.hpp" />
@@ -163,6 +164,7 @@
     <ClInclude Include="Resources\PBR_Model.h" />
     <ClInclude Include="Graphics\PBR_Shader.h" />
     <ClInclude Include="Graphics\PipelineManager.h" />
+    <ClInclude Include="Graphics\DLSSManager.h" />
     <ClInclude Include="Passes\PostProcessPass.h" />
     <ClInclude Include="Passes\ScalarTemporalFilterPass.h" />
     <ClInclude Include="Graphics\RenderDevice.h" />
@@ -174,6 +176,8 @@
     <ClInclude Include="ThirdParty\stb_image.h" />
     <ClInclude Include="Core\stdafx.h" />
     <ClInclude Include="Passes\TAAPass.h" />
+    <ClInclude Include="Passes\TemporalReconstructionShared.h" />
+    <ClInclude Include="Passes\TSRPass.h" />
     <ClInclude Include="ThirdParty\tiny_gltf.h" />
     <ClInclude Include="Core\Window.h" />
   </ItemGroup>
@@ -197,12 +201,6 @@
     <None Include="Shaders\Shaders_For_Split_Sum.hlsl">
       <FileType>Document</FileType>
     </None>
-  </ItemGroup>
-  <ItemGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
-    <StreamlineRuntime Include="$(ProjectDir)ThirdParty\NVIDIA\Streamline\bin\x64\development\*.dll" />
-  </ItemGroup>
-  <ItemGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
-    <StreamlineRuntime Include="$(ProjectDir)ThirdParty\NVIDIA\Streamline\bin\x64\*.dll" />
   </ItemGroup>
   <ItemGroup>
     <None Include="Shaders\Shaders_For_SH_Calculate.hlsl">
@@ -229,7 +227,7 @@
     <None Include="Shaders\FullscreenTriangle.hlsli">
       <FileType>Document</FileType>
     </None>
-    <None Include="Shaders\TemporalAACommon.hlsli">
+    <None Include="Shaders\TemporalReconstructionCommon.hlsli">
       <FileType>Document</FileType>
     </None>
     <None Include="Shaders\LightingCommon.hlsli">
@@ -276,14 +274,17 @@
       <FileType>Document</FileType>
     </None>
   </ItemGroup>
+  <ItemGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
+    <DLSSRuntime Include="$(ProjectDir)ThirdParty\NVIDIA\DLSS\lib\Windows_x86_64\dev\nvngx_dlss.dll" />
+  </ItemGroup>
+  <ItemGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
+    <DLSSRuntime Include="$(ProjectDir)ThirdParty\NVIDIA\DLSS\lib\Windows_x86_64\rel\nvngx_dlss.dll" />
+  </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">
     <Import Project="packages\Microsoft.Direct3D.D3D12.1.619.1\build\native\Microsoft.Direct3D.D3D12.targets" Condition="Exists('packages\Microsoft.Direct3D.D3D12.1.619.1\build\native\Microsoft.Direct3D.D3D12.targets')" />
     <Import Project="packages\directxtk12_desktop_win10.2026.4.1.1\build\native\directxtk12_desktop_win10.targets" Condition="Exists('packages\directxtk12_desktop_win10.2026.4.1.1\build\native\directxtk12_desktop_win10.targets')" />
   </ImportGroup>
-  <Target Name="CopyStreamlineRuntime" AfterTargets="Build" Condition="'$(Platform)'=='x64'">
-    <Copy SourceFiles="@(StreamlineRuntime)" DestinationFolder="$(TargetDir)" SkipUnchangedFiles="true" />
-  </Target>
   <Target Name="EnsureNuGetPackageBuildImports" BeforeTargets="PrepareForBuild">
     <PropertyGroup>
       <ErrorText>这台计算机上缺少此项目引用的 NuGet 程序包。使用“NuGet 程序包还原”可下载这些程序包。有关更多信息，请参见 http://go.microsoft.com/fwlink/?LinkID=322105。缺少的文件是 {0}。</ErrorText>
@@ -291,5 +292,11 @@
     <Error Condition="!Exists('packages\Microsoft.Direct3D.D3D12.1.619.1\build\native\Microsoft.Direct3D.D3D12.props')" Text="$([System.String]::Format('$(ErrorText)', 'packages\Microsoft.Direct3D.D3D12.1.619.1\build\native\Microsoft.Direct3D.D3D12.props'))" />
     <Error Condition="!Exists('packages\Microsoft.Direct3D.D3D12.1.619.1\build\native\Microsoft.Direct3D.D3D12.targets')" Text="$([System.String]::Format('$(ErrorText)', 'packages\Microsoft.Direct3D.D3D12.1.619.1\build\native\Microsoft.Direct3D.D3D12.targets'))" />
     <Error Condition="!Exists('packages\directxtk12_desktop_win10.2026.4.1.1\build\native\directxtk12_desktop_win10.targets')" Text="$([System.String]::Format('$(ErrorText)', 'packages\directxtk12_desktop_win10.2026.4.1.1\build\native\directxtk12_desktop_win10.targets'))" />
+  </Target>
+  <Target Name="CopyDLSSRuntime" AfterTargets="Build" Condition="'$(Platform)'=='x64'">
+    <Copy SourceFiles="@(DLSSRuntime)" DestinationFolder="$(TargetDir)" SkipUnchangedFiles="true" />
+  </Target>
+  <Target Name="CleanDLSSRuntime" AfterTargets="Clean" Condition="'$(Platform)'=='x64'">
+    <Delete Files="$(TargetDir)nvngx_dlss.dll" />
   </Target>
 </Project>

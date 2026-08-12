@@ -5,12 +5,26 @@
 #include "RenderDevice.h"
 #include "ResourceManager.h"
 #include "PipelineManager.h"
-#include "RenderStructs.h"
-#include "Settings_Manager.h"
 #include "MotionVectorPass.h"
 #include "RDG.h"
 
 #include <cmath>
+
+struct alignas(D3D12_CONSTANT_BUFFER_DATA_PLACEMENT_ALIGNMENT) TAAConstants
+{
+    DirectX::XMFLOAT4X4 currJitteredInvViewProj;
+    DirectX::XMFLOAT4X4 prevUnjitteredViewProj;
+    DirectX::XMFLOAT4 currentReconstructionWeights[3];
+
+    float blendAlpha;
+    UINT colorTextureIdx;
+    UINT historyTextureIdx;
+    UINT depthTextureIdx;
+
+    UINT motionTextureIdx;
+    DirectX::XMFLOAT2 currentJitterPixels;
+    UINT pad;
+};
 
 class TAAPass
 {
@@ -48,11 +62,11 @@ public:
         int frameIndex, int width, int height,
         bool historyValid)
     {
-        int taaCurrentIdx = resourceManager->GetTAACurrentHistoryIdx();
+        int temporalCurrentIdx = resourceManager->GetTemporalCurrentHistoryIdx();
 
         auto cmdList = deviceContext->GetCommandList();
 
-        ID3D12Resource* currentHistoryTarget = resourceManager->GetTAAHistoryRT(taaCurrentIdx);
+        ID3D12Resource* currentHistoryTarget = resourceManager->GetTemporalHistoryRT(temporalCurrentIdx);
         ID3D12Resource* offscreenLitBuffer = resourceManager->GetPostProcessRT();
 
         CD3DX12_RESOURCE_BARRIER barriers[3] =
@@ -72,16 +86,13 @@ public:
             currJitterNdcX,
             currJitterNdcY,
             frameIndex,
-            AntiAliasingMode::TAA,
-            width,
-            height,
             width,
             height,
             historyValid,
             {
-                resourceManager->GetTAARtvHandle(taaCurrentIdx),
+                resourceManager->GetTemporalRtvHandle(temporalCurrentIdx),
                 resourceManager->GetPostProcessSrvIdx(),
-                resourceManager->GetTAAHistorySrvIdx(1 - taaCurrentIdx),
+                resourceManager->GetTemporalHistorySrvIdx(1 - temporalCurrentIdx),
                 resourceManager->GetDepthBufferSrvIdx(),
                 UINT_MAX
             });
@@ -94,9 +105,9 @@ public:
         };
         cmdList->ResourceBarrier(3, revertBarriers);
 
-        resourceManager->FlipTAAHistoryIndex();
+        resourceManager->FlipTemporalHistoryIndex();
 
-        return resourceManager->GetTAAHistorySrvIdx(taaCurrentIdx);
+        return resourceManager->GetTemporalHistorySrvIdx(temporalCurrentIdx);
     }
 
     static void ExecuteNoBarrier(
@@ -107,9 +118,7 @@ public:
         const DirectX::XMFLOAT4X4& prevUnjitteredViewProjGpu,
         float currJitterNdcX, float currJitterNdcY,
         int frameIndex,
-        AntiAliasingMode antiAliasingMode,
-        int inputWidth, int inputHeight,
-        int outputWidth, int outputHeight,
+        int width, int height,
         bool historyValid,
         const TextureViews& views)
     {
@@ -117,16 +126,13 @@ public:
 
         cmdList->OMSetRenderTargets(1, &views.outputRtv, FALSE, nullptr);
 
-        D3D12_VIEWPORT viewport = { 0.0f, 0.0f, (float)outputWidth, (float)outputHeight, 0.0f, 1.0f };
-        D3D12_RECT scissorRect = { 0, 0, outputWidth, outputHeight };
+        D3D12_VIEWPORT viewport = { 0.0f, 0.0f, (float)width, (float)height, 0.0f, 1.0f };
+        D3D12_RECT scissorRect = { 0, 0, width, height };
         cmdList->RSSetViewports(1, &viewport);
         cmdList->RSSetScissorRects(1, &scissorRect);
 
         cmdList->SetGraphicsRootSignature(pipelineManager->GetTAARootSignature());
-        cmdList->SetPipelineState(
-            antiAliasingMode == AntiAliasingMode::TSR
-                ? pipelineManager->GetTSRPSO()
-                : pipelineManager->GetTAAPSO());
+        cmdList->SetPipelineState(pipelineManager->GetTAAPSO());
 
         ID3D12DescriptorHeap* heaps[] = { resourceManager->GetMainDescriptorHeap() };
         cmdList->SetDescriptorHeaps(1, heaps);
@@ -140,9 +146,9 @@ public:
         cb.blendAlpha = historyValid ? 0.95f : 0.0f;
 
         const float jitterPixelX =
-            currJitterNdcX * 0.5f * static_cast<float>(inputWidth);
+            currJitterNdcX * 0.5f * static_cast<float>(width);
         const float jitterPixelY =
-            -currJitterNdcY * 0.5f * static_cast<float>(inputHeight);
+            -currJitterNdcY * 0.5f * static_cast<float>(height);
 
         cb.currentJitterPixels = DirectX::XMFLOAT2(jitterPixelX, jitterPixelY);
 
@@ -192,12 +198,13 @@ public:
         ResourceManager* resourceManager,
         PipelineManager* pipelineManager,
         const DirectX::XMFLOAT4X4& currJitteredInvViewProjGpu,
+        const DirectX::XMFLOAT4X4& currUnjitteredViewProjGpu,
         const DirectX::XMFLOAT4X4& prevUnjitteredViewProjGpu,
         float currJitterNdcX, float currJitterNdcY,
         int frameIndex, int width, int height,
         bool historyValid)
     {
-        int taaCurrentIdx = resourceManager->GetTAACurrentHistoryIdx();
+        int temporalCurrentIdx = resourceManager->GetTemporalCurrentHistoryIdx();
 
         RDGBuilder graph(deviceContext, "TAAGraph");
         graph.SetTransientResourceAllocator(
@@ -230,14 +237,14 @@ public:
             "PostProcessRT");
 
         RDGTextureHandle currentHistoryTarget = graph.RegisterExternalTexture(
-            resourceManager->GetTAAHistoryRT(taaCurrentIdx),
+            resourceManager->GetTemporalHistoryRT(temporalCurrentIdx),
             D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
             D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
             "TAACurrentHistory");
         graph.MarkTextureAsOutput(currentHistoryTarget);
 
         RDGTextureHandle previousHistory = graph.RegisterExternalTexture(
-            resourceManager->GetTAAHistoryRT(1 - taaCurrentIdx),
+            resourceManager->GetTemporalHistoryRT(1 - temporalCurrentIdx),
             D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
             D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
             "TAAPreviousHistory");
@@ -260,6 +267,7 @@ public:
             resourceManager,
             pipelineManager,
             currJitteredInvViewProjGpu,
+            currUnjitteredViewProjGpu,
             prevUnjitteredViewProjGpu,
             width,
             height,
@@ -329,9 +337,6 @@ public:
                     currJitterNdcX,
                     currJitterNdcY,
                     frameIndex,
-                    AntiAliasingMode::TAA,
-                    width,
-                    height,
                     width,
                     height,
                     historyValid,
@@ -340,9 +345,9 @@ public:
 
         graph.Execute(deviceContext->GetCommandList());
 
-        resourceManager->FlipTAAHistoryIndex();
+        resourceManager->FlipTemporalHistoryIndex();
 
-        return resourceManager->GetTAAHistorySrvIdx(taaCurrentIdx);
+        return resourceManager->GetTemporalHistorySrvIdx(temporalCurrentIdx);
     }
 
     static Output AddToGraph(
@@ -354,13 +359,11 @@ public:
         const DirectX::XMFLOAT4X4& prevUnjitteredViewProjGpu,
         float currJitterNdcX, float currJitterNdcY,
         int frameIndex,
-        AntiAliasingMode antiAliasingMode,
-        int inputWidth, int inputHeight,
-        int outputWidth, int outputHeight,
+        int width, int height,
         bool historyValid,
         const Input& input = {})
     {
-        int taaCurrentIdx = resourceManager->GetTAACurrentHistoryIdx();
+        int temporalCurrentIdx = resourceManager->GetTemporalCurrentHistoryIdx();
 
         RDGTextureHandle color = input.color;
         if (!color.IsValid())
@@ -373,14 +376,14 @@ public:
         }
 
         RDGTextureHandle currentHistoryTarget = graph.RegisterExternalTexture(
-            resourceManager->GetTAAHistoryRT(taaCurrentIdx),
+            resourceManager->GetTemporalHistoryRT(temporalCurrentIdx),
             D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
             D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
             "TAACurrentHistory");
         graph.MarkTextureAsOutput(currentHistoryTarget);
 
         RDGTextureHandle previousHistory = graph.RegisterExternalTexture(
-            resourceManager->GetTAAHistoryRT(1 - taaCurrentIdx),
+            resourceManager->GetTemporalHistoryRT(1 - temporalCurrentIdx),
             D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
             D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
             "TAAPreviousHistory");
@@ -438,11 +441,8 @@ public:
         }
         params.WriteRTV(historyRtv);
 
-        const char* passName =
-            antiAliasingMode == AntiAliasingMode::TSR ? "TSR" : "TAA";
-
         RDGPassHandle pass = graph.AddPass(
-            passName,
+            "TAA",
             ERDGPassFlags::Graphics,
             params,
             [=](ID3D12GraphicsCommandList* cmdList)
@@ -456,16 +456,13 @@ public:
                     currJitterNdcX,
                     currJitterNdcY,
                     frameIndex,
-                    antiAliasingMode,
-                    inputWidth,
-                    inputHeight,
-                    outputWidth,
-                    outputHeight,
+                    width,
+                    height,
                     historyValid,
                     views);
             });
 
-        return { currentHistoryTarget, taaCurrentIdx, pass };
+        return { currentHistoryTarget, temporalCurrentIdx, pass };
     }
 };
 

@@ -32,7 +32,8 @@ cbuffer ScalarTemporalConstants : register(b0)
     uint previousDepthTextureIdx;
 
     uint previousNormalTextureIdx;
-    uint3 padding;
+    float2 currentJitterPixels;
+    uint padding;
 };
 
 SamplerState sPoint : register(s0);
@@ -214,7 +215,8 @@ float PSMain(VS_OUTPUT input) : SV_TARGET
     {
         Texture2D motionTexture = ResourceDescriptorHeap[motionTextureIdx];
         motionUV = motionTexture.SampleLevel(sPoint, closestDepth.uv, 0).rg;
-        reprojection.historyUV = input.uv - motionUV;
+        float2 currentJitterUV = currentJitterPixels / resolution;
+        reprojection.historyUV = input.uv - motionUV - currentJitterUV;
     }
 
     if (!IsUVInsideViewport(reprojection.historyUV))

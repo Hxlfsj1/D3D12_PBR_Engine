@@ -66,7 +66,8 @@ enum class AntiAliasingMode
 {
     None,
     TAA,
-    TSR
+    TSR,
+    DLSS
 };
 
 struct PipelineConfig
@@ -235,6 +236,10 @@ private:
             else if (antiAliasing == "TSR")
             {
                 pipeline.antiAliasing = AntiAliasingMode::TSR;
+            }
+            else if (antiAliasing == "DLSS")
+            {
+                pipeline.antiAliasing = AntiAliasingMode::DLSS;
             }
             else
             {

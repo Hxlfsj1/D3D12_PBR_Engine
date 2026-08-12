@@ -34,9 +34,18 @@ public:
         if (!BuildHBAOPipeline(dc)) return false;
         if (!BuildMotionVectorPipeline(dc)) return false;
         if (!BuildScalarTemporalPipeline(dc)) return false;
-        if (!BuildTAAPipeline(dc)) return false;
 
         return true;
+    }
+
+    bool InitializeTAA(RenderDevice* dc)
+    {
+        return BuildTAAPipeline(dc);
+    }
+
+    bool InitializeTSR(RenderDevice* dc)
+    {
+        return BuildTSRPipeline(dc);
     }
 
     ID3D12RootSignature* GetRootSignature()
@@ -180,6 +189,11 @@ public:
     ID3D12PipelineState* GetTAAPSO()
     {
         return psoTAA.Get();
+    }
+
+    ID3D12RootSignature* GetTSRRootSignature()
+    {
+        return tsrRootSignature.Get();
     }
 
     ID3D12PipelineState* GetTSRPSO()
@@ -898,11 +912,9 @@ private:
 
         auto vs = ShaderCompiler::CompileFromFile(L"Shaders/Shaders_For_TAA.hlsl", L"VSMain", L"vs_6_6");
         auto ps = ShaderCompiler::CompileFromFile(L"Shaders/Shaders_For_TAA.hlsl", L"PSMain", L"ps_6_6");
-        auto psTSR = ShaderCompiler::CompileFromFile(L"Shaders/Shaders_For_TSR.hlsl", L"PSMain", L"ps_6_6");
-
-        if (!vs || !ps || !psTSR)
+        if (!vs || !ps)
         {
-            MessageBox(NULL, L"Temporal anti-aliasing shader compilation failed. Please check the TAA and TSR shaders.", L"Engine Error", MB_OK);
+            MessageBox(NULL, L"TAA shader compilation failed.", L"Engine Error", MB_OK);
             return false;
         }
 
@@ -928,8 +940,82 @@ private:
             return false;
         }
 
-        psoDesc.PS = CD3DX12_SHADER_BYTECODE(psTSR->GetBufferPointer(), psTSR->GetBufferSize());
-        if (FAILED(dc->GetDevice()->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(&psoTSR))))
+        return true;
+    }
+
+    bool BuildTSRPipeline(RenderDevice* dc)
+    {
+        CD3DX12_ROOT_PARAMETER rootParameters[1];
+        rootParameters[0].InitAsConstantBufferView(0);
+
+        D3D12_STATIC_SAMPLER_DESC samplers[2];
+        samplers[0] = CD3DX12_STATIC_SAMPLER_DESC(0, D3D12_FILTER_MIN_MAG_MIP_POINT);
+        samplers[0].AddressU = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+        samplers[0].AddressV = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+        samplers[0].AddressW = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+        samplers[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+        samplers[1] = CD3DX12_STATIC_SAMPLER_DESC(1, D3D12_FILTER_MIN_MAG_MIP_LINEAR);
+        samplers[1].AddressU = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+        samplers[1].AddressV = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+        samplers[1].AddressW = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+        samplers[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+
+        CD3DX12_ROOT_SIGNATURE_DESC rootSigDesc(
+            1,
+            rootParameters,
+            2,
+            samplers,
+            D3D12_ROOT_SIGNATURE_FLAG_CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED);
+
+        ComPtr<ID3DBlob> serializedRootSig = nullptr;
+        ComPtr<ID3DBlob> errorBlob = nullptr;
+        HRESULT hr = D3D12SerializeRootSignature(
+            &rootSigDesc,
+            D3D_ROOT_SIGNATURE_VERSION_1,
+            &serializedRootSig,
+            &errorBlob);
+        if (FAILED(hr)) return false;
+
+        hr = dc->GetDevice()->CreateRootSignature(
+            0,
+            serializedRootSig->GetBufferPointer(),
+            serializedRootSig->GetBufferSize(),
+            IID_PPV_ARGS(&tsrRootSignature));
+        if (FAILED(hr)) return false;
+
+        auto vs = ShaderCompiler::CompileFromFile(
+            L"Shaders/Shaders_For_TSR.hlsl",
+            L"VSMain",
+            L"vs_6_6");
+        auto ps = ShaderCompiler::CompileFromFile(
+            L"Shaders/Shaders_For_TSR.hlsl",
+            L"PSMain",
+            L"ps_6_6");
+        if (!vs || !ps)
+        {
+            MessageBox(NULL, L"TSR shader compilation failed.", L"Engine Error", MB_OK);
+            return false;
+        }
+
+        D3D12_GRAPHICS_PIPELINE_STATE_DESC psoDesc = {};
+        psoDesc.InputLayout = { nullptr, 0 };
+        psoDesc.pRootSignature = tsrRootSignature.Get();
+        psoDesc.VS = CD3DX12_SHADER_BYTECODE(vs->GetBufferPointer(), vs->GetBufferSize());
+        psoDesc.PS = CD3DX12_SHADER_BYTECODE(ps->GetBufferPointer(), ps->GetBufferSize());
+        psoDesc.RasterizerState = CD3DX12_RASTERIZER_DESC(D3D12_DEFAULT);
+        psoDesc.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
+        psoDesc.BlendState = CD3DX12_BLEND_DESC(D3D12_DEFAULT);
+        psoDesc.DepthStencilState.DepthEnable = FALSE;
+        psoDesc.DepthStencilState.StencilEnable = FALSE;
+        psoDesc.SampleMask = UINT_MAX;
+        psoDesc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+        psoDesc.NumRenderTargets = 1;
+        psoDesc.RTVFormats[0] = DXGI_FORMAT_R16G16B16A16_FLOAT;
+        psoDesc.SampleDesc.Count = 1;
+
+        if (FAILED(dc->GetDevice()->CreateGraphicsPipelineState(
+            &psoDesc,
+            IID_PPV_ARGS(&psoTSR))))
         {
             MessageBox(NULL, L"Failed to create TSR PSO!", L"Engine Error", MB_OK);
             return false;
@@ -1129,6 +1215,7 @@ private:
 
     ComPtr<ID3D12RootSignature> taaRootSignature;
     ComPtr<ID3D12PipelineState> psoTAA;
+    ComPtr<ID3D12RootSignature> tsrRootSignature;
     ComPtr<ID3D12PipelineState> psoTSR;
 
     ComPtr<ID3D12RootSignature> scalarTemporalRootSignature;

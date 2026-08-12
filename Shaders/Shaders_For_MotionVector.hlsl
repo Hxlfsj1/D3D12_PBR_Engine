@@ -1,6 +1,7 @@
 cbuffer MotionVectorConstants : register(b0)
 {
     float4x4 currJitteredInvViewProj;
+    float4x4 currUnjitteredViewProj;
     float4x4 prevUnjitteredViewProj;
     uint depthTextureIdx;
 };
@@ -38,14 +39,23 @@ float2 PSMain(VS_OUTPUT input) : SV_TARGET
     }
 
     float3 worldPos = worldPosH.xyz / worldPosH.w;
-    float4 prevClipPos = mul(float4(worldPos, 1.0f), prevUnjitteredViewProj);
-    if (abs(prevClipPos.w) < 1.0e-6f)
+    float4 currentClipPos = mul(float4(worldPos, 1.0f), currUnjitteredViewProj);
+    float4 previousClipPos = mul(float4(worldPos, 1.0f), prevUnjitteredViewProj);
+    if (abs(currentClipPos.w) < 1.0e-6f ||
+        abs(previousClipPos.w) < 1.0e-6f)
     {
         return float2(2.0f, 2.0f);
     }
 
-    float2 prevNDC = prevClipPos.xy / prevClipPos.w;
-    float2 historyUV = float2(prevNDC.x * 0.5f + 0.5f, 0.5f - prevNDC.y * 0.5f);
+    float2 currentNDCUnjittered = currentClipPos.xy / currentClipPos.w;
+    float2 previousNDCUnjittered = previousClipPos.xy / previousClipPos.w;
+    float2 currentUVUnjittered = float2(
+        currentNDCUnjittered.x * 0.5f + 0.5f,
+        0.5f - currentNDCUnjittered.y * 0.5f);
+    float2 previousUVUnjittered = float2(
+        previousNDCUnjittered.x * 0.5f + 0.5f,
+        0.5f - previousNDCUnjittered.y * 0.5f);
 
-    return uv - historyUV;
+    // Scene velocity in normalized UV units, excluding projection jitter.
+    return currentUVUnjittered - previousUVUnjittered;
 }
