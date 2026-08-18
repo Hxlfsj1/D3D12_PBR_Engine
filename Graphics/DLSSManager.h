@@ -572,9 +572,6 @@ private:
         case DLSSQualityMode::DLAA:
             *outputValue = NVSDK_NGX_PerfQuality_Value_DLAA;
             return true;
-        case DLSSQualityMode::UltraQuality:
-            *outputValue = NVSDK_NGX_PerfQuality_Value_UltraQuality;
-            return true;
         case DLSSQualityMode::Quality:
             *outputValue = NVSDK_NGX_PerfQuality_Value_MaxQuality;
             return true;

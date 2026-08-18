@@ -17,13 +17,13 @@ D:\项目\LearnDirectX\Logic\SceneObject.h(8,8): warning C4099: “Model”: 类
       D:\项目\LearnDirectX\Resources\PBR_Model.h(161,7):
       参见“Model”的声明
   
-D:\项目\LearnDirectX\Resources\Settings_Manager.h(194,55): warning C4101: “e”: 未引用的局部变量
+D:\项目\LearnDirectX\Resources\Settings_Manager.h(196,55): warning C4101: “e”: 未引用的局部变量
   (编译源文件“PBR_Render.cpp”)
   
-D:\项目\LearnDirectX\Resources\Settings_Manager.h(222,55): warning C4101: “e”: 未引用的局部变量
+D:\项目\LearnDirectX\Resources\Settings_Manager.h(224,55): warning C4101: “e”: 未引用的局部变量
   (编译源文件“PBR_Render.cpp”)
   
-D:\项目\LearnDirectX\Resources\Settings_Manager.h(269,55): warning C4101: “e”: 未引用的局部变量
+D:\项目\LearnDirectX\Resources\Settings_Manager.h(279,55): warning C4101: “e”: 未引用的局部变量
   (编译源文件“PBR_Render.cpp”)
   
 D:\项目\LearnDirectX\Passes\GBufferPass.h(148,47): warning C4267: “=”: 从“size_t”转换到“UINT”，可能丢失数据

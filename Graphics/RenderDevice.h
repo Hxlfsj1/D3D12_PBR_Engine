@@ -245,7 +245,7 @@ public:
             width,
             height,
             1,
-            0,
+            1,
             1,
             0,
             D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL);

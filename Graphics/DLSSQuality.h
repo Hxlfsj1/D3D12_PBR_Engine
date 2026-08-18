@@ -7,7 +7,6 @@
 enum class DLSSQualityMode
 {
     DLAA,
-    UltraQuality,
     Quality,
     Balanced,
     Performance,
@@ -40,10 +39,9 @@ struct DLSSOptimalSettings
     }
 };
 
-inline constexpr std::array<DLSSQualityMode, 6> kDLSSQualityModesHighToLow =
+inline constexpr std::array<DLSSQualityMode, 5> kDLSSQualityModesHighToLow =
 {
     DLSSQualityMode::DLAA,
-    DLSSQualityMode::UltraQuality,
     DLSSQualityMode::Quality,
     DLSSQualityMode::Balanced,
     DLSSQualityMode::Performance,
@@ -56,8 +54,6 @@ inline constexpr const char* GetDLSSQualityModeName(DLSSQualityMode mode) noexce
     {
     case DLSSQualityMode::DLAA:
         return "DLAA";
-    case DLSSQualityMode::UltraQuality:
-        return "UltraQuality";
     case DLSSQualityMode::Quality:
         return "Quality";
     case DLSSQualityMode::Balanced:
