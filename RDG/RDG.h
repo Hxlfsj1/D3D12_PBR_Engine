@@ -38,6 +38,7 @@ enum class ERDGAccess
 {
     Unknown,
     SRV,
+    ComputeSRV,
     UAV,
     RTV,
     DSVRead,
@@ -179,6 +180,16 @@ struct RDGPassParameters
     void ReadSRV(RDGTextureSRVHandle srv)
     {
         ReadSRV(srv.texture);
+    }
+
+    void ReadComputeSRV(RDGTextureHandle texture)
+    {
+        textures.push_back({ texture, ERDGAccess::ComputeSRV });
+    }
+
+    void ReadComputeSRV(RDGTextureSRVHandle srv)
+    {
+        ReadComputeSRV(srv.texture);
     }
 
     void ReadSRV(RDGBufferHandle buffer)
@@ -2346,6 +2357,7 @@ private:
     bool IsReadAccess(ERDGAccess access) const
     {
         return access == ERDGAccess::SRV ||
+            access == ERDGAccess::ComputeSRV ||
             access == ERDGAccess::DSVRead ||
             access == ERDGAccess::CopySrc;
     }
@@ -2364,6 +2376,7 @@ private:
         switch (access)
         {
         case ERDGAccess::SRV: return "SRV";
+        case ERDGAccess::ComputeSRV: return "ComputeSRV";
         case ERDGAccess::UAV: return "UAV";
         case ERDGAccess::RTV: return "RTV";
         case ERDGAccess::DSVRead: return "DSVRead";
@@ -2824,6 +2837,8 @@ private:
         {
         case ERDGAccess::SRV:
             return D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+        case ERDGAccess::ComputeSRV:
+            return D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
         case ERDGAccess::UAV:
             return D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
         case ERDGAccess::RTV:

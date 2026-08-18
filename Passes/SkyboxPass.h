@@ -17,32 +17,6 @@ public:
         RDGTextureHandle depth;
     };
 
-    static void Execute(
-        RenderDevice* deviceContext,
-        ResourceManager* resourceManager,
-        PipelineManager* pipelineManager,
-        Camera& camera,
-        const D3D12_VIEWPORT& viewport,
-        const D3D12_RECT& scissorRect,
-        int width,
-        int height)
-    {
-        CD3DX12_CPU_DESCRIPTOR_HANDLE rtv = resourceManager->GetPostProcessRtvHandle();
-        CD3DX12_CPU_DESCRIPTOR_HANDLE dsv = deviceContext->GetDSVHandle();
-
-        ExecuteNoBarrier(
-            deviceContext,
-            resourceManager,
-            pipelineManager,
-            camera,
-            viewport,
-            scissorRect,
-            width,
-            height,
-            rtv,
-            dsv);
-    }
-
     static void ExecuteNoBarrier(
         RenderDevice* deviceContext,
         ResourceManager* resourceManager,

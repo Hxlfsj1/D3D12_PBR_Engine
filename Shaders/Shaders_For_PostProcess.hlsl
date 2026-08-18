@@ -3,6 +3,11 @@ cbuffer PPFlags : register(b0)
     uint sceneTexIdx;
     uint visualizeScalar;
 };
+
+#ifndef POST_PROCESS_SHARPEN
+#define POST_PROCESS_SHARPEN 0
+#endif
+
 SamplerState s0 : register(s0);
 
 struct VS_OUTPUT
@@ -37,6 +42,7 @@ float4 PSMain(VS_OUTPUT input) : SV_TARGET
     float4 hdrColor = sceneTexture.Sample(s0, input.uv);
     float3 color = hdrColor.rgb;
 
+#if POST_PROCESS_SHARPEN
     float3 cTop = sceneTexture.Sample(s0, input.uv, int2(0, -1)).rgb;
     float3 cLeft = sceneTexture.Sample(s0, input.uv, int2(-1, 0)).rgb;
     float3 cRight = sceneTexture.Sample(s0, input.uv, int2(1, 0)).rgb;
@@ -51,6 +57,7 @@ float4 PSMain(VS_OUTPUT input) : SV_TARGET
     float3 wFinal = w * sharpenStrength;
 
     color = (color + (cTop + cLeft + cRight + cBottom) * wFinal) / (1.0f + 4.0f * wFinal);
+#endif
 
     // ACES Filmic Tone Mapping
     const float a = 2.51;

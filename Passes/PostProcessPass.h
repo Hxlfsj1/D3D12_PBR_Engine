@@ -10,44 +10,6 @@
 class PostProcessPass
 {
 public:
-    static void Execute(
-        RenderDevice* deviceContext,
-        ResourceManager* resourceManager,
-        PipelineManager* pipelineManager,
-        int frameIndex,
-        const D3D12_VIEWPORT& viewport,
-        const D3D12_RECT& scissorRect,
-        UINT inputSrvIdx,
-        bool visualizeScalar = false)
-    {
-        auto cmdList = deviceContext->GetCommandList();
-
-        CD3DX12_RESOURCE_BARRIER toSrv = CD3DX12_RESOURCE_BARRIER::Transition(
-            resourceManager->GetPostProcessRT(),
-            D3D12_RESOURCE_STATE_RENDER_TARGET,
-            D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
-
-        cmdList->ResourceBarrier(1, &toSrv);
-
-        ExecuteNoBarrier(
-            deviceContext,
-            resourceManager,
-            pipelineManager,
-            frameIndex,
-            viewport,
-            scissorRect,
-            deviceContext->GetRTVHandle(frameIndex),
-            inputSrvIdx,
-            visualizeScalar);
-
-        CD3DX12_RESOURCE_BARRIER toRtv = CD3DX12_RESOURCE_BARRIER::Transition(
-            resourceManager->GetPostProcessRT(),
-            D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
-            D3D12_RESOURCE_STATE_RENDER_TARGET);
-
-        cmdList->ResourceBarrier(1, &toRtv);
-    }
-
     static void ExecuteNoBarrier(
         RenderDevice* deviceContext,
         ResourceManager* resourceManager,
@@ -57,7 +19,8 @@ public:
         const D3D12_RECT& scissorRect,
         D3D12_CPU_DESCRIPTOR_HANDLE outputRtv,
         UINT inputSrvIdx,
-        bool visualizeScalar)
+        bool visualizeScalar,
+        bool enableSharpen)
     {
         auto cmdList = deviceContext->GetCommandList();
 
@@ -66,7 +29,7 @@ public:
         cmdList->RSSetScissorRects(1, &scissorRect);
 
         cmdList->SetGraphicsRootSignature(pipelineManager->GetPostProcessRootSignature());
-        cmdList->SetPipelineState(pipelineManager->GetPostProcessPSO());
+        cmdList->SetPipelineState(pipelineManager->GetPostProcessPSO(enableSharpen));
 
         cmdList->RSSetViewports(1, &viewport);
         cmdList->RSSetScissorRects(1, &scissorRect);
@@ -85,92 +48,6 @@ public:
         cmdList->DrawInstanced(3, 1, 0, 0);
     }
 
-    static void ExecuteRDG(
-        RenderDevice* deviceContext,
-        ResourceManager* resourceManager,
-        PipelineManager* pipelineManager,
-        int frameIndex,
-        const D3D12_VIEWPORT& viewport,
-        const D3D12_RECT& scissorRect,
-        bool visualizeScalar = false)
-    {
-        RDGBuilder graph(deviceContext, "PostProcessGraph");
-        graph.SetTransientResourceAllocator(
-            [deviceContext, resourceManager, frameIndex](
-                const D3D12_RESOURCE_DESC& resourceDesc,
-                D3D12_RESOURCE_STATES initialState,
-                D3D12_RESOURCE_STATES finalState,
-                const D3D12_CLEAR_VALUE* clearValue,
-                RDGTransientResourceLease* outResource)
-            {
-                return resourceManager->AllocateRDGTransientResource(
-                    deviceContext,
-                    frameIndex,
-                    resourceDesc,
-                    initialState,
-                    finalState,
-                    clearValue,
-                    outResource);
-            });
-        graph.SetTransientSrvUavDescriptorAllocator(
-            [resourceManager](UINT* descriptorIndex, D3D12_CPU_DESCRIPTOR_HANDLE* cpuHandle)
-            {
-                return resourceManager->AllocateTransientSrvUavDescriptor(descriptorIndex, cpuHandle);
-            });
-
-        RDGTextureHandle postProcessRT = graph.RegisterExternalTexture(
-            resourceManager->GetPostProcessRT(),
-            D3D12_RESOURCE_STATE_RENDER_TARGET,
-            D3D12_RESOURCE_STATE_RENDER_TARGET,
-            "PostProcessRT");
-
-        RDGTextureHandle backBuffer = graph.RegisterExternalTextureOutput(
-            deviceContext->GetRenderTarget(frameIndex),
-            D3D12_RESOURCE_STATE_RENDER_TARGET,
-            D3D12_RESOURCE_STATE_RENDER_TARGET,
-            "BackBuffer");
-
-        RDGTextureSRVHandle inputSrv = graph.CreateTextureSRVView(postProcessRT);
-        RDGTextureRTVHandle backBufferRtv = graph.CreateTextureRTVView(backBuffer);
-        if (!inputSrv.IsValid() || !backBufferRtv.IsValid())
-        {
-            Execute(
-                deviceContext,
-                resourceManager,
-                pipelineManager,
-                frameIndex,
-                viewport,
-                scissorRect,
-                resourceManager->GetPostProcessSrvIdx(),
-                visualizeScalar);
-            return;
-        }
-
-        RDGPassParameters postParams;
-        postParams.ReadSRV(inputSrv);
-        postParams.WriteRTV(backBufferRtv);
-
-        graph.AddPass(
-            "PostProcess",
-            ERDGPassFlags::Graphics,
-            postParams,
-            [=](ID3D12GraphicsCommandList* cmdList)
-            {
-                ExecuteNoBarrier(
-                    deviceContext,
-                    resourceManager,
-                    pipelineManager,
-                    frameIndex,
-                    viewport,
-                    scissorRect,
-                    backBufferRtv.cpuHandle,
-                    inputSrv.descriptorIndex,
-                    visualizeScalar);
-            });
-
-        graph.Execute(deviceContext->GetCommandList());
-    }
-
     static RDGPassHandle AddToGraph(
         RDGBuilder& graph,
         RenderDevice* deviceContext,
@@ -181,6 +58,7 @@ public:
         const D3D12_RECT& scissorRect,
         RDGTextureHandle inputTexture = {},
         bool visualizeScalar = false,
+        bool enableSharpen = false,
         D3D12_RESOURCE_STATES backBufferInitialState = D3D12_RESOURCE_STATE_RENDER_TARGET,
         D3D12_RESOURCE_STATES backBufferFinalState = D3D12_RESOURCE_STATE_RENDER_TARGET)
     {
@@ -225,7 +103,8 @@ public:
                     scissorRect,
                     backBufferRtv.cpuHandle,
                     inputSrv.descriptorIndex,
-                    visualizeScalar);
+                    visualizeScalar,
+                    enableSharpen);
             });
     }
 
@@ -238,7 +117,8 @@ public:
         const D3D12_VIEWPORT& viewport,
         const D3D12_RECT& scissorRect,
         RDGTextureHandle inputTexture = {},
-        bool visualizeScalar = false)
+        bool visualizeScalar = false,
+        bool enableSharpen = false)
     {
         return AddToGraph(
             graph,
@@ -250,6 +130,7 @@ public:
             scissorRect,
             inputTexture,
             visualizeScalar,
+            enableSharpen,
             D3D12_RESOURCE_STATE_PRESENT,
             D3D12_RESOURCE_STATE_PRESENT);
     }

@@ -3,6 +3,7 @@
 
 #include <Windows.h>
 #include <d3d12.h>
+#include "DLSSQuality.h"
 
 #if defined(_WIN64)
 
@@ -164,54 +165,127 @@ public:
         return m_dlssAvailable;
     }
 
-    bool ConfigureFeature(
+    bool QueryOptimalSettings(
         unsigned int outputWidth,
         unsigned int outputHeight,
-        NVSDK_NGX_PerfQuality_Value perfQuality = NVSDK_NGX_PerfQuality_Value_MaxQuality)
+        DLSSQualityMode qualityMode,
+        DLSSOptimalSettings* outputSettings) noexcept
     {
-        ResetFeatureConfiguration();
+        if (outputSettings == nullptr)
+        {
+            return false;
+        }
+
+        *outputSettings = {};
 
         if (!m_dlssAvailable || m_capabilityParameters == nullptr)
         {
-            OutputDebugStringA("DLSS: cannot configure the feature before capability validation.\n");
             return false;
         }
 
         if (outputWidth == 0 || outputHeight == 0)
         {
-            OutputDebugStringA("DLSS: cannot configure the feature with a zero output dimension.\n");
             return false;
         }
 
-        m_lastResult = NGX_DLSS_GET_OPTIMAL_SETTINGS(
+        NVSDK_NGX_PerfQuality_Value perfQuality = NVSDK_NGX_PerfQuality_Value_MaxQuality;
+        if (!TryGetPerfQualityValue(qualityMode, &perfQuality))
+        {
+            return false;
+        }
+
+        unsigned int renderWidth = 0;
+        unsigned int renderHeight = 0;
+        unsigned int maxRenderWidth = 0;
+        unsigned int maxRenderHeight = 0;
+        unsigned int minRenderWidth = 0;
+        unsigned int minRenderHeight = 0;
+        float recommendedSharpness = 0.0f;
+
+        const NVSDK_NGX_Result queryResult = NGX_DLSS_GET_OPTIMAL_SETTINGS(
             m_capabilityParameters,
             outputWidth,
             outputHeight,
             perfQuality,
-            &m_renderWidth,
-            &m_renderHeight,
-            &m_maxRenderWidth,
-            &m_maxRenderHeight,
-            &m_minRenderWidth,
-            &m_minRenderHeight,
-            &m_recommendedSharpness);
+            &renderWidth,
+            &renderHeight,
+            &maxRenderWidth,
+            &maxRenderHeight,
+            &minRenderWidth,
+            &minRenderHeight,
+            &recommendedSharpness);
 
-        if (NVSDK_NGX_FAILED(m_lastResult) || m_renderWidth == 0 || m_renderHeight == 0)
+        if (NVSDK_NGX_FAILED(queryResult) ||
+            renderWidth == 0 || renderHeight == 0 ||
+            maxRenderWidth == 0 || maxRenderHeight == 0 ||
+            minRenderWidth == 0 || minRenderHeight == 0)
         {
-            LogResult("NGX_DLSS_GET_OPTIMAL_SETTINGS", m_lastResult);
-            ResetFeatureConfiguration();
             return false;
         }
 
-        m_outputWidth = outputWidth;
-        m_outputHeight = outputHeight;
+        if (qualityMode == DLSSQualityMode::DLAA &&
+            (renderWidth != outputWidth || renderHeight != outputHeight))
+        {
+            return false;
+        }
+
+        outputSettings->qualityMode = qualityMode;
+        outputSettings->outputWidth = outputWidth;
+        outputSettings->outputHeight = outputHeight;
+        outputSettings->renderWidth = renderWidth;
+        outputSettings->renderHeight = renderHeight;
+        outputSettings->maxRenderWidth = maxRenderWidth;
+        outputSettings->maxRenderHeight = maxRenderHeight;
+        outputSettings->minRenderWidth = minRenderWidth;
+        outputSettings->minRenderHeight = minRenderHeight;
+        outputSettings->recommendedSharpness = recommendedSharpness;
+        return true;
+    }
+
+    bool ConfigureFeature(const DLSSOptimalSettings& settings)
+    {
+        ResetFeatureConfiguration();
+
+        if (!m_dlssAvailable ||
+            m_capabilityParameters == nullptr ||
+            !settings.IsValid())
+        {
+            OutputDebugStringA("DLSS: cannot configure the feature before capability validation or with invalid optimal settings.\n");
+            return false;
+        }
+
+        NVSDK_NGX_PerfQuality_Value perfQuality = NVSDK_NGX_PerfQuality_Value_MaxQuality;
+        if (!TryGetPerfQualityValue(settings.qualityMode, &perfQuality))
+        {
+            return false;
+        }
+
+        if (settings.qualityMode == DLSSQualityMode::DLAA &&
+            (settings.renderWidth != settings.outputWidth ||
+             settings.renderHeight != settings.outputHeight))
+        {
+            OutputDebugStringA("DLSS: DLAA requires render and output dimensions to match.\n");
+            return false;
+        }
+
+        m_qualityMode = settings.qualityMode;
+        m_outputWidth = settings.outputWidth;
+        m_outputHeight = settings.outputHeight;
+        m_renderWidth = settings.renderWidth;
+        m_renderHeight = settings.renderHeight;
+        m_maxRenderWidth = settings.maxRenderWidth;
+        m_maxRenderHeight = settings.maxRenderHeight;
+        m_minRenderWidth = settings.minRenderWidth;
+        m_minRenderHeight = settings.minRenderHeight;
+        m_recommendedSharpness = settings.recommendedSharpness;
         m_perfQuality = perfQuality;
         m_featureConfigured = true;
 
         char message[256] = {};
         sprintf_s(
             message,
-            "DLSS: configured Quality mode at %ux%u -> %ux%u (dynamic range %ux%u to %ux%u).\n",
+            "DLSS: configured %s mode at %ux%u -> %ux%u (dynamic range %ux%u to %ux%u).\n",
+            GetDLSSQualityModeName(m_qualityMode),
             m_renderWidth,
             m_renderHeight,
             m_outputWidth,
@@ -365,6 +439,9 @@ public:
             m_featureHandle,
             m_capabilityParameters,
             &evalParams);
+
+        commandList->ClearState(nullptr);
+
         if (NVSDK_NGX_FAILED(m_lastResult))
         {
             m_evaluationDisabled = true;
@@ -377,7 +454,7 @@ public:
         if (!m_hasSuccessfulEvaluation)
         {
             m_hasSuccessfulEvaluation = true;
-            OutputDebugStringA("DLSS: first evaluation succeeded; the DLSS output will be presented next frame.\n");
+            OutputDebugStringA("DLSS: first evaluation succeeded; the DLSS output is ready for the current frame.\n");
         }
 
         return true;
@@ -460,6 +537,11 @@ public:
         return m_renderHeight;
     }
 
+    DLSSQualityMode GetQualityMode() const noexcept
+    {
+        return m_qualityMode;
+    }
+
     bool NeedsUpdatedDriver() const noexcept
     {
         return m_needsUpdatedDriver;
@@ -476,6 +558,40 @@ public:
     }
 
 private:
+    static bool TryGetPerfQualityValue(
+        DLSSQualityMode qualityMode,
+        NVSDK_NGX_PerfQuality_Value* outputValue) noexcept
+    {
+        if (outputValue == nullptr)
+        {
+            return false;
+        }
+
+        switch (qualityMode)
+        {
+        case DLSSQualityMode::DLAA:
+            *outputValue = NVSDK_NGX_PerfQuality_Value_DLAA;
+            return true;
+        case DLSSQualityMode::UltraQuality:
+            *outputValue = NVSDK_NGX_PerfQuality_Value_UltraQuality;
+            return true;
+        case DLSSQualityMode::Quality:
+            *outputValue = NVSDK_NGX_PerfQuality_Value_MaxQuality;
+            return true;
+        case DLSSQualityMode::Balanced:
+            *outputValue = NVSDK_NGX_PerfQuality_Value_Balanced;
+            return true;
+        case DLSSQualityMode::Performance:
+            *outputValue = NVSDK_NGX_PerfQuality_Value_MaxPerf;
+            return true;
+        case DLSSQualityMode::UltraPerformance:
+            *outputValue = NVSDK_NGX_PerfQuality_Value_UltraPerformance;
+            return true;
+        default:
+            return false;
+        }
+    }
+
     static bool IsTexture2DAtSize(
         const D3D12_RESOURCE_DESC& desc,
         unsigned int width,
@@ -534,6 +650,8 @@ private:
         m_minRenderHeight = 0;
         m_outputWidth = 0;
         m_outputHeight = 0;
+        m_qualityMode = DLSSQualityMode::Quality;
+        m_perfQuality = NVSDK_NGX_PerfQuality_Value_MaxQuality;
         m_recommendedSharpness = 0.0f;
         m_evaluationAttempted = false;
         m_lastEvaluationSucceeded = false;
@@ -588,6 +706,7 @@ private:
     NVSDK_NGX_Handle* m_featureHandle = nullptr;
     NVSDK_NGX_Result m_lastResult = NVSDK_NGX_Result_Fail;
     std::wstring m_applicationDataPath;
+    DLSSQualityMode m_qualityMode = DLSSQualityMode::Quality;
     NVSDK_NGX_PerfQuality_Value m_perfQuality = NVSDK_NGX_PerfQuality_Value_MaxQuality;
     unsigned int m_renderWidth = 0;
     unsigned int m_renderHeight = 0;
@@ -639,7 +758,16 @@ public:
         return false;
     }
 
-    bool ConfigureFeature(unsigned int, unsigned int)
+    bool QueryOptimalSettings(
+        unsigned int,
+        unsigned int,
+        DLSSQualityMode,
+        DLSSOptimalSettings*) noexcept
+    {
+        return false;
+    }
+
+    bool ConfigureFeature(const DLSSOptimalSettings&)
     {
         return false;
     }
@@ -706,6 +834,11 @@ public:
     unsigned int GetRenderHeight() const noexcept
     {
         return 0;
+    }
+
+    DLSSQualityMode GetQualityMode() const noexcept
+    {
+        return DLSSQualityMode::Quality;
     }
 
     bool NeedsUpdatedDriver() const noexcept

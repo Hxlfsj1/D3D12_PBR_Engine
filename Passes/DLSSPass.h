@@ -7,10 +7,13 @@
 #include "RDG.h"
 
 #include <cmath>
+#include <functional>
 
 class DLSSPass
 {
 public:
+    using CommandListStateRestore = std::function<void(ID3D12GraphicsCommandList*)>;
+
     static DirectX::XMFLOAT2 CalculateJitter(
         UINT frameIndex,
         int renderWidth,
@@ -50,7 +53,8 @@ public:
         float jitterOffsetY,
         float frameTimeDeltaInMsec,
         bool reset,
-        const Input& input)
+        const Input& input,
+        CommandListStateRestore restoreCommandListState)
     {
         if (dlssManager == nullptr ||
             resourceManager == nullptr ||
@@ -93,18 +97,22 @@ public:
         }
 
         RDGPassParameters parameters;
-        parameters.ReadSRV(input.color);
-        parameters.ReadSRV(input.depth);
-        parameters.ReadSRV(input.motionVectors);
+        parameters.ReadComputeSRV(input.color);
+        parameters.ReadComputeSRV(input.depth);
+        parameters.ReadComputeSRV(input.motionVectors);
         parameters.WriteUAV(outputTexture);
 
         RDGPassHandle pass = graph.AddPass(
             "DLSS",
             ERDGPassFlags::Compute,
             parameters,
-            [dlssManager, evaluationInput](ID3D12GraphicsCommandList* commandList)
+            [dlssManager, evaluationInput, restoreCommandListState](ID3D12GraphicsCommandList* commandList)
             {
                 dlssManager->EvaluateFeature(commandList, evaluationInput);
+                if (restoreCommandListState)
+                {
+                    restoreCommandListState(commandList);
+                }
             });
 
         return { outputTexture, pass };

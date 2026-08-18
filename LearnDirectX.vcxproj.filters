@@ -135,6 +135,9 @@
     <ClInclude Include="Graphics\DLSSManager.h">
       <Filter>Graphics</Filter>
     </ClInclude>
+    <ClInclude Include="Graphics\DLSSQuality.h">
+      <Filter>Graphics</Filter>
+    </ClInclude>
     <ClInclude Include="Resources\PBR_Model.h">
       <Filter>Resources</Filter>
     </ClInclude>

@@ -151,9 +151,9 @@ public:
         return postProcessRootSignature.Get();
     }
 
-    ID3D12PipelineState* GetPostProcessPSO()
+    ID3D12PipelineState* GetPostProcessPSO(bool enableSharpen = false)
     {
-        return postProcessPSO.Get();
+        return postProcessPSO[enableSharpen ? 1 : 0].Get();
     }
 
     ID3D12RootSignature* GetDeferredRootSignature()
@@ -682,14 +682,30 @@ private:
             return false;
         }
 
-        auto vs = ShaderCompiler::CompileFromFile(L"Shaders/Shaders_For_PostProcess.hlsl", L"VSMain", L"vs_6_6");
-        auto ps = ShaderCompiler::CompileFromFile(L"Shaders/Shaders_For_PostProcess.hlsl", L"PSMain", L"ps_6_6");
+        const std::vector<std::wstring> noSharpenMacros = { L"POST_PROCESS_SHARPEN=0" };
+        const std::vector<std::wstring> sharpenMacros = { L"POST_PROCESS_SHARPEN=1" };
+        auto vs = ShaderCompiler::CompileFromFile(
+            L"Shaders/Shaders_For_PostProcess.hlsl",
+            L"VSMain",
+            L"vs_6_6");
+        auto psNoSharpen = ShaderCompiler::CompileFromFile(
+            L"Shaders/Shaders_For_PostProcess.hlsl",
+            L"PSMain",
+            L"ps_6_6",
+            noSharpenMacros);
+        auto psSharpen = ShaderCompiler::CompileFromFile(
+            L"Shaders/Shaders_For_PostProcess.hlsl",
+            L"PSMain",
+            L"ps_6_6",
+            sharpenMacros);
 
         D3D12_GRAPHICS_PIPELINE_STATE_DESC psoDesc = {};
         psoDesc.InputLayout = { nullptr, 0 };
         psoDesc.pRootSignature = postProcessRootSignature.Get();
         psoDesc.VS = CD3DX12_SHADER_BYTECODE(vs->GetBufferPointer(), vs->GetBufferSize());
-        psoDesc.PS = CD3DX12_SHADER_BYTECODE(ps->GetBufferPointer(), ps->GetBufferSize());
+        psoDesc.PS = CD3DX12_SHADER_BYTECODE(
+            psNoSharpen->GetBufferPointer(),
+            psNoSharpen->GetBufferSize());
 
         psoDesc.RasterizerState = CD3DX12_RASTERIZER_DESC(D3D12_DEFAULT);
         psoDesc.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
@@ -705,7 +721,19 @@ private:
         psoDesc.RTVFormats[0] = DXGI_FORMAT_R8G8B8A8_UNORM;
         psoDesc.SampleDesc.Count = 1;
 
-        if (FAILED(dc->GetDevice()->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(&postProcessPSO))))
+        if (FAILED(dc->GetDevice()->CreateGraphicsPipelineState(
+            &psoDesc,
+            IID_PPV_ARGS(&postProcessPSO[0]))))
+        {
+            return false;
+        }
+
+        psoDesc.PS = CD3DX12_SHADER_BYTECODE(
+            psSharpen->GetBufferPointer(),
+            psSharpen->GetBufferSize());
+        if (FAILED(dc->GetDevice()->CreateGraphicsPipelineState(
+            &psoDesc,
+            IID_PPV_ARGS(&postProcessPSO[1]))))
         {
             return false;
         }
@@ -1204,7 +1232,7 @@ private:
     ComPtr<ID3D12PipelineState> psoTransparent[3];
 
     ComPtr<ID3D12RootSignature> postProcessRootSignature;
-    ComPtr<ID3D12PipelineState> postProcessPSO;
+    ComPtr<ID3D12PipelineState> postProcessPSO[2];
 
     ComPtr<ID3D12RootSignature> deferredRootSignature;
     ComPtr<ID3D12PipelineState> deferredPSO;

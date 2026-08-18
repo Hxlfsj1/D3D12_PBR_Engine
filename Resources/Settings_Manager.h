@@ -2,6 +2,7 @@
 #define SETTINGS_MANAGER_H
 
 #include "SceneObject.h"
+#include "DLSSQuality.h"
 #include <vector>
 #include <string>
 #include <fstream>
@@ -75,6 +76,7 @@ struct PipelineConfig
     bool useDeferred = true;
     bool useZPrepass = false;
     AntiAliasingMode antiAliasing = AntiAliasingMode::None;
+    DLSSQualityMode dlssQuality = DLSSQualityMode::Quality;
 };
 
 struct LightingConfig
@@ -248,6 +250,14 @@ private:
                 {
                     OutputDebugStringA(("Warning: Unknown anti_aliasing value '" + antiAliasing + "'; using None.\n").c_str());
                 }
+            }
+
+            const std::string dlssQuality = j.value("dlss_quality", std::string("Quality"));
+            if (!TryParseDLSSQualityMode(dlssQuality, &pipeline.dlssQuality))
+            {
+                pipeline.dlssQuality = DLSSQualityMode::Quality;
+                OutputDebugStringA(
+                    ("Warning: Unknown dlss_quality value '" + dlssQuality + "'; using Quality.\n").c_str());
             }
         }
         else

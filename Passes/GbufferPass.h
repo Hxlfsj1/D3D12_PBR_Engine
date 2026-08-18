@@ -311,51 +311,6 @@ public:
         return { gbufferAlbedo, gbufferNormal, gbufferORM, gbufferEmissive, depth, pass };
     }
 
-    static size_t ExecuteRDG(
-        RenderDevice* deviceContext,
-        ResourceManager* resourceManager,
-        PipelineManager* pipelineManager,
-        int frameIndex,
-        const D3D12_VIEWPORT& viewport,
-        const D3D12_RECT& scissorRect,
-        const std::vector<ModelInstance*>& visibleInstances)
-    {
-        RDGBuilder graph(deviceContext, "GBufferGraph");
-        graph.SetTransientResourceAllocator(
-            [deviceContext, resourceManager, frameIndex](
-                const D3D12_RESOURCE_DESC& resourceDesc,
-                D3D12_RESOURCE_STATES initialState,
-                D3D12_RESOURCE_STATES finalState,
-                const D3D12_CLEAR_VALUE* clearValue,
-                RDGTransientResourceLease* outResource)
-            {
-                return resourceManager->AllocateRDGTransientResource(
-                    deviceContext,
-                    frameIndex,
-                    resourceDesc,
-                    initialState,
-                    finalState,
-                    clearValue,
-                    outResource);
-            });
-
-        size_t transparentStartIndex = visibleInstances.size();
-
-        AddToGraph(
-            graph,
-            deviceContext,
-            resourceManager,
-            pipelineManager,
-            frameIndex,
-            viewport,
-            scissorRect,
-            visibleInstances,
-            transparentStartIndex);
-
-        graph.Execute(deviceContext->GetCommandList());
-
-        return transparentStartIndex;
-    }
 };
 
 #endif

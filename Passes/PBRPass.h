@@ -22,6 +22,21 @@ private:
     };
 
 public:
+    struct OpaqueInput
+    {
+        RDGTextureHandle sceneColor;
+        RDGTextureHandle depth;
+        RDGTextureSRVHandle shadowMap;
+    };
+
+    struct OpaqueOutput
+    {
+        RDGTextureHandle sceneColor;
+        RDGTextureHandle depth;
+        RDGPassHandle pass;
+        size_t transparentStartIndex = 0;
+    };
+
     struct TransparentInput
     {
         RDGTextureHandle sceneColor;
@@ -35,7 +50,8 @@ public:
         RDGPassHandle pass;
     };
 
-    static size_t ExecuteOpaque(
+    static OpaqueOutput AddOpaqueToGraph(
+        RDGBuilder& graph,
         RenderDevice* deviceContext,
         ResourceManager* resourceManager,
         PipelineManager* pipelineManager,
@@ -43,49 +59,103 @@ public:
         const D3D12_VIEWPORT& viewport,
         const D3D12_RECT& scissorRect,
         const std::vector<ModelInstance*>& visibleInstances,
-        bool useZPrepass)
+        bool consumeZPrepassDepth,
+        const OpaqueInput& input = {})
     {
-        auto cmdList = deviceContext->GetCommandList();
-
-        CD3DX12_CPU_DESCRIPTOR_HANDLE rtv = resourceManager->GetPostProcessRtvHandle();
-        CD3DX12_CPU_DESCRIPTOR_HANDLE dsv = deviceContext->GetDSVHandle();
-
-        D3D12_GPU_VIRTUAL_ADDRESS baseGpuAddress = BindOpaqueState(
-            cmdList,
-            resourceManager,
-            pipelineManager,
-            frameIndex,
-            viewport,
-            scissorRect);
-
-        // ====================================================================================================
-        // Opaque Objects Rendering (Only if visible)
-        // ====================================================================================================
-
-        size_t transparentStartIndex = FindTransparentStartIndex(visibleInstances);
-
-        if (!visibleInstances.empty())
+        RDGTextureHandle sceneColor = input.sceneColor;
+        if (!sceneColor.IsValid())
         {
-            if (useZPrepass)
-            {
-                cmdList->OMSetRenderTargets(0, nullptr, FALSE, &dsv);
-                DrawOpaqueRange(cmdList, pipelineManager, baseGpuAddress, visibleInstances, 0, transparentStartIndex, OpaqueDrawMode::ZPrepass);
-
-                cmdList->OMSetRenderTargets(1, &rtv, FALSE, &dsv);
-                DrawOpaqueRange(cmdList, pipelineManager, baseGpuAddress, visibleInstances, 0, transparentStartIndex, OpaqueDrawMode::PBRConsumeDepth);
-            }
-            else
-            {
-                cmdList->OMSetRenderTargets(1, &rtv, FALSE, &dsv);
-                DrawOpaqueRange(cmdList, pipelineManager, baseGpuAddress, visibleInstances, 0, transparentStartIndex, OpaqueDrawMode::PBRBuildDepth);
-            }
+            sceneColor = graph.RegisterExternalTexture(
+                resourceManager->GetPostProcessRT(),
+                D3D12_RESOURCE_STATE_RENDER_TARGET,
+                D3D12_RESOURCE_STATE_RENDER_TARGET,
+                "PostProcessRT");
         }
-        else
+        graph.MarkTextureAsOutput(sceneColor);
+
+        RDGTextureHandle depth = input.depth;
+        if (!depth.IsValid())
         {
-            cmdList->OMSetRenderTargets(1, &rtv, FALSE, &dsv);
+            depth = GetOrCreateSceneDepth(graph, deviceContext, viewport);
         }
 
-        return transparentStartIndex;
+        RDGTextureSRVHandle shadowMapSrv = input.shadowMap;
+        if (!shadowMapSrv.IsValid())
+        {
+            RDGTextureHandle shadowMap = graph.RegisterExternalTexture(
+                resourceManager->GetShadowMap(),
+                D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+                D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+                "ShadowMap");
+
+            D3D12_SHADER_RESOURCE_VIEW_DESC shadowSrvDesc = {};
+            shadowSrvDesc.Format = DXGI_FORMAT_R32_FLOAT;
+            shadowSrvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2DARRAY;
+            shadowSrvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+            shadowSrvDesc.Texture2DArray.MipLevels = 1;
+            shadowSrvDesc.Texture2DArray.ArraySize = NUM_CASCADES;
+            shadowMapSrv = graph.CreateTextureSRVView(shadowMap, &shadowSrvDesc);
+        }
+
+        RDGTextureRTVHandle sceneColorRtv = graph.CreateTextureRTVView(sceneColor);
+        RDGTextureDSVHandle depthDsv = graph.CreateTextureDSVView(depth);
+        if (!sceneColorRtv.IsValid() ||
+            !depthDsv.IsValid() ||
+            !shadowMapSrv.IsValid())
+        {
+            return {};
+        }
+
+        const size_t transparentStartIndex = FindTransparentStartIndex(visibleInstances);
+
+        RDGPassParameters params;
+        params.ReadSRV(shadowMapSrv);
+        params.WriteRTV(sceneColorRtv);
+        // Keep DEPTH_WRITE here to match the existing DSV and PSO state. The consume-depth
+        // PSO disables depth writes; a future read-only DSV can narrow this to ReadDSV.
+        params.WriteDSV(depthDsv);
+
+        RDGPassHandle pass = graph.AddPass(
+            "ForwardOpaque",
+            ERDGPassFlags::Graphics,
+            params,
+            [=](ID3D12GraphicsCommandList* cmdList)
+            {
+                if (!consumeZPrepassDepth)
+                {
+                    cmdList->ClearDepthStencilView(
+                        depthDsv.cpuHandle,
+                        D3D12_CLEAR_FLAG_DEPTH,
+                        1.0f,
+                        0,
+                        0,
+                        nullptr);
+                }
+
+                PassConstants* passConstants = reinterpret_cast<PassConstants*>(
+                    resourceManager->GetCBVAddress(frameIndex));
+                passConstants->shadowMapIdx = shadowMapSrv.descriptorIndex;
+
+                D3D12_GPU_VIRTUAL_ADDRESS baseGpuAddress = BindOpaqueState(
+                    cmdList,
+                    resourceManager,
+                    pipelineManager,
+                    frameIndex,
+                    viewport,
+                    scissorRect);
+
+                ExecuteOpaqueDrawNoBarrier(
+                    cmdList,
+                    pipelineManager,
+                    baseGpuAddress,
+                    visibleInstances,
+                    transparentStartIndex,
+                    consumeZPrepassDepth,
+                    sceneColorRtv.cpuHandle,
+                    depthDsv.cpuHandle);
+            });
+
+        return { sceneColor, depth, pass, transparentStartIndex };
     }
 
     static ZPrepassOutput AddZPrepassToGraph(
@@ -99,11 +169,7 @@ public:
         const std::vector<ModelInstance*>& visibleInstances,
         size_t& transparentStartIndex)
     {
-        RDGTextureHandle depth = graph.RegisterExternalTexture(
-            deviceContext->GetDepthStencilBuffer(),
-            D3D12_RESOURCE_STATE_DEPTH_WRITE,
-            D3D12_RESOURCE_STATE_DEPTH_WRITE,
-            "SceneDepth");
+        RDGTextureHandle depth = GetOrCreateSceneDepth(graph, deviceContext, viewport);
 
         RDGTextureDSVHandle depthDsv = graph.CreateTextureDSVView(depth);
         if (!depthDsv.IsValid())
@@ -120,6 +186,14 @@ public:
             params,
             [=, &transparentStartIndex](ID3D12GraphicsCommandList* cmdList)
             {
+                cmdList->ClearDepthStencilView(
+                    depthDsv.cpuHandle,
+                    D3D12_CLEAR_FLAG_DEPTH,
+                    1.0f,
+                    0,
+                    0,
+                    nullptr);
+
                 transparentStartIndex = ExecuteZPrepassNoBarrier(
                     deviceContext,
                     resourceManager,
@@ -132,93 +206,6 @@ public:
             });
 
         return { depth, pass };
-    }
-
-    static void ExecuteTransparent(
-        RenderDevice* deviceContext,
-        ResourceManager* resourceManager,
-        PipelineManager* pipelineManager,
-        int frameIndex,
-        const D3D12_VIEWPORT& viewport,
-        const D3D12_RECT& scissorRect,
-        const std::vector<ModelInstance*>& visibleInstances,
-        size_t transparentStartIndex)
-    {
-        if (visibleInstances.empty() || transparentStartIndex >= visibleInstances.size())
-        {
-            return;
-        }
-
-        auto cmdList = deviceContext->GetCommandList();
-        ID3D12Resource* sceneColor = resourceManager->GetPostProcessRT();
-        ID3D12Resource* sceneColorCopy = resourceManager->GetTransparentSceneColorCopy();
-        ID3D12Resource* depthBuffer = deviceContext->GetDepthStencilBuffer();
-        size_t nearestTransparentIndex = FindNearestDrawableTransparentIndex(visibleInstances, transparentStartIndex);
-        if (nearestTransparentIndex >= visibleInstances.size())
-        {
-            return;
-        }
-
-        CD3DX12_CPU_DESCRIPTOR_HANDLE rtv = resourceManager->GetPostProcessRtvHandle();
-
-        D3D12_RESOURCE_BARRIER depthReadBarrier = CD3DX12_RESOURCE_BARRIER::Transition(
-            depthBuffer,
-            D3D12_RESOURCE_STATE_DEPTH_WRITE,
-            D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
-        cmdList->ResourceBarrier(1, &depthReadBarrier);
-
-        ExecuteTransparentDrawNoBarrier(
-            deviceContext,
-            resourceManager,
-            pipelineManager,
-            frameIndex,
-            viewport,
-            scissorRect,
-            visibleInstances,
-            transparentStartIndex,
-            nearestTransparentIndex,
-            resourceManager->GetTransparentSceneColorSrvIdx(),
-            resourceManager->GetDepthBufferSrvIdx(),
-            resourceManager->GetShadowSrvIdx(),
-            rtv,
-            false);
-
-        D3D12_RESOURCE_BARRIER copyBarriers[] =
-        {
-            CD3DX12_RESOURCE_BARRIER::Transition(sceneColor, D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_COPY_SOURCE),
-            CD3DX12_RESOURCE_BARRIER::Transition(sceneColorCopy, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COPY_DEST)
-        };
-        cmdList->ResourceBarrier(_countof(copyBarriers), copyBarriers);
-        cmdList->CopyResource(sceneColorCopy, sceneColor);
-
-        D3D12_RESOURCE_BARRIER restoreBarriers[] =
-        {
-            CD3DX12_RESOURCE_BARRIER::Transition(sceneColor, D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_RENDER_TARGET),
-            CD3DX12_RESOURCE_BARRIER::Transition(sceneColorCopy, D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE)
-        };
-        cmdList->ResourceBarrier(_countof(restoreBarriers), restoreBarriers);
-
-        ExecuteTransparentDrawNoBarrier(
-            deviceContext,
-            resourceManager,
-            pipelineManager,
-            frameIndex,
-            viewport,
-            scissorRect,
-            visibleInstances,
-            nearestTransparentIndex,
-            nearestTransparentIndex + 1,
-            resourceManager->GetTransparentSceneColorSrvIdx(),
-            resourceManager->GetDepthBufferSrvIdx(),
-            resourceManager->GetShadowSrvIdx(),
-            rtv,
-            true);
-
-        D3D12_RESOURCE_BARRIER depthRestoreBarrier = CD3DX12_RESOURCE_BARRIER::Transition(
-            depthBuffer,
-            D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
-            D3D12_RESOURCE_STATE_DEPTH_WRITE);
-        cmdList->ResourceBarrier(1, &depthRestoreBarrier);
     }
 
     static void ExecuteTransparentDrawNoBarrier(
@@ -454,6 +441,73 @@ public:
     }
 
 private:
+    static RDGTextureHandle GetOrCreateSceneDepth(
+        RDGBuilder& graph,
+        RenderDevice* deviceContext,
+        const D3D12_VIEWPORT& viewport)
+    {
+        if (deviceContext == nullptr || deviceContext->GetDepthStencilBuffer() == nullptr)
+        {
+            return {};
+        }
+
+        ID3D12Resource* deviceDepth = deviceContext->GetDepthStencilBuffer();
+        const D3D12_RESOURCE_DESC deviceDepthDesc = deviceDepth->GetDesc();
+        const uint32_t sceneWidth = static_cast<uint32_t>(viewport.Width);
+        const uint32_t sceneHeight = static_cast<uint32_t>(viewport.Height);
+
+        if (sceneWidth == 0 || sceneHeight == 0)
+        {
+            return {};
+        }
+
+        if (deviceDepthDesc.Width == sceneWidth && deviceDepthDesc.Height == sceneHeight)
+        {
+            return graph.RegisterExternalTexture(
+                deviceDepth,
+                D3D12_RESOURCE_STATE_DEPTH_WRITE,
+                D3D12_RESOURCE_STATE_DEPTH_WRITE,
+                "SceneDepth");
+        }
+
+        RDGTextureDesc depthTextureDesc = {};
+        depthTextureDesc.width = sceneWidth;
+        depthTextureDesc.height = sceneHeight;
+        depthTextureDesc.format = DXGI_FORMAT_R32_TYPELESS;
+        depthTextureDesc.flags = D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL;
+        depthTextureDesc.hasClearValue = true;
+        depthTextureDesc.clearValue.Format = DXGI_FORMAT_D32_FLOAT;
+        depthTextureDesc.clearValue.DepthStencil.Depth = 1.0f;
+        depthTextureDesc.clearValue.DepthStencil.Stencil = 0;
+
+        return graph.CreateTexture(
+            depthTextureDesc,
+            D3D12_RESOURCE_STATE_DEPTH_WRITE,
+            D3D12_RESOURCE_STATE_DEPTH_WRITE,
+            "SceneDepth");
+    }
+
+    static void ExecuteOpaqueDrawNoBarrier(
+        ID3D12GraphicsCommandList* cmdList,
+        PipelineManager* pipelineManager,
+        D3D12_GPU_VIRTUAL_ADDRESS baseGpuAddress,
+        const std::vector<ModelInstance*>& visibleInstances,
+        size_t transparentStartIndex,
+        bool consumeZPrepassDepth,
+        D3D12_CPU_DESCRIPTOR_HANDLE rtv,
+        D3D12_CPU_DESCRIPTOR_HANDLE dsv)
+    {
+        cmdList->OMSetRenderTargets(1, &rtv, FALSE, &dsv);
+        DrawOpaqueRange(
+            cmdList,
+            pipelineManager,
+            baseGpuAddress,
+            visibleInstances,
+            0,
+            transparentStartIndex,
+            consumeZPrepassDepth ? OpaqueDrawMode::PBRConsumeDepth : OpaqueDrawMode::PBRBuildDepth);
+    }
+
     static size_t FindNearestDrawableTransparentIndex(
         const std::vector<ModelInstance*>& visibleInstances,
         size_t transparentStartIndex)

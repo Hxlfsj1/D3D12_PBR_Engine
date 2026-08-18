@@ -168,46 +168,6 @@ public:
         return frameData;
     }
 
-    static void Execute(
-        RenderDevice* deviceContext,
-        ResourceManager* resourceManager,
-        PipelineManager* pipelineManager,
-        int frameIndex,
-        const std::array<std::vector<ModelInstance*>, NUM_CASCADES>& shadowVisibleInstancesByCascade,
-        const std::array<size_t, NUM_CASCADES>& shadowInstanceOffsets,
-        size_t visibleInstancesSize)
-    {
-        auto cmdList = deviceContext->GetCommandList();
-
-        std::array<D3D12_CPU_DESCRIPTOR_HANDLE, NUM_CASCADES> shadowDsvHandles = {};
-        for (UINT cascadeIdx = 0; cascadeIdx < NUM_CASCADES; ++cascadeIdx)
-        {
-            shadowDsvHandles[cascadeIdx] = resourceManager->GetShadowDsvHandle(cascadeIdx);
-        }
-
-        CD3DX12_RESOURCE_BARRIER toDepthWrite = CD3DX12_RESOURCE_BARRIER::Transition(
-            resourceManager->GetShadowMap(),
-            D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
-            D3D12_RESOURCE_STATE_DEPTH_WRITE);
-        cmdList->ResourceBarrier(1, &toDepthWrite);
-
-        ExecuteNoBarrier(
-            deviceContext,
-            resourceManager,
-            pipelineManager,
-            frameIndex,
-            shadowVisibleInstancesByCascade,
-            shadowInstanceOffsets,
-            visibleInstancesSize,
-            shadowDsvHandles);
-
-        CD3DX12_RESOURCE_BARRIER toSrv = CD3DX12_RESOURCE_BARRIER::Transition(
-            resourceManager->GetShadowMap(),
-            D3D12_RESOURCE_STATE_DEPTH_WRITE,
-            D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
-        cmdList->ResourceBarrier(1, &toSrv);
-    }
-
     static void ExecuteNoBarrier(
         RenderDevice* deviceContext,
         ResourceManager* resourceManager,
@@ -374,51 +334,6 @@ public:
         return { shadowMap, shadowMapSrv, pass };
     }
 
-    static void ExecuteRDG(
-        RenderDevice* deviceContext,
-        ResourceManager* resourceManager,
-        PipelineManager* pipelineManager,
-        int frameIndex,
-        const std::array<std::vector<ModelInstance*>, NUM_CASCADES>& shadowVisibleInstancesByCascade,
-        const std::array<size_t, NUM_CASCADES>& shadowInstanceOffsets,
-        size_t visibleInstancesSize)
-    {
-        RDGBuilder graph(deviceContext, "ShadowGraph");
-        graph.SetTransientResourceAllocator(
-            [deviceContext, resourceManager, frameIndex](
-                const D3D12_RESOURCE_DESC& resourceDesc,
-                D3D12_RESOURCE_STATES initialState,
-                D3D12_RESOURCE_STATES finalState,
-                const D3D12_CLEAR_VALUE* clearValue,
-                RDGTransientResourceLease* outResource)
-            {
-                return resourceManager->AllocateRDGTransientResource(
-                    deviceContext,
-                    frameIndex,
-                    resourceDesc,
-                    initialState,
-                    finalState,
-                    clearValue,
-                    outResource);
-            });
-        graph.SetTransientSrvUavDescriptorAllocator(
-            [resourceManager](UINT* descriptorIndex, D3D12_CPU_DESCRIPTOR_HANDLE* cpuHandle)
-            {
-                return resourceManager->AllocateTransientSrvUavDescriptor(descriptorIndex, cpuHandle);
-            });
-
-        AddToGraph(
-            graph,
-            deviceContext,
-            resourceManager,
-            pipelineManager,
-            frameIndex,
-            shadowVisibleInstancesByCascade,
-            shadowInstanceOffsets,
-            visibleInstancesSize);
-
-        graph.Execute(deviceContext->GetCommandList());
-    }
 };
 
 #endif

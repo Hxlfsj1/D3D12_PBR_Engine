@@ -109,13 +109,6 @@ bool D3D12App::Initialize(int nShowCmd)
     FullScreen = m_settingsManager.window.fullScreen;
     m_antiAliasingMode = m_settingsManager.pipeline.antiAliasing;
 
-    if (m_antiAliasingMode == AntiAliasingMode::TSR &&
-        !m_settingsManager.pipeline.useDeferred)
-    {
-        OutputDebugStringA("Warning: TSR requires the deferred pipeline; disabling anti-aliasing.\n");
-        m_antiAliasingMode = AntiAliasingMode::None;
-    }
-
     std::string titleStr = m_settingsManager.window.title;
     g_wWindowTitle = std::wstring(titleStr.begin(), titleStr.end());
     WindowTitle = g_wWindowTitle.c_str();
@@ -213,32 +206,89 @@ bool D3D12App::InitD3D()
     // DLSS is an explicit mode. TSR and the other AA modes never initialize NGX.
     const bool dlssRequested = m_antiAliasingMode == AntiAliasingMode::DLSS;
     bool dlssConfigured = false;
-    if (dlssRequested && m_settingsManager.pipeline.useDeferred)
+    if (dlssRequested)
     {
         const bool ngxInitialized = m_dlssManager.Initialize(m_deviceContext.GetDevice());
         const bool dlssAvailable = ngxInitialized && m_dlssManager.QueryDLSSCapability();
+        DLSSOptimalSettings selectedDLSSSettings = {};
+        bool selectedDLSSModeAvailable = false;
+
+        if (dlssAvailable)
+        {
+            for (DLSSQualityMode qualityMode : kDLSSQualityModesHighToLow)
+            {
+                DLSSOptimalSettings modeSettings = {};
+                const bool modeAvailable = m_dlssManager.QueryOptimalSettings(
+                    static_cast<unsigned int>(Width),
+                    static_cast<unsigned int>(Height),
+                    qualityMode,
+                    &modeSettings);
+
+                char message[256] = {};
+                if (modeAvailable)
+                {
+                    sprintf_s(
+                        message,
+                        "DLSS: %s is available at %ux%u -> %ux%u (dynamic range %ux%u to %ux%u).\n",
+                        GetDLSSQualityModeName(qualityMode),
+                        modeSettings.renderWidth,
+                        modeSettings.renderHeight,
+                        modeSettings.outputWidth,
+                        modeSettings.outputHeight,
+                        modeSettings.minRenderWidth,
+                        modeSettings.minRenderHeight,
+                        modeSettings.maxRenderWidth,
+                        modeSettings.maxRenderHeight);
+                }
+                else
+                {
+                    sprintf_s(
+                        message,
+                        "DLSS: %s is unavailable for the selected output resolution.\n",
+                        GetDLSSQualityModeName(qualityMode));
+                }
+                OutputDebugStringA(message);
+
+                if (qualityMode == m_settingsManager.pipeline.dlssQuality && modeAvailable)
+                {
+                    selectedDLSSSettings = modeSettings;
+                    selectedDLSSModeAvailable = true;
+                }
+            }
+        }
+
+        if (dlssAvailable && !selectedDLSSModeAvailable)
+        {
+            char message[192] = {};
+            sprintf_s(
+                message,
+                "Error: selected DLSS mode %s is unavailable; initialization aborted.\n",
+                GetDLSSQualityModeName(m_settingsManager.pipeline.dlssQuality));
+            OutputDebugStringA(message);
+        }
+
         dlssConfigured =
-            dlssAvailable &&
-            m_dlssManager.ConfigureFeature(
-                static_cast<unsigned int>(Width),
-                static_cast<unsigned int>(Height));
+            selectedDLSSModeAvailable &&
+            m_dlssManager.ConfigureFeature(selectedDLSSSettings);
 
         if (!dlssConfigured)
         {
-            OutputDebugStringA("DLSS: unavailable; continuing at native resolution without DLSS.\n");
+            OutputDebugStringA(
+                "Error: DLSS was requested but NGX initialization, capability detection, or feature configuration failed; initialization aborted.\n");
+            return false;
         }
     }
-    else if (dlssRequested)
-    {
-        OutputDebugStringA("DLSS: the current evaluation path requires deferred rendering; continuing without DLSS.\n");
-    }
 
-    float tsrUpscaleFactor = m_settingsManager.window.tsrUpscaleFactor;
-    if (!std::isfinite(tsrUpscaleFactor))
+    const float tsrUpscaleFactor = m_settingsManager.window.tsrUpscaleFactor;
+    if (m_antiAliasingMode == AntiAliasingMode::TSR &&
+        (!std::isfinite(tsrUpscaleFactor) ||
+         tsrUpscaleFactor < 1.0f ||
+         tsrUpscaleFactor > 4.0f))
     {
-        tsrUpscaleFactor = 2.0f;
+        OutputDebugStringA(
+            "Error: TSR upscale factor must be finite and within [1.0, 4.0]; initialization aborted.\n");
+        return false;
     }
-    tsrUpscaleFactor = std::clamp(tsrUpscaleFactor, 1.0f, 4.0f);
 
     SceneWidth = Width;
     SceneHeight = Height;
@@ -635,7 +685,7 @@ void D3D12App::Update()
     }
 }
 
-void D3D12App::BeginFrame(bool backBufferHandledByFrameGraph)
+void D3D12App::BeginFrame()
 {
     m_resourceManager.ResetTransientSrvUavDescriptors(frameIndex);
     m_resourceManager.BeginRDGFrame(&m_deviceContext, frameIndex);
@@ -643,15 +693,6 @@ void D3D12App::BeginFrame(bool backBufferHandledByFrameGraph)
     // Reset the command sequence from the previous frame
     m_deviceContext.GetCommandAllocator(frameIndex)->Reset();
     m_deviceContext.GetCommandList()->Reset(m_deviceContext.GetCommandAllocator(frameIndex), m_pipelineManager.GetPBR_PSO());
-
-    if (!backBufferHandledByFrameGraph)
-    {
-        ID3D12Resource* currentBuffer = m_deviceContext.GetRenderTarget(frameIndex);
-
-        // Define the required framebuffers as 'canvases' rather than 'presentation states'
-        CD3DX12_RESOURCE_BARRIER b = CD3DX12_RESOURCE_BARRIER::Transition(currentBuffer, D3D12_RESOURCE_STATE_PRESENT, D3D12_RESOURCE_STATE_RENDER_TARGET);
-        m_deviceContext.GetCommandList()->ResourceBarrier(1, &b);
-    }
 
     // Bind the Render Target View (RTV) and Depth Stencil View (DSV) for the current frame
     CD3DX12_CPU_DESCRIPTOR_HANDLE rtv = m_resourceManager.GetPostProcessRtvHandle();
@@ -668,16 +709,8 @@ void D3D12App::BeginFrame(bool backBufferHandledByFrameGraph)
     m_deviceContext.GetCommandList()->RSSetScissorRects(1, &scissorRect);
 }
 
-void D3D12App::EndFrame(bool backBufferAlreadyPresent)
+void D3D12App::EndFrame()
 {
-    if (!backBufferAlreadyPresent)
-    {
-        // Define the required framebuffers as 'presentation states' rather than 'canvases'
-        ID3D12Resource* currentBuffer = m_deviceContext.GetRenderTarget(frameIndex);
-        CD3DX12_RESOURCE_BARRIER p = CD3DX12_RESOURCE_BARRIER::Transition(currentBuffer, D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_PRESENT);
-        m_deviceContext.GetCommandList()->ResourceBarrier(1, &p);
-    }
-
     // Close the Command List to finalize recording, no further commands can be added until the next Reset
     // CPU recording is complete, but the GPU has yet to begin execution; therefore
     // A Fence must be signaled to track GPU progress, ensuring the CPU waits before reusing this memory in the NEXT frame
@@ -686,32 +719,88 @@ void D3D12App::EndFrame(bool backBufferAlreadyPresent)
 
 void D3D12App::Render()
 {
-    const bool backBufferHandledByFrameGraph = m_settingsManager.pipeline.useDeferred;
     const bool useZPrepass =
         m_settingsManager.pipeline.useZPrepass &&
         m_antiAliasingMode != AntiAliasingMode::TSR;
-    BeginFrame(backBufferHandledByFrameGraph);
+    const bool enablePostProcessSharpen =
+        m_antiAliasingMode == AntiAliasingMode::TAA ||
+        m_antiAliasingMode == AntiAliasingMode::TSR;
+    BeginFrame();
 
-    if (m_antiAliasingMode == AntiAliasingMode::DLSS &&
-        m_dlssManager.IsFeatureConfigured() &&
-        !m_dlssManager.WasFeatureCreationAttempted() &&
-        !m_dlssManager.CreateFeature(m_deviceContext.GetCommandList()))
+    if (m_antiAliasingMode == AntiAliasingMode::DLSS)
     {
-        OutputDebugStringA("DLSS: feature creation failed; continuing with the scene-color output.\n");
+        if (!m_dlssManager.IsFeatureConfigured())
+        {
+            OutputDebugStringA(
+                "Error: DLSS mode is active without a configured feature; rendering stopped.\n");
+            Running = false;
+            EndFrame();
+            return;
+        }
+
+        if (!m_dlssManager.WasFeatureCreationAttempted() &&
+            !m_dlssManager.CreateFeature(m_deviceContext.GetCommandList()))
+        {
+            OutputDebugStringA(
+                "Error: DLSS feature creation failed; rendering stopped instead of degrading.\n");
+            Running = false;
+            EndFrame();
+            return;
+        }
+
+        if (!m_dlssManager.CanEvaluate())
+        {
+            OutputDebugStringA(
+                "Error: DLSS feature cannot be evaluated; rendering stopped instead of degrading.\n");
+            Running = false;
+            EndFrame();
+            return;
+        }
     }
 
     size_t transparentIdx = 0;
     bool temporalHistoryWrittenByDeferredGraph = false;
     bool hbaoTemporalHandledByDeferredGraph = false;
-    bool postProcessHandledByDeferredGraph = false;
     bool dlssEvaluatedByDeferredGraph = false;
-    const bool dlssModeActive = m_antiAliasingMode == AntiAliasingMode::DLSS;
-    const bool dlssOutputWasReady =
-        dlssModeActive && m_dlssManager.WasLastEvaluationSuccessful();
 
     if (!m_settingsManager.pipeline.useDeferred)
     {
-        ShadowPass::ExecuteRDG(
+        const bool useInternalResolution =
+            m_antiAliasingMode == AntiAliasingMode::TSR ||
+            m_antiAliasingMode == AntiAliasingMode::DLSS;
+        const D3D12_VIEWPORT& forwardViewport =
+            useInternalResolution ? sceneViewport : viewport;
+        const D3D12_RECT& forwardScissorRect =
+            useInternalResolution ? sceneScissorRect : scissorRect;
+        const int forwardRenderWidth = useInternalResolution ? SceneWidth : Width;
+        const int forwardRenderHeight = useInternalResolution ? SceneHeight : Height;
+
+        RDGBuilder forwardGraph(&m_deviceContext, "ForwardFrameGraph");
+        forwardGraph.SetTransientResourceAllocator(
+            [this](
+                const D3D12_RESOURCE_DESC& resourceDesc,
+                D3D12_RESOURCE_STATES initialState,
+                D3D12_RESOURCE_STATES finalState,
+                const D3D12_CLEAR_VALUE* clearValue,
+                RDGTransientResourceLease* outResource)
+            {
+                return m_resourceManager.AllocateRDGTransientResource(
+                    &m_deviceContext,
+                    frameIndex,
+                    resourceDesc,
+                    initialState,
+                    finalState,
+                    clearValue,
+                    outResource);
+            });
+        forwardGraph.SetTransientSrvUavDescriptorAllocator(
+            [this](UINT* descriptorIndex, D3D12_CPU_DESCRIPTOR_HANDLE* cpuHandle)
+            {
+                return m_resourceManager.AllocateTransientSrvUavDescriptor(descriptorIndex, cpuHandle);
+            });
+
+        ShadowPass::Output shadowOutput = ShadowPass::AddToGraph(
+            forwardGraph,
             &m_deviceContext,
             &m_resourceManager,
             &m_pipelineManager,
@@ -719,8 +808,311 @@ void D3D12App::Render()
             g_shadowVisibleInstancesByCascade,
             g_shadowInstanceOffsets,
             g_visibleInstances.size());
+        if (!shadowOutput.shadowMap.IsValid() ||
+            !shadowOutput.shadowMapSrv.IsValid() ||
+            !shadowOutput.pass.IsValid())
+        {
+            OutputDebugStringA(
+                "Error: Forward shadow RDG construction failed; rendering stopped.\n");
+            Running = false;
+            EndFrame();
+            return;
+        }
 
-        transparentIdx = PBRPass::ExecuteOpaque(&m_deviceContext, &m_resourceManager, &m_pipelineManager, frameIndex, viewport, scissorRect, g_visibleInstances, useZPrepass);
+        PBRPass::ZPrepassOutput zPrepassOutput = {};
+        if (useZPrepass)
+        {
+            zPrepassOutput = PBRPass::AddZPrepassToGraph(
+                forwardGraph,
+                &m_deviceContext,
+                &m_resourceManager,
+                &m_pipelineManager,
+                frameIndex,
+                forwardViewport,
+                forwardScissorRect,
+                g_visibleInstances,
+                transparentIdx);
+            if (!zPrepassOutput.depth.IsValid() || !zPrepassOutput.pass.IsValid())
+            {
+                OutputDebugStringA(
+                    "Error: Forward Z-prepass RDG construction failed; rendering stopped.\n");
+                Running = false;
+                EndFrame();
+                return;
+            }
+        }
+
+        PBRPass::OpaqueInput opaqueInput = {};
+        opaqueInput.depth = zPrepassOutput.depth;
+        opaqueInput.shadowMap = shadowOutput.shadowMapSrv;
+
+        PBRPass::OpaqueOutput opaqueOutput = PBRPass::AddOpaqueToGraph(
+            forwardGraph,
+            &m_deviceContext,
+            &m_resourceManager,
+            &m_pipelineManager,
+            frameIndex,
+            forwardViewport,
+            forwardScissorRect,
+            g_visibleInstances,
+            useZPrepass && zPrepassOutput.depth.IsValid(),
+            opaqueInput);
+        if (!opaqueOutput.sceneColor.IsValid() ||
+            !opaqueOutput.depth.IsValid() ||
+            !opaqueOutput.pass.IsValid())
+        {
+            OutputDebugStringA(
+                "Error: Forward opaque RDG construction failed; rendering stopped instead of degrading.\n");
+            Running = false;
+            EndFrame();
+            return;
+        }
+        transparentIdx = opaqueOutput.transparentStartIndex;
+
+        SkyboxPass::Input skyboxInput = {};
+        skyboxInput.sceneColor = opaqueOutput.sceneColor;
+        skyboxInput.depth = opaqueOutput.depth;
+        RDGPassHandle forwardSceneColorProducer = opaqueOutput.pass;
+        RDGPassHandle skyboxPass = SkyboxPass::AddToGraph(
+            forwardGraph,
+            &m_deviceContext,
+            &m_resourceManager,
+            &m_pipelineManager,
+            camera,
+            forwardViewport,
+            forwardScissorRect,
+            forwardRenderWidth,
+            forwardRenderHeight,
+            skyboxInput);
+        if (!skyboxPass.IsValid())
+        {
+            OutputDebugStringA(
+                "Error: Forward skybox RDG construction failed; rendering stopped.\n");
+            Running = false;
+            EndFrame();
+            return;
+        }
+        forwardGraph.AddPassDependencies(skyboxPass, { forwardSceneColorProducer });
+        forwardSceneColorProducer = skyboxPass;
+
+        if (transparentIdx < g_visibleInstances.size())
+        {
+            PBRPass::TransparentInput transparentInput = {};
+            transparentInput.sceneColor = opaqueOutput.sceneColor;
+            transparentInput.depth = opaqueOutput.depth;
+            transparentInput.shadowMap = shadowOutput.shadowMapSrv;
+            RDGPassHandle transparentPass = PBRPass::AddTransparentToGraph(
+                forwardGraph,
+                &m_deviceContext,
+                &m_resourceManager,
+                &m_pipelineManager,
+                frameIndex,
+                forwardViewport,
+                forwardScissorRect,
+                g_visibleInstances,
+                transparentIdx,
+                transparentInput);
+            if (!transparentPass.IsValid())
+            {
+                OutputDebugStringA(
+                    "Error: Forward transparent RDG construction failed; rendering stopped.\n");
+                Running = false;
+                EndFrame();
+                return;
+            }
+            forwardSceneColorProducer = transparentPass;
+        }
+
+        RDGTextureHandle forwardFinalColor = opaqueOutput.sceneColor;
+        RDGPassHandle forwardFinalColorProducer = forwardSceneColorProducer;
+        bool temporalHistoryWrittenByForwardGraph = false;
+        bool dlssEvaluatedByForwardGraph = false;
+        if (m_antiAliasingMode == AntiAliasingMode::TAA ||
+            m_antiAliasingMode == AntiAliasingMode::TSR ||
+            m_antiAliasingMode == AntiAliasingMode::DLSS)
+        {
+            MotionVectorPass::Output motionOutput = MotionVectorPass::AddToGraph(
+                forwardGraph,
+                &m_deviceContext,
+                &m_resourceManager,
+                &m_pipelineManager,
+                m_currJitteredInvViewProjGpu,
+                m_currUnjitteredViewProjGpu,
+                m_prevUnjitteredViewProjGpu,
+                forwardRenderWidth,
+                forwardRenderHeight,
+                frameIndex,
+                { opaqueOutput.depth });
+
+            if (!motionOutput.motionTexture.IsValid() || !motionOutput.pass.IsValid())
+            {
+                OutputDebugStringA(
+                    "Error: Forward motion-vector RDG construction failed; rendering stopped instead of degrading.\n");
+                Running = false;
+                EndFrame();
+                return;
+            }
+
+            if (m_antiAliasingMode == AntiAliasingMode::TAA)
+            {
+                TAAPass::Output taaOutput = TAAPass::AddToGraph(
+                    forwardGraph,
+                    &m_deviceContext,
+                    &m_resourceManager,
+                    &m_pipelineManager,
+                    m_currJitteredInvViewProjGpu,
+                    m_prevUnjitteredViewProjGpu,
+                    m_currJitterNdcX,
+                    m_currJitterNdcY,
+                    frameIndex,
+                    Width,
+                    Height,
+                    m_temporalHistoryValid,
+                    { opaqueOutput.sceneColor, opaqueOutput.depth, motionOutput.motionTexture });
+
+                if (!taaOutput.historyTexture.IsValid() || !taaOutput.pass.IsValid())
+                {
+                    OutputDebugStringA(
+                        "Error: Forward TAA RDG construction failed; rendering stopped instead of degrading.\n");
+                    Running = false;
+                    EndFrame();
+                    return;
+                }
+
+                forwardGraph.AddPassDependencies(
+                    taaOutput.pass,
+                    { forwardSceneColorProducer, motionOutput.pass });
+                forwardFinalColor = taaOutput.historyTexture;
+                forwardFinalColorProducer = taaOutput.pass;
+                temporalHistoryWrittenByForwardGraph = true;
+            }
+            else if (m_antiAliasingMode == AntiAliasingMode::TSR)
+            {
+                TSRPass::Output tsrOutput = TSRPass::AddToGraph(
+                    forwardGraph,
+                    &m_deviceContext,
+                    &m_resourceManager,
+                    &m_pipelineManager,
+                    m_currJitteredInvViewProjGpu,
+                    m_prevUnjitteredViewProjGpu,
+                    m_currJitterNdcX,
+                    m_currJitterNdcY,
+                    frameIndex,
+                    SceneWidth,
+                    SceneHeight,
+                    Width,
+                    Height,
+                    m_temporalHistoryValid,
+                    { opaqueOutput.sceneColor, opaqueOutput.depth, motionOutput.motionTexture });
+
+                if (!tsrOutput.historyTexture.IsValid() || !tsrOutput.pass.IsValid())
+                {
+                    OutputDebugStringA(
+                        "Error: Forward TSR RDG construction failed; rendering stopped instead of degrading.\n");
+                    Running = false;
+                    EndFrame();
+                    return;
+                }
+
+                forwardGraph.AddPassDependencies(
+                    tsrOutput.pass,
+                    { forwardSceneColorProducer, motionOutput.pass });
+                forwardFinalColor = tsrOutput.historyTexture;
+                forwardFinalColorProducer = tsrOutput.pass;
+                temporalHistoryWrittenByForwardGraph = true;
+            }
+            else
+            {
+                DLSSPass::Output dlssOutput = DLSSPass::AddToGraph(
+                    forwardGraph,
+                    &m_dlssManager,
+                    &m_resourceManager,
+                    m_currJitterPixelX,
+                    m_currJitterPixelY,
+                    (std::max)(deltaTime * 1000.0f, 0.0f),
+                    !m_dlssHistoryValid,
+                    { opaqueOutput.sceneColor, opaqueOutput.depth, motionOutput.motionTexture },
+                    [this](ID3D12GraphicsCommandList* commandList)
+                    {
+                        commandList->SetGraphicsRootSignature(
+                            m_pipelineManager.GetPostProcessRootSignature());
+                        commandList->SetPipelineState(
+                            m_pipelineManager.GetPostProcessPSO(false));
+                        commandList->RSSetViewports(1, &viewport);
+                        commandList->RSSetScissorRects(1, &scissorRect);
+                        commandList->IASetPrimitiveTopology(
+                            D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+
+                        ID3D12DescriptorHeap* heaps[] =
+                        {
+                            m_resourceManager.GetMainDescriptorHeap()
+                        };
+                        commandList->SetDescriptorHeaps(1, heaps);
+                    });
+
+                if (!dlssOutput.outputTexture.IsValid() || !dlssOutput.pass.IsValid())
+                {
+                    OutputDebugStringA(
+                        "Error: Forward DLSS RDG construction failed; rendering stopped instead of degrading.\n");
+                    Running = false;
+                    EndFrame();
+                    return;
+                }
+
+                forwardGraph.AddPassDependencies(
+                    dlssOutput.pass,
+                    { forwardSceneColorProducer, motionOutput.pass });
+                forwardFinalColor = dlssOutput.outputTexture;
+                forwardFinalColorProducer = dlssOutput.pass;
+                dlssEvaluatedByForwardGraph = true;
+            }
+        }
+
+        RDGPassHandle postProcessPass = PostProcessPass::AddFinalToGraph(
+            forwardGraph,
+            &m_deviceContext,
+            &m_resourceManager,
+            &m_pipelineManager,
+            frameIndex,
+            viewport,
+            scissorRect,
+            forwardFinalColor,
+            false,
+            enablePostProcessSharpen);
+        if (!postProcessPass.IsValid())
+        {
+            OutputDebugStringA(
+                "Error: Forward post-process RDG construction failed; rendering stopped instead of degrading.\n");
+            Running = false;
+            EndFrame();
+            return;
+        }
+        forwardGraph.AddPassDependencies(
+            postProcessPass,
+            { forwardFinalColorProducer });
+
+        forwardGraph.Execute(m_deviceContext.GetCommandList());
+
+        if (dlssEvaluatedByForwardGraph)
+        {
+            if (!m_dlssManager.WasLastEvaluationSuccessful())
+            {
+                m_dlssHistoryValid = false;
+                OutputDebugStringA(
+                    "Error: Forward DLSS evaluation failed; the frame was not submitted.\n");
+                Running = false;
+                EndFrame();
+                return;
+            }
+
+            m_dlssHistoryValid = true;
+        }
+
+        if (temporalHistoryWrittenByForwardGraph)
+        {
+            m_resourceManager.FlipTemporalHistoryIndex();
+            m_temporalHistoryValid = true;
+        }
     }
     else
     {
@@ -762,6 +1154,16 @@ void D3D12App::Render()
             g_shadowVisibleInstancesByCascade,
             g_shadowInstanceOffsets,
             g_visibleInstances.size());
+        if (!shadowOutput.shadowMap.IsValid() ||
+            !shadowOutput.shadowMapSrv.IsValid() ||
+            !shadowOutput.pass.IsValid())
+        {
+            OutputDebugStringA(
+                "Error: Deferred shadow RDG construction failed; rendering stopped.\n");
+            Running = false;
+            EndFrame();
+            return;
+        }
 
         PBRPass::ZPrepassOutput zPrepassOutput = {};
         if (useZPrepass)
@@ -776,6 +1178,14 @@ void D3D12App::Render()
                 sceneScissorRect,
                 g_visibleInstances,
                 transparentStartIndex);
+            if (!zPrepassOutput.depth.IsValid() || !zPrepassOutput.pass.IsValid())
+            {
+                OutputDebugStringA(
+                    "Error: Deferred Z-prepass RDG construction failed; rendering stopped.\n");
+                Running = false;
+                EndFrame();
+                return;
+            }
         }
 
         GBufferPass::Output gbufferOutput = GBufferPass::AddToGraph(
@@ -790,6 +1200,19 @@ void D3D12App::Render()
             transparentStartIndex,
             useZPrepass,
             zPrepassOutput.depth);
+        if (!gbufferOutput.albedo.IsValid() ||
+            !gbufferOutput.normal.IsValid() ||
+            !gbufferOutput.orm.IsValid() ||
+            !gbufferOutput.emissive.IsValid() ||
+            !gbufferOutput.depth.IsValid() ||
+            !gbufferOutput.pass.IsValid())
+        {
+            OutputDebugStringA(
+                "Error: Deferred GBuffer RDG construction failed; rendering stopped.\n");
+            Running = false;
+            EndFrame();
+            return;
+        }
 
         MotionVectorPass::Output motionOutput = MotionVectorPass::AddToGraph(
             deferredGraph,
@@ -803,6 +1226,14 @@ void D3D12App::Render()
             SceneHeight,
             frameIndex,
             { gbufferOutput.depth });
+        if (!motionOutput.motionTexture.IsValid() || !motionOutput.pass.IsValid())
+        {
+            OutputDebugStringA(
+                "Error: Deferred motion-vector RDG construction failed; rendering stopped.\n");
+            Running = false;
+            EndFrame();
+            return;
+        }
         deferredGraph.AddPassDependencies(motionOutput.pass, { gbufferOutput.pass });
 
         HBAOPass::Output hbaoOutput = HBAOPass::AddToGraph(
@@ -818,6 +1249,16 @@ void D3D12App::Render()
             frameIndex,
             m_hbaoTemporalFrameIndex++,
             { gbufferOutput.depth, gbufferOutput.normal });
+        if (!hbaoOutput.blurredTexture.IsValid() ||
+            !hbaoOutput.rawPass.IsValid() ||
+            !hbaoOutput.blurPass.IsValid())
+        {
+            OutputDebugStringA(
+                "Error: Deferred HBAO RDG construction failed; rendering stopped.\n");
+            Running = false;
+            EndFrame();
+            return;
+        }
         deferredGraph.AddPassDependencies(hbaoOutput.rawPass, { gbufferOutput.pass });
         deferredGraph.AddPassDependencies(hbaoOutput.blurPass, { hbaoOutput.rawPass });
 
@@ -882,8 +1323,16 @@ void D3D12App::Render()
                     ScalarTemporalFilterPass::GetAmbientOcclusionSettings(deltaTime),
                     hbaoTemporalInput);
 
-            if (hbaoTemporalOutput.historyTexture.IsValid() &&
-                hbaoTemporalOutput.pass.IsValid())
+            if (!hbaoTemporalOutput.historyTexture.IsValid() ||
+                !hbaoTemporalOutput.pass.IsValid())
+            {
+                OutputDebugStringA(
+                    "Error: Deferred temporal HBAO RDG construction failed; rendering stopped.\n");
+                Running = false;
+                EndFrame();
+                return;
+            }
+
             {
                 deferredGraph.AddPassDependencies(
                     hbaoTemporalOutput.pass,
@@ -906,6 +1355,17 @@ void D3D12App::Render()
                     deferredGraph.GetTextureResource(currentHBAODepthHistory);
                 ID3D12Resource* normalHistoryResource =
                     deferredGraph.GetTextureResource(currentHBAONormalHistory);
+                if (sceneDepthResource == nullptr ||
+                    sceneNormalResource == nullptr ||
+                    depthHistoryResource == nullptr ||
+                    normalHistoryResource == nullptr)
+                {
+                    OutputDebugStringA(
+                        "Error: Deferred HBAO geometry-history resources are invalid; rendering stopped.\n");
+                    Running = false;
+                    EndFrame();
+                    return;
+                }
 
                 RDGPassHandle geometryHistoryCopyPass = deferredGraph.AddPass(
                     "HBAOGeometryHistoryCopy",
@@ -947,8 +1407,16 @@ void D3D12App::Render()
                             0,
                             0,
                             &sourceNormal,
-                            nullptr);
+                        nullptr);
                     });
+                if (!geometryHistoryCopyPass.IsValid())
+                {
+                    OutputDebugStringA(
+                        "Error: Deferred HBAO geometry-history copy RDG construction failed; rendering stopped.\n");
+                    Running = false;
+                    EndFrame();
+                    return;
+                }
                 deferredGraph.AddPassDependencies(
                     geometryHistoryCopyPass,
                     { hbaoTemporalOutput.pass });
@@ -979,6 +1447,14 @@ void D3D12App::Render()
                 SceneHeight,
                 frameIndex,
                 deferredInput);
+            if (!deferredOutput.sceneColor.IsValid() || !deferredOutput.pass.IsValid())
+            {
+                OutputDebugStringA(
+                    "Error: Deferred lighting RDG construction failed; rendering stopped.\n");
+                Running = false;
+                EndFrame();
+                return;
+            }
             deferredGraph.AddPassDependencies(deferredOutput.pass, { shadowOutput.pass, hbaoProducer });
             RDGPassHandle sceneColorProducer = deferredOutput.pass;
 
@@ -993,6 +1469,14 @@ void D3D12App::Render()
                 SceneWidth,
                 SceneHeight,
                 { deferredOutput.sceneColor, gbufferOutput.depth });
+            if (!skyboxPass.IsValid())
+            {
+                OutputDebugStringA(
+                    "Error: Deferred skybox RDG construction failed; rendering stopped.\n");
+                Running = false;
+                EndFrame();
+                return;
+            }
             deferredGraph.AddPassDependencies(skyboxPass, { sceneColorProducer });
             sceneColorProducer = skyboxPass;
 
@@ -1007,130 +1491,159 @@ void D3D12App::Render()
                 g_visibleInstances,
                 transparentStartIndex,
                 { deferredOutput.sceneColor, gbufferOutput.depth, shadowOutput.shadowMapSrv });
+            if (!transparentPass.IsValid())
+            {
+                OutputDebugStringA(
+                    "Error: Deferred transparent RDG construction failed; rendering stopped.\n");
+                Running = false;
+                EndFrame();
+                return;
+            }
             sceneColorProducer = transparentPass;
 
-            DLSSPass::Output dlssOutput = {};
-            if (dlssModeActive && m_dlssManager.CanEvaluate())
+            RDGTextureHandle deferredFinalColor = deferredOutput.sceneColor;
+            RDGPassHandle deferredFinalColorProducer = sceneColorProducer;
+            if (m_antiAliasingMode == AntiAliasingMode::TAA ||
+                m_antiAliasingMode == AntiAliasingMode::TSR ||
+                m_antiAliasingMode == AntiAliasingMode::DLSS)
             {
-                dlssOutput = DLSSPass::AddToGraph(
-                    deferredGraph,
-                    &m_dlssManager,
-                    &m_resourceManager,
-                    m_currJitterPixelX,
-                    m_currJitterPixelY,
-                    (std::max)(deltaTime * 1000.0f, 0.0f),
-                    !m_dlssHistoryValid,
-                    { deferredOutput.sceneColor, gbufferOutput.depth, motionOutput.motionTexture });
-
-                if (dlssOutput.outputTexture.IsValid() && dlssOutput.pass.IsValid())
+                if (m_antiAliasingMode == AntiAliasingMode::TAA)
                 {
+                    TAAPass::Output taaOutput = TAAPass::AddToGraph(
+                        deferredGraph,
+                        &m_deviceContext,
+                        &m_resourceManager,
+                        &m_pipelineManager,
+                        m_currJitteredInvViewProjGpu,
+                        m_prevUnjitteredViewProjGpu,
+                        m_currJitterNdcX,
+                        m_currJitterNdcY,
+                        frameIndex,
+                        Width,
+                        Height,
+                        m_temporalHistoryValid,
+                        { deferredOutput.sceneColor, gbufferOutput.depth, motionOutput.motionTexture });
+
+                    if (!taaOutput.historyTexture.IsValid() || !taaOutput.pass.IsValid())
+                    {
+                        OutputDebugStringA(
+                            "Error: Deferred TAA RDG construction failed; rendering stopped instead of degrading.\n");
+                        Running = false;
+                        EndFrame();
+                        return;
+                    }
+
+                    deferredGraph.AddPassDependencies(
+                        taaOutput.pass,
+                        { sceneColorProducer, motionOutput.pass });
+                    deferredFinalColor = taaOutput.historyTexture;
+                    deferredFinalColorProducer = taaOutput.pass;
+                    temporalHistoryWrittenByDeferredGraph = true;
+                }
+                else if (m_antiAliasingMode == AntiAliasingMode::TSR)
+                {
+                    TSRPass::Output tsrOutput = TSRPass::AddToGraph(
+                        deferredGraph,
+                        &m_deviceContext,
+                        &m_resourceManager,
+                        &m_pipelineManager,
+                        m_currJitteredInvViewProjGpu,
+                        m_prevUnjitteredViewProjGpu,
+                        m_currJitterNdcX,
+                        m_currJitterNdcY,
+                        frameIndex,
+                        SceneWidth,
+                        SceneHeight,
+                        Width,
+                        Height,
+                        m_temporalHistoryValid,
+                        { deferredOutput.sceneColor, gbufferOutput.depth, motionOutput.motionTexture });
+
+                    if (!tsrOutput.historyTexture.IsValid() || !tsrOutput.pass.IsValid())
+                    {
+                        OutputDebugStringA(
+                            "Error: Deferred TSR RDG construction failed; rendering stopped instead of degrading.\n");
+                        Running = false;
+                        EndFrame();
+                        return;
+                    }
+
+                    deferredGraph.AddPassDependencies(
+                        tsrOutput.pass,
+                        { sceneColorProducer, motionOutput.pass });
+                    deferredFinalColor = tsrOutput.historyTexture;
+                    deferredFinalColorProducer = tsrOutput.pass;
+                    temporalHistoryWrittenByDeferredGraph = true;
+                }
+                else
+                {
+                    DLSSPass::Output dlssOutput = DLSSPass::AddToGraph(
+                        deferredGraph,
+                        &m_dlssManager,
+                        &m_resourceManager,
+                        m_currJitterPixelX,
+                        m_currJitterPixelY,
+                        (std::max)(deltaTime * 1000.0f, 0.0f),
+                        !m_dlssHistoryValid,
+                        { deferredOutput.sceneColor, gbufferOutput.depth, motionOutput.motionTexture },
+                        [this](ID3D12GraphicsCommandList* commandList)
+                        {
+                            commandList->SetGraphicsRootSignature(
+                                m_pipelineManager.GetPostProcessRootSignature());
+                            commandList->SetPipelineState(
+                                m_pipelineManager.GetPostProcessPSO(false));
+                            commandList->RSSetViewports(1, &viewport);
+                            commandList->RSSetScissorRects(1, &scissorRect);
+                            commandList->IASetPrimitiveTopology(
+                                D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+
+                            ID3D12DescriptorHeap* heaps[] =
+                            {
+                                m_resourceManager.GetMainDescriptorHeap()
+                            };
+                            commandList->SetDescriptorHeaps(1, heaps);
+                        });
+
+                    if (!dlssOutput.outputTexture.IsValid() || !dlssOutput.pass.IsValid())
+                    {
+                        OutputDebugStringA(
+                            "Error: Deferred DLSS RDG construction failed; rendering stopped instead of degrading.\n");
+                        Running = false;
+                        EndFrame();
+                        return;
+                    }
+
                     deferredGraph.AddPassDependencies(
                         dlssOutput.pass,
                         { sceneColorProducer, motionOutput.pass });
+                    deferredFinalColor = dlssOutput.outputTexture;
+                    deferredFinalColorProducer = dlssOutput.pass;
                     dlssEvaluatedByDeferredGraph = true;
                 }
             }
 
-            if (dlssOutputWasReady &&
-                dlssOutput.outputTexture.IsValid() &&
-                dlssOutput.pass.IsValid())
+            RDGPassHandle postProcessPass = PostProcessPass::AddFinalToGraph(
+                deferredGraph,
+                &m_deviceContext,
+                &m_resourceManager,
+                &m_pipelineManager,
+                frameIndex,
+                viewport,
+                scissorRect,
+                deferredFinalColor,
+                false,
+                enablePostProcessSharpen);
+            if (!postProcessPass.IsValid())
             {
-                RDGPassHandle postProcessPass = PostProcessPass::AddFinalToGraph(
-                    deferredGraph,
-                    &m_deviceContext,
-                    &m_resourceManager,
-                    &m_pipelineManager,
-                    frameIndex,
-                    viewport,
-                    scissorRect,
-                    dlssOutput.outputTexture);
-                deferredGraph.AddPassDependencies(postProcessPass, { dlssOutput.pass });
-
-                postProcessHandledByDeferredGraph = true;
+                OutputDebugStringA(
+                    "Error: Deferred post-process RDG construction failed; rendering stopped instead of degrading.\n");
+                Running = false;
+                EndFrame();
+                return;
             }
-            else if (m_antiAliasingMode == AntiAliasingMode::TAA)
-            {
-                TAAPass::Output taaOutput = TAAPass::AddToGraph(
-                    deferredGraph,
-                    &m_deviceContext,
-                    &m_resourceManager,
-                    &m_pipelineManager,
-                    m_currJitteredInvViewProjGpu,
-                    m_prevUnjitteredViewProjGpu,
-                    m_currJitterNdcX,
-                    m_currJitterNdcY,
-                    frameIndex,
-                    Width,
-                    Height,
-                    m_temporalHistoryValid,
-                    { deferredOutput.sceneColor, gbufferOutput.depth, motionOutput.motionTexture });
-                deferredGraph.AddPassDependencies(taaOutput.pass, { sceneColorProducer });
-                sceneColorProducer = taaOutput.pass;
-
-                RDGPassHandle postProcessPass = PostProcessPass::AddFinalToGraph(
-                    deferredGraph,
-                    &m_deviceContext,
-                    &m_resourceManager,
-                    &m_pipelineManager,
-                    frameIndex,
-                    viewport,
-                    scissorRect,
-                    taaOutput.historyTexture);
-                deferredGraph.AddPassDependencies(postProcessPass, { sceneColorProducer });
-
-                temporalHistoryWrittenByDeferredGraph = true;
-                postProcessHandledByDeferredGraph = true;
-            }
-            else if (m_antiAliasingMode == AntiAliasingMode::TSR)
-            {
-                TSRPass::Output tsrOutput = TSRPass::AddToGraph(
-                    deferredGraph,
-                    &m_deviceContext,
-                    &m_resourceManager,
-                    &m_pipelineManager,
-                    m_currJitteredInvViewProjGpu,
-                    m_prevUnjitteredViewProjGpu,
-                    m_currJitterNdcX,
-                    m_currJitterNdcY,
-                    frameIndex,
-                    SceneWidth,
-                    SceneHeight,
-                    Width,
-                    Height,
-                    m_temporalHistoryValid,
-                    { deferredOutput.sceneColor, gbufferOutput.depth, motionOutput.motionTexture });
-                deferredGraph.AddPassDependencies(tsrOutput.pass, { sceneColorProducer });
-                sceneColorProducer = tsrOutput.pass;
-
-                RDGPassHandle postProcessPass = PostProcessPass::AddFinalToGraph(
-                    deferredGraph,
-                    &m_deviceContext,
-                    &m_resourceManager,
-                    &m_pipelineManager,
-                    frameIndex,
-                    viewport,
-                    scissorRect,
-                    tsrOutput.historyTexture);
-                deferredGraph.AddPassDependencies(postProcessPass, { sceneColorProducer });
-
-                temporalHistoryWrittenByDeferredGraph = true;
-                postProcessHandledByDeferredGraph = true;
-            }
-            else
-            {
-                RDGPassHandle postProcessPass = PostProcessPass::AddFinalToGraph(
-                    deferredGraph,
-                    &m_deviceContext,
-                    &m_resourceManager,
-                    &m_pipelineManager,
-                    frameIndex,
-                    viewport,
-                    scissorRect,
-                    deferredOutput.sceneColor);
-                deferredGraph.AddPassDependencies(postProcessPass, { sceneColorProducer });
-
-                postProcessHandledByDeferredGraph = true;
-            }
+            deferredGraph.AddPassDependencies(
+                postProcessPass,
+                { deferredFinalColorProducer });
         }
 
         // Execute the entire graph after all passes have been added
@@ -1138,14 +1651,17 @@ void D3D12App::Render()
 
         if (dlssEvaluatedByDeferredGraph)
         {
-            if (m_dlssManager.WasLastEvaluationSuccessful())
-            {
-                m_dlssHistoryValid = true;
-            }
-            else
+            if (!m_dlssManager.WasLastEvaluationSuccessful())
             {
                 m_dlssHistoryValid = false;
+                OutputDebugStringA(
+                    "Error: Deferred DLSS evaluation failed; the frame was not submitted.\n");
+                Running = false;
+                EndFrame();
+                return;
             }
+
+            m_dlssHistoryValid = true;
         }
 
         if (hbaoTemporalHandledByDeferredGraph)
@@ -1159,39 +1675,9 @@ void D3D12App::Render()
             m_resourceManager.FlipTemporalHistoryIndex();
             m_temporalHistoryValid = true;
         }
-
-        transparentIdx = transparentStartIndex;
     }
 
-    if (!m_settingsManager.pipeline.useDeferred)
-    {
-        SkyboxPass::Execute(&m_deviceContext, &m_resourceManager, &m_pipelineManager, camera, viewport, scissorRect, Width, Height);
-
-        PBRPass::ExecuteTransparent(&m_deviceContext, &m_resourceManager, &m_pipelineManager, frameIndex, viewport, scissorRect, g_visibleInstances, transparentIdx);
-    }
-
-    UINT finalPostInputSRV = m_resourceManager.GetPostProcessSrvIdx();
-
-    if (m_antiAliasingMode == AntiAliasingMode::TAA &&
-        !temporalHistoryWrittenByDeferredGraph)
-    {
-        finalPostInputSRV = TAAPass::ExecuteRDG(&m_deviceContext, &m_resourceManager, &m_pipelineManager, m_currJitteredInvViewProjGpu, m_currUnjitteredViewProjGpu, m_prevUnjitteredViewProjGpu, m_currJitterNdcX, m_currJitterNdcY, frameIndex, Width, Height, m_temporalHistoryValid);
-        m_temporalHistoryValid = true;
-    }
-
-    if (!postProcessHandledByDeferredGraph)
-    {
-        if (m_antiAliasingMode == AntiAliasingMode::None)
-        {
-            PostProcessPass::ExecuteRDG(&m_deviceContext, &m_resourceManager, &m_pipelineManager, frameIndex, viewport, scissorRect);
-        }
-        else
-        {
-            PostProcessPass::Execute(&m_deviceContext, &m_resourceManager, &m_pipelineManager, frameIndex, viewport, scissorRect, finalPostInputSRV);
-        }
-    }
-
-    EndFrame(postProcessHandledByDeferredGraph);
+    EndFrame();
 
     ID3D12CommandList* lists[] = { m_deviceContext.GetCommandList() };
     // Submit recorded rendering commands to the GPU for execution

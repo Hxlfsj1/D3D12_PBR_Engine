@@ -164,6 +164,7 @@
     <ClInclude Include="Resources\PBR_Model.h" />
     <ClInclude Include="Graphics\PBR_Shader.h" />
     <ClInclude Include="Graphics\PipelineManager.h" />
+    <ClInclude Include="Graphics\DLSSQuality.h" />
     <ClInclude Include="Graphics\DLSSManager.h" />
     <ClInclude Include="Passes\PostProcessPass.h" />
     <ClInclude Include="Passes\ScalarTemporalFilterPass.h" />
