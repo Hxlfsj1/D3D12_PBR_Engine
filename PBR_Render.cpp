@@ -340,8 +340,6 @@ bool D3D12App::InitD3D()
         return false;
     }
 
-    if (!m_resourceManager.InitDepthBufferSRV(&m_deviceContext)) return false;
-
     m_resourceManager.SealPersistentSrvUavDescriptors();
 
     viewport = CD3DX12_VIEWPORT(0.0f, 0.0f, (float)Width, (float)Height);
@@ -522,8 +520,6 @@ void D3D12App::Update()
 
     passCb.iblPrefilterIdx = m_resourceManager.GetIblPrefilterIdx();
     passCb.iblBRDFIdx = m_resourceManager.GetIblBRDFIdx();
-    passCb.shadowMapIdx = m_resourceManager.GetShadowSrvIdx();
-
     memcpy(cbvAddress, &passCb, sizeof(PassConstants));
 
     // ====================================================================================================
@@ -693,20 +689,6 @@ void D3D12App::BeginFrame()
     // Reset the command sequence from the previous frame
     m_deviceContext.GetCommandAllocator(frameIndex)->Reset();
     m_deviceContext.GetCommandList()->Reset(m_deviceContext.GetCommandAllocator(frameIndex), m_pipelineManager.GetPBR_PSO());
-
-    // Bind the Render Target View (RTV) and Depth Stencil View (DSV) for the current frame
-    CD3DX12_CPU_DESCRIPTOR_HANDLE rtv = m_resourceManager.GetPostProcessRtvHandle();
-    CD3DX12_CPU_DESCRIPTOR_HANDLE dsv = m_deviceContext.GetDSVHandle();
-    m_deviceContext.GetCommandList()->OMSetRenderTargets(1, &rtv, FALSE, &dsv);
-
-    // Clear the canvas to a solid color to prevent ghosting from the previous frame
-    const float clearColor[] = { 0.2f, 0.3f, 0.4f, 1.0f };
-    m_deviceContext.GetCommandList()->ClearRenderTargetView(rtv, clearColor, 0, nullptr);
-    m_deviceContext.GetCommandList()->ClearDepthStencilView(dsv, D3D12_CLEAR_FLAG_DEPTH, 1.0f, 0, 0, nullptr);
-
-    // Set the Viewport and Scissor Rect (for viewport transformation and clipping before rasterization)
-    m_deviceContext.GetCommandList()->RSSetViewports(1, &viewport);
-    m_deviceContext.GetCommandList()->RSSetScissorRects(1, &scissorRect);
 }
 
 void D3D12App::EndFrame()

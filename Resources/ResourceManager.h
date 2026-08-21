@@ -372,18 +372,6 @@ public:
 
     bool InitShadowResources(RenderDevice* dc)
     {
-        D3D12_DESCRIPTOR_HEAP_DESC dsvHeapDesc = {};
-        dsvHeapDesc.NumDescriptors = NUM_CASCADES;
-        dsvHeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_DSV;
-        dsvHeapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
-
-        if (FAILED(dc->GetDevice()->CreateDescriptorHeap(&dsvHeapDesc, IID_PPV_ARGS(&m_shadowDsvHeap))))
-        {
-            return false;
-        }
-
-        m_shadowDsvDescriptorSize = dc->GetDevice()->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_DSV);
-
         D3D12_RESOURCE_DESC texDesc = CD3DX12_RESOURCE_DESC::Tex2D(
             DXGI_FORMAT_R32_TYPELESS,
             m_shadowMapSize, m_shadowMapSize,
@@ -409,34 +397,6 @@ public:
             return false;
         }
 
-        D3D12_DEPTH_STENCIL_VIEW_DESC dsvDesc = {};
-        dsvDesc.Format = DXGI_FORMAT_D32_FLOAT;
-        dsvDesc.ViewDimension = D3D12_DSV_DIMENSION_TEXTURE2DARRAY;
-        dsvDesc.Flags = D3D12_DSV_FLAG_NONE;
-        dsvDesc.Texture2DArray.MipSlice = 0;
-        dsvDesc.Texture2DArray.ArraySize = 1;
-
-        CD3DX12_CPU_DESCRIPTOR_HANDLE dsvHandle(m_shadowDsvHeap->GetCPUDescriptorHandleForHeapStart());
-        for (UINT i = 0; i < NUM_CASCADES; ++i)
-        {
-            dsvDesc.Texture2DArray.FirstArraySlice = i;
-            dc->GetDevice()->CreateDepthStencilView(m_shadowMap.Get(), &dsvDesc, dsvHandle);
-            dsvHandle.Offset(1, m_shadowDsvDescriptorSize);
-        }
-
-        m_shadowSrvIdx = srvIdx++;
-        D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
-        srvDesc.Format = DXGI_FORMAT_R32_FLOAT;
-        srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2DARRAY;
-        srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-        srvDesc.Texture2DArray.MostDetailedMip = 0;
-        srvDesc.Texture2DArray.MipLevels = 1;
-        srvDesc.Texture2DArray.FirstArraySlice = 0;
-        srvDesc.Texture2DArray.ArraySize = NUM_CASCADES;
-
-        CD3DX12_CPU_DESCRIPTOR_HANDLE hSrv(mainDescriptorHeap->GetCPUDescriptorHandleForHeapStart(), m_shadowSrvIdx, srvDescriptorSize);
-        dc->GetDevice()->CreateShaderResourceView(m_shadowMap.Get(), &srvDesc, hSrv);
-
         return true;
     }
 
@@ -445,15 +405,6 @@ public:
         int sceneWidth,
         int sceneHeight)
     {
-        D3D12_DESCRIPTOR_HEAP_DESC rtvHeapDesc = {};
-        rtvHeapDesc.NumDescriptors = 1;
-        rtvHeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
-        rtvHeapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
-        if (FAILED(dc->GetDevice()->CreateDescriptorHeap(&rtvHeapDesc, IID_PPV_ARGS(&m_postRtvHeap))))
-        {
-            return false;
-        }
-
         D3D12_RESOURCE_DESC texDesc = CD3DX12_RESOURCE_DESC::Tex2D(
             DXGI_FORMAT_R16G16B16A16_FLOAT,
             (UINT64)sceneWidth, (UINT)sceneHeight,
@@ -479,18 +430,6 @@ public:
             return false;
         }
 
-        dc->GetDevice()->CreateRenderTargetView(m_offscreenRT.Get(), nullptr, m_postRtvHeap->GetCPUDescriptorHandleForHeapStart());
-
-        m_offscreenSrvIdx = srvIdx++;
-        D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
-        srvDesc.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
-        srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
-        srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-        srvDesc.Texture2D.MipLevels = 1;
-
-        CD3DX12_CPU_DESCRIPTOR_HANDLE hSrv(mainDescriptorHeap->GetCPUDescriptorHandleForHeapStart(), m_offscreenSrvIdx, srvDescriptorSize);
-        dc->GetDevice()->CreateShaderResourceView(m_offscreenRT.Get(), &srvDesc, hSrv);
-
         D3D12_RESOURCE_DESC transparentCopyDesc = CD3DX12_RESOURCE_DESC::Tex2D(
             DXGI_FORMAT_R16G16B16A16_FLOAT,
             (UINT64)sceneWidth, (UINT)sceneHeight,
@@ -507,14 +446,6 @@ public:
         {
             return false;
         }
-
-        m_transparentSceneColorSrvIdx = srvIdx++;
-        CD3DX12_CPU_DESCRIPTOR_HANDLE hTransparentCopySrv(
-            mainDescriptorHeap->GetCPUDescriptorHandleForHeapStart(),
-            m_transparentSceneColorSrvIdx,
-            srvDescriptorSize);
-
-        dc->GetDevice()->CreateShaderResourceView(m_transparentSceneColorCopy.Get(), &srvDesc, hTransparentCopySrv);
 
         auto defHeap = CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_DEFAULT);
 
@@ -582,18 +513,6 @@ public:
             return false;
         }
 
-        D3D12_DESCRIPTOR_HEAP_DESC rtvHeapDesc = {};
-        rtvHeapDesc.NumDescriptors = 2;
-        rtvHeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
-        if (FAILED(dc->GetDevice()->CreateDescriptorHeap(
-            &rtvHeapDesc,
-            IID_PPV_ARGS(&m_temporalRtvHeap))))
-        {
-            return false;
-        }
-        m_temporalRtvDescriptorSize = dc->GetDevice()->GetDescriptorHandleIncrementSize(
-            D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
-
         D3D12_RESOURCE_DESC historyDesc = CD3DX12_RESOURCE_DESC::Tex2D(
             DXGI_FORMAT_R16G16B16A16_FLOAT,
             static_cast<UINT64>(width),
@@ -619,19 +538,6 @@ public:
             {
                 return false;
             }
-
-            CD3DX12_CPU_DESCRIPTOR_HANDLE rtvHandle(
-                m_temporalRtvHeap->GetCPUDescriptorHandleForHeapStart(),
-                index,
-                m_temporalRtvDescriptorSize);
-            dc->GetDevice()->CreateRenderTargetView(m_temporalHistoryRT[index].Get(), nullptr, rtvHandle);
-
-            m_temporalHistorySrvIdx[index] = srvIdx++;
-            CD3DX12_CPU_DESCRIPTOR_HANDLE srvHandle(
-                mainDescriptorHeap->GetCPUDescriptorHandleForHeapStart(),
-                m_temporalHistorySrvIdx[index],
-                srvDescriptorSize);
-            dc->GetDevice()->CreateShaderResourceView(m_temporalHistoryRT[index].Get(), nullptr, srvHandle);
         }
 
         return true;
@@ -680,37 +586,6 @@ public:
             outputWidth,
             outputHeight);
         OutputDebugStringA(message);
-        return true;
-    }
-
-    bool InitDepthBufferSRV(RenderDevice* dc)
-    {
-        if (dc == nullptr ||
-            dc->GetDevice() == nullptr ||
-            dc->GetDepthStencilBuffer() == nullptr ||
-            !mainDescriptorHeap)
-        {
-            return false;
-        }
-
-        m_depthBufferSrvIdx = srvIdx++;
-
-        D3D12_SHADER_RESOURCE_VIEW_DESC depthSrvDesc = {};
-        depthSrvDesc.Format = DXGI_FORMAT_R32_FLOAT;
-        depthSrvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
-        depthSrvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-        depthSrvDesc.Texture2D.MipLevels = 1;
-
-        CD3DX12_CPU_DESCRIPTOR_HANDLE depthSrvHandle(
-            mainDescriptorHeap->GetCPUDescriptorHandleForHeapStart(),
-            m_depthBufferSrvIdx,
-            srvDescriptorSize);
-
-        dc->GetDevice()->CreateShaderResourceView(
-            dc->GetDepthStencilBuffer(),
-            &depthSrvDesc,
-            depthSrvHandle);
-
         return true;
     }
 
@@ -1047,16 +922,6 @@ public:
         return m_shadowMap.Get();
     }
 
-    CD3DX12_CPU_DESCRIPTOR_HANDLE GetShadowDsvHandle(UINT cascadeIndex = 0)
-    {
-        return CD3DX12_CPU_DESCRIPTOR_HANDLE(m_shadowDsvHeap->GetCPUDescriptorHandleForHeapStart(), cascadeIndex, m_shadowDsvDescriptorSize);
-    }
-
-    UINT GetShadowSrvIdx()
-    {
-        return m_shadowSrvIdx;
-    }
-
     ID3D12Resource* GetPostProcessRT()
     {
         return m_offscreenRT.Get();
@@ -1067,24 +932,9 @@ public:
         return m_dlssOutput.Get();
     }
 
-    CD3DX12_CPU_DESCRIPTOR_HANDLE GetPostProcessRtvHandle()
-    {
-        return CD3DX12_CPU_DESCRIPTOR_HANDLE(m_postRtvHeap->GetCPUDescriptorHandleForHeapStart());
-    }
-
-    UINT GetPostProcessSrvIdx()
-    {
-        return m_offscreenSrvIdx;
-    }
-
     ID3D12Resource* GetTransparentSceneColorCopy()
     {
         return m_transparentSceneColorCopy.Get();
-    }
-
-    UINT GetTransparentSceneColorSrvIdx()
-    {
-        return m_transparentSceneColorSrvIdx;
     }
 
     D3D12_GPU_VIRTUAL_ADDRESS GetMaterialBufferGPUAddress()
@@ -1092,27 +942,9 @@ public:
         return m_materialBuffer->GetGPUVirtualAddress();
     }
 
-    UINT GetDepthBufferSrvIdx()
-    {
-        return m_depthBufferSrvIdx;
-    }
-
     ID3D12Resource* GetTemporalHistoryRT(int idx)
     {
         return m_temporalHistoryRT[idx].Get();
-    }
-
-    UINT GetTemporalHistorySrvIdx(int idx)
-    {
-        return m_temporalHistorySrvIdx[idx];
-    }
-
-    CD3DX12_CPU_DESCRIPTOR_HANDLE GetTemporalRtvHandle(int idx)
-    {
-        return CD3DX12_CPU_DESCRIPTOR_HANDLE(
-            m_temporalRtvHeap->GetCPUDescriptorHandleForHeapStart(),
-            idx,
-            m_temporalRtvDescriptorSize);
     }
 
     ID3D12Resource* GetHBAOHistoryRT(int idx)
@@ -1245,28 +1077,17 @@ private:
     ComPtr<ID3D12Resource> shBuffer;
 
     Microsoft::WRL::ComPtr<ID3D12Resource> m_shadowMap;
-    Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> m_shadowDsvHeap;
-    UINT m_shadowSrvIdx;
-    UINT m_shadowDsvDescriptorSize = 0;
     const UINT m_shadowMapSize = 4096;
 
     Microsoft::WRL::ComPtr<ID3D12Resource> m_offscreenRT;
     Microsoft::WRL::ComPtr<ID3D12Resource> m_dlssOutput;
-    Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> m_postRtvHeap;
-    UINT m_offscreenSrvIdx;
 
     Microsoft::WRL::ComPtr<ID3D12Resource> m_transparentSceneColorCopy;
-    UINT m_transparentSceneColorSrvIdx = 0;
 
     ComPtr<ID3D12Resource> m_materialBuffer;
     ComPtr<ID3D12Resource> m_materialUploadBuffer;
 
-    UINT m_depthBufferSrvIdx = 0;
-
     Microsoft::WRL::ComPtr<ID3D12Resource> m_temporalHistoryRT[2];
-    Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> m_temporalRtvHeap;
-    UINT m_temporalHistorySrvIdx[2];
-    UINT m_temporalRtvDescriptorSize = 0;
     int m_temporalCurrentHistoryIdx = 0;
 
     Microsoft::WRL::ComPtr<ID3D12Resource> m_hbaoHistoryRT[2];

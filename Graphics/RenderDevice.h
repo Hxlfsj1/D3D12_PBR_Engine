@@ -39,7 +39,7 @@ public:
         if (!CreateDevice()) return false;
         if (!CreateCommandObjects(frameBufferCount)) return false;
         if (!CreateSwapChain(hwnd, width, height, frameBufferCount)) return false;
-        if (!CreateFrameViews(width, height, frameBufferCount)) return false;
+        if (!CreateDepthBuffer(width, height)) return false;
 
         return true;
     }
@@ -202,39 +202,8 @@ public:
         return true;
     }
 
-    bool CreateFrameViews(int width, int height, int frameBufferCount)
+    bool CreateDepthBuffer(int width, int height)
     {
-        D3D12_DESCRIPTOR_HEAP_DESC rtvHeapDesc = {};
-        rtvHeapDesc.NumDescriptors = frameBufferCount;
-        rtvHeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
-        rtvHeapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
-
-        HRESULT hr = device->CreateDescriptorHeap(&rtvHeapDesc, IID_PPV_ARGS(&rtvDescriptorHeap));
-        if (FAILED(hr))
-        {
-            return false;
-        }
-
-        rtvDescriptorSize = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
-        CD3DX12_CPU_DESCRIPTOR_HANDLE rtvHandle(rtvDescriptorHeap->GetCPUDescriptorHandleForHeapStart());
-
-        for (int i = 0; i < frameBufferCount; i++)
-        {
-            device->CreateRenderTargetView(m_renderTargets[i].Get(), nullptr, rtvHandle);
-            rtvHandle.Offset(1, rtvDescriptorSize);
-        }
-
-        D3D12_DESCRIPTOR_HEAP_DESC dsvHeapDesc = {};
-        dsvHeapDesc.NumDescriptors = 1;
-        dsvHeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_DSV;
-        dsvHeapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
-
-        hr = device->CreateDescriptorHeap(&dsvHeapDesc, IID_PPV_ARGS(&dsDescriptorHeap));
-        if (FAILED(hr))
-        {
-            return false;
-        }
-
         D3D12_CLEAR_VALUE depthClearValue = {};
         depthClearValue.Format = DXGI_FORMAT_D32_FLOAT;
         depthClearValue.DepthStencil.Depth = 1.0f;
@@ -250,7 +219,7 @@ public:
             0,
             D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL);
 
-        hr = device->CreateCommittedResource(
+        const HRESULT hr = device->CreateCommittedResource(
             &dsvHeapProps,
             D3D12_HEAP_FLAG_NONE,
             &dsvResDesc,
@@ -262,16 +231,6 @@ public:
         {
             return false;
         }
-
-        D3D12_DEPTH_STENCIL_VIEW_DESC dsvDesc = {};
-        dsvDesc.Format = DXGI_FORMAT_D32_FLOAT;
-        dsvDesc.ViewDimension = D3D12_DSV_DIMENSION_TEXTURE2D;
-        dsvDesc.Flags = D3D12_DSV_FLAG_NONE;
-
-        device->CreateDepthStencilView(
-            depthStencilBuffer.Get(),
-            &dsvDesc,
-            dsDescriptorHeap->GetCPUDescriptorHandleForHeapStart());
 
         return true;
     }
@@ -294,16 +253,6 @@ public:
     ID3D12CommandAllocator* GetCommandAllocator(int i) { return m_commandAllocator[i].Get(); }
     ID3D12Resource* GetDepthStencilBuffer() { return depthStencilBuffer.Get(); }
 
-    CD3DX12_CPU_DESCRIPTOR_HANDLE GetRTVHandle(int frameIndex)
-    {
-        return CD3DX12_CPU_DESCRIPTOR_HANDLE(rtvDescriptorHeap->GetCPUDescriptorHandleForHeapStart(), frameIndex, rtvDescriptorSize);
-    }
-
-    CD3DX12_CPU_DESCRIPTOR_HANDLE GetDSVHandle()
-    {
-        return CD3DX12_CPU_DESCRIPTOR_HANDLE(dsDescriptorHeap->GetCPUDescriptorHandleForHeapStart());
-    }
-
     ID3D12Fence* GetFence(int i) { return m_fence[i].Get(); }
     UINT64& GetFenceValue(int i) { return m_fenceValue[i]; }
     HANDLE GetFenceEvent() { return m_fenceEvent; }
@@ -319,10 +268,7 @@ private:
     std::vector<ComPtr<ID3D12Resource>> m_renderTargets;
     std::vector<ComPtr<ID3D12CommandAllocator>> m_commandAllocator;
 
-    UINT rtvDescriptorSize = 0;
-    ComPtr<ID3D12DescriptorHeap> rtvDescriptorHeap;
     ComPtr<ID3D12Resource> depthStencilBuffer;
-    ComPtr<ID3D12DescriptorHeap> dsDescriptorHeap;
 
     std::vector<ComPtr<ID3D12Fence>> m_fence;
     std::vector<UINT64> m_fenceValue;
