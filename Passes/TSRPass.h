@@ -49,7 +49,7 @@ public:
     };
 
     static void ExecuteNoBarrier(
-        RenderDevice* deviceContext,
+        ID3D12GraphicsCommandList* commandList,
         ResourceManager* resourceManager,
         PipelineManager* pipelineManager,
         const DirectX::XMFLOAT4X4& currJitteredInvViewProjGpu,
@@ -64,7 +64,6 @@ public:
         bool historyValid,
         const TextureViews& views)
     {
-        ID3D12GraphicsCommandList* commandList = deviceContext->GetCommandList();
         commandList->OMSetRenderTargets(1, &views.outputRtv, FALSE, nullptr);
 
         D3D12_VIEWPORT viewport = {
@@ -199,10 +198,10 @@ public:
             "TSR",
             ERDGPassFlags::Graphics,
             parameters,
-            [=](ID3D12GraphicsCommandList*)
+            [=](ID3D12GraphicsCommandList* commandList)
             {
                 ExecuteNoBarrier(
-                    deviceContext,
+                    commandList,
                     resourceManager,
                     pipelineManager,
                     currJitteredInvViewProjGpu,

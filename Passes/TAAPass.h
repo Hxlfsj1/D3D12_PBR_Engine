@@ -53,7 +53,7 @@ public:
     };
 
     static void ExecuteNoBarrier(
-        RenderDevice* deviceContext,
+        ID3D12GraphicsCommandList* cmdList,
         ResourceManager* resourceManager,
         PipelineManager* pipelineManager,
         const DirectX::XMFLOAT4X4& currJitteredInvViewProjGpu,
@@ -64,8 +64,6 @@ public:
         bool historyValid,
         const TextureViews& views)
     {
-        auto cmdList = deviceContext->GetCommandList();
-
         cmdList->OMSetRenderTargets(1, &views.outputRtv, FALSE, nullptr);
 
         D3D12_VIEWPORT viewport = { 0.0f, 0.0f, (float)width, (float)height, 0.0f, 1.0f };
@@ -233,7 +231,7 @@ public:
             [=](ID3D12GraphicsCommandList* cmdList)
             {
                 ExecuteNoBarrier(
-                    deviceContext,
+                    cmdList,
                     resourceManager,
                     pipelineManager,
                     currJitteredInvViewProjGpu,

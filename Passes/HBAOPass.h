@@ -26,7 +26,7 @@ public:
     };
 
     static void ExecuteRawNoBarrier(
-        RenderDevice* deviceContext,
+        ID3D12GraphicsCommandList* cmdList,
         ResourceManager* resourceManager,
         PipelineManager* pipelineManager,
         const DirectX::XMFLOAT4X4& viewMat,
@@ -40,8 +40,6 @@ public:
         UINT depthSrvIdx,
         UINT gbufferNormalSrvIdx)
     {
-        auto cmdList = deviceContext->GetCommandList();
-
         cmdList->OMSetRenderTargets(1, &hbaoRtv, FALSE, nullptr);
         const float clearAO[] = { 1.0f, 1.0f, 1.0f, 1.0f };
         cmdList->ClearRenderTargetView(hbaoRtv, clearAO, 0, nullptr);
@@ -84,7 +82,7 @@ public:
     }
 
     static void ExecuteBlurNoBarrier(
-        RenderDevice* deviceContext,
+        ID3D12GraphicsCommandList* cmdList,
         ResourceManager* resourceManager,
         PipelineManager* pipelineManager,
         D3D12_CPU_DESCRIPTOR_HANDLE blurRtv,
@@ -95,8 +93,6 @@ public:
         int height,
         int frameIndex)
     {
-        auto cmdList = deviceContext->GetCommandList();
-
         cmdList->OMSetRenderTargets(1, &blurRtv, FALSE, nullptr);
         const float clearAO[] = { 1.0f, 1.0f, 1.0f, 1.0f };
         cmdList->ClearRenderTargetView(blurRtv, clearAO, 0, nullptr);
@@ -124,7 +120,6 @@ public:
 
     static Output AddToGraph(
         RDGBuilder& graph,
-        RenderDevice* deviceContext,
         ResourceManager* resourceManager,
         PipelineManager* pipelineManager,
         const DirectX::XMFLOAT4X4& viewMat,
@@ -203,7 +198,7 @@ public:
             [=](ID3D12GraphicsCommandList* cmdList)
             {
                 ExecuteRawNoBarrier(
-                    deviceContext,
+                    cmdList,
                     resourceManager,
                     pipelineManager,
                     viewMat,
@@ -231,7 +226,7 @@ public:
             [=](ID3D12GraphicsCommandList* cmdList)
             {
                 ExecuteBlurNoBarrier(
-                    deviceContext,
+                    cmdList,
                     resourceManager,
                     pipelineManager,
                     hbaoBlurredRtv.cpuHandle,

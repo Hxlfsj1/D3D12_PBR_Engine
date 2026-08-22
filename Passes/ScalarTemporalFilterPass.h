@@ -194,7 +194,7 @@ public:
             [=](ID3D12GraphicsCommandList* cmdList)
             {
                 ExecuteNoBarrier(
-                    deviceContext,
+                    cmdList,
                     resourceManager,
                     pipelineManager,
                     currJitteredInvViewProj,
@@ -257,7 +257,7 @@ private:
     static_assert(sizeof(Constants) == D3D12_CONSTANT_BUFFER_DATA_PLACEMENT_ALIGNMENT);
 
     static void ExecuteNoBarrier(
-        RenderDevice* deviceContext,
+        ID3D12GraphicsCommandList* cmdList,
         ResourceManager* resourceManager,
         PipelineManager* pipelineManager,
         const DirectX::XMFLOAT4X4& currJitteredInvViewProj,
@@ -271,8 +271,6 @@ private:
         const Settings& settings,
         const TextureViews& views)
     {
-        ID3D12GraphicsCommandList* cmdList = deviceContext->GetCommandList();
-
         cmdList->OMSetRenderTargets(1, &views.outputRtv, FALSE, nullptr);
         const float clearValue[] =
         {

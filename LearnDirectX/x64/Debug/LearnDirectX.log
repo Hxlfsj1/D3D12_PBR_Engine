@@ -26,10 +26,9 @@ D:\项目\LearnDirectX\Resources\Settings_Manager.h(224,55): warning C4101: “e
 D:\项目\LearnDirectX\Resources\Settings_Manager.h(279,55): warning C4101: “e”: 未引用的局部变量
   (编译源文件“PBR_Render.cpp”)
   
-D:\项目\LearnDirectX\Passes\GBufferPass.h(148,47): warning C4267: “=”: 从“size_t”转换到“UINT”，可能丢失数据
+D:\项目\LearnDirectX\Passes\GBufferPass.h(146,47): warning C4267: “=”: 从“size_t”转换到“UINT”，可能丢失数据
   (编译源文件“PBR_Render.cpp”)
   
-meshoptimizer.lib(simplifier.obj) : warning LNK4099: 未找到 PDB“meshoptimizer.pdb”(使用“meshoptimizer.lib(simplifier.obj)”或在“D:\项目\LearnDirectX\x64\Debug\meshoptimizer.pdb”中寻找)；正在链接对象，如同没有调试信息一样
   LearnDirectX.vcxproj -> D:\项目\LearnDirectX\x64\Debug\LearnDirectX.exe
   'pwsh.exe' 不是内部或外部命令，也不是可运行的程序
   或批处理文件。

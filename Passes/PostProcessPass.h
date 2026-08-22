@@ -11,7 +11,7 @@ class PostProcessPass
 {
 public:
     static void ExecuteNoBarrier(
-        RenderDevice* deviceContext,
+        ID3D12GraphicsCommandList* cmdList,
         ResourceManager* resourceManager,
         PipelineManager* pipelineManager,
         int frameIndex,
@@ -22,8 +22,6 @@ public:
         bool visualizeScalar,
         bool enableSharpen)
     {
-        auto cmdList = deviceContext->GetCommandList();
-
         cmdList->OMSetRenderTargets(1, &outputRtv, FALSE, nullptr);
         cmdList->RSSetViewports(1, &viewport);
         cmdList->RSSetScissorRects(1, &scissorRect);
@@ -95,7 +93,7 @@ public:
             [=](ID3D12GraphicsCommandList* cmdList)
             {
                 ExecuteNoBarrier(
-                    deviceContext,
+                    cmdList,
                     resourceManager,
                     pipelineManager,
                     frameIndex,

@@ -18,7 +18,7 @@ public:
     };
 
     static void ExecuteNoBarrier(
-        RenderDevice* deviceContext,
+        ID3D12GraphicsCommandList* cmdList,
         ResourceManager* resourceManager,
         PipelineManager* pipelineManager,
         Camera& camera,
@@ -29,8 +29,6 @@ public:
         D3D12_CPU_DESCRIPTOR_HANDLE rtv,
         D3D12_CPU_DESCRIPTOR_HANDLE dsv)
     {
-        auto cmdList = deviceContext->GetCommandList();
-
         cmdList->OMSetRenderTargets(1, &rtv, FALSE, &dsv);
 
         cmdList->RSSetViewports(1, &viewport);
@@ -114,7 +112,7 @@ public:
             [=, &camera](ID3D12GraphicsCommandList* cmdList)
             {
                 ExecuteNoBarrier(
-                    deviceContext,
+                    cmdList,
                     resourceManager,
                     pipelineManager,
                     camera,

@@ -169,7 +169,7 @@ public:
     }
 
     static void ExecuteNoBarrier(
-        RenderDevice* deviceContext,
+        ID3D12GraphicsCommandList* cmdList,
         ResourceManager* resourceManager,
         PipelineManager* pipelineManager,
         int frameIndex,
@@ -178,8 +178,6 @@ public:
         size_t visibleInstancesSize,
         const std::array<D3D12_CPU_DESCRIPTOR_HANDLE, NUM_CASCADES>& shadowDsvHandles)
     {
-        auto cmdList = deviceContext->GetCommandList();
-
         cmdList->SetGraphicsRootSignature(pipelineManager->GetRootSignature());
         cmdList->SetPipelineState(pipelineManager->GetShadowPSO());
 
@@ -262,7 +260,6 @@ public:
 
     static Output AddToGraph(
         RDGBuilder& graph,
-        RenderDevice* deviceContext,
         ResourceManager* resourceManager,
         PipelineManager* pipelineManager,
         int frameIndex,
@@ -321,7 +318,7 @@ public:
             [=](ID3D12GraphicsCommandList* cmdList)
             {
                 ExecuteNoBarrier(
-                    deviceContext,
+                    cmdList,
                     resourceManager,
                     pipelineManager,
                     frameIndex,

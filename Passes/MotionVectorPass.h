@@ -90,7 +90,7 @@ public:
             [=](ID3D12GraphicsCommandList* cmdList)
             {
                 ExecuteNoBarrier(
-                    deviceContext,
+                    cmdList,
                     resourceManager,
                     pipelineManager,
                     currJitteredInvViewProjGpu,
@@ -108,7 +108,7 @@ public:
 
 private:
     static void ExecuteNoBarrier(
-        RenderDevice* deviceContext,
+        ID3D12GraphicsCommandList* cmdList,
         ResourceManager* resourceManager,
         PipelineManager* pipelineManager,
         const DirectX::XMFLOAT4X4& currJitteredInvViewProjGpu,
@@ -120,8 +120,6 @@ private:
         D3D12_CPU_DESCRIPTOR_HANDLE outputRtv,
         UINT depthSrvIdx)
     {
-        auto cmdList = deviceContext->GetCommandList();
-
         cmdList->OMSetRenderTargets(1, &outputRtv, FALSE, nullptr);
         const float clearMotion[] = { 0.0f, 0.0f, 0.0f, 0.0f };
         cmdList->ClearRenderTargetView(outputRtv, clearMotion, 0, nullptr);

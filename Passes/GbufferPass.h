@@ -33,7 +33,7 @@ public:
     };
 
     static size_t ExecuteNoBarrier(
-        RenderDevice* deviceContext,
+        ID3D12GraphicsCommandList* cmdList,
         ResourceManager* resourceManager,
         PipelineManager* pipelineManager,
         int frameIndex,
@@ -44,8 +44,6 @@ public:
         D3D12_CPU_DESCRIPTOR_HANDLE dsvHandle,
         bool useZPrepass = false)
     {
-        auto cmdList = deviceContext->GetCommandList();
-
         cmdList->RSSetViewports(1, &viewport);
         cmdList->RSSetScissorRects(1, &scissorRect);
 
@@ -296,7 +294,7 @@ public:
             [=, &transparentStartIndex](ID3D12GraphicsCommandList* cmdList)
             {
                 transparentStartIndex = ExecuteNoBarrier(
-                    deviceContext,
+                    cmdList,
                     resourceManager,
                     pipelineManager,
                     frameIndex,

@@ -195,7 +195,7 @@ public:
                     nullptr);
 
                 transparentStartIndex = ExecuteZPrepassNoBarrier(
-                    deviceContext,
+                    cmdList,
                     resourceManager,
                     pipelineManager,
                     frameIndex,
@@ -209,7 +209,7 @@ public:
     }
 
     static void ExecuteTransparentDrawNoBarrier(
-        RenderDevice* deviceContext,
+        ID3D12GraphicsCommandList* cmdList,
         ResourceManager* resourceManager,
         PipelineManager* pipelineManager,
         int frameIndex,
@@ -233,8 +233,6 @@ public:
         {
             return;
         }
-
-        auto cmdList = deviceContext->GetCommandList();
 
         PassConstants* passConstants = reinterpret_cast<PassConstants*>(
             resourceManager->GetCBVAddress(frameIndex));
@@ -375,7 +373,7 @@ public:
             {
                 size_t nearestTransparentIndex = FindNearestDrawableTransparentIndex(visibleInstances, transparentStartIndex);
                 ExecuteTransparentDrawNoBarrier(
-                    deviceContext,
+                    cmdList,
                     resourceManager,
                     pipelineManager,
                     frameIndex,
@@ -423,7 +421,7 @@ public:
             {
                 size_t nearestTransparentIndex = FindNearestDrawableTransparentIndex(visibleInstances, transparentStartIndex);
                 ExecuteTransparentDrawNoBarrier(
-                    deviceContext,
+                    cmdList,
                     resourceManager,
                     pipelineManager,
                     frameIndex,
@@ -654,7 +652,7 @@ private:
     }
 
     static size_t ExecuteZPrepassNoBarrier(
-        RenderDevice* deviceContext,
+        ID3D12GraphicsCommandList* cmdList,
         ResourceManager* resourceManager,
         PipelineManager* pipelineManager,
         int frameIndex,
@@ -663,8 +661,6 @@ private:
         const std::vector<ModelInstance*>& visibleInstances,
         D3D12_CPU_DESCRIPTOR_HANDLE dsv)
     {
-        auto cmdList = deviceContext->GetCommandList();
-
         D3D12_GPU_VIRTUAL_ADDRESS baseGpuAddress = BindOpaqueState(
             cmdList,
             resourceManager,

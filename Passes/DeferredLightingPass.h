@@ -41,7 +41,7 @@ public:
     };
 
     static void ExecuteNoBarrier(
-        RenderDevice* deviceContext,
+        ID3D12GraphicsCommandList* cmdList,
         ResourceManager* resourceManager,
         PipelineManager* pipelineManager,
         const DirectX::XMFLOAT4X4& invViewProjMat,
@@ -51,8 +51,6 @@ public:
         D3D12_CPU_DESCRIPTOR_HANDLE outputRtv,
         const SrvIndices& srvIndices)
     {
-        auto cmdList = deviceContext->GetCommandList();
-
         cmdList->OMSetRenderTargets(1, &outputRtv, FALSE, nullptr);
 
         D3D12_VIEWPORT viewport = { 0.0f, 0.0f, (float)width, (float)height, 0.0f, 1.0f };
@@ -95,7 +93,6 @@ public:
 
     static Output AddToGraph(
         RDGBuilder& graph,
-        RenderDevice* deviceContext,
         ResourceManager* resourceManager,
         PipelineManager* pipelineManager,
         const DirectX::XMFLOAT4X4& invViewProjMat,
@@ -184,7 +181,7 @@ public:
             [=](ID3D12GraphicsCommandList* cmdList)
             {
                 ExecuteNoBarrier(
-                    deviceContext,
+                    cmdList,
                     resourceManager,
                     pipelineManager,
                     invViewProjMat,

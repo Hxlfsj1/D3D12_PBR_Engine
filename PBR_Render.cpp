@@ -783,7 +783,6 @@ void D3D12App::Render()
 
         ShadowPass::Output shadowOutput = ShadowPass::AddToGraph(
             forwardGraph,
-            &m_deviceContext,
             &m_resourceManager,
             &m_pipelineManager,
             frameIndex,
@@ -1129,7 +1128,6 @@ void D3D12App::Render()
 
         ShadowPass::Output shadowOutput = ShadowPass::AddToGraph(
             deferredGraph,
-            &m_deviceContext,
             &m_resourceManager,
             &m_pipelineManager,
             frameIndex,
@@ -1220,7 +1218,6 @@ void D3D12App::Render()
 
         HBAOPass::Output hbaoOutput = HBAOPass::AddToGraph(
             deferredGraph,
-            &m_deviceContext,
             &m_resourceManager,
             &m_pipelineManager,
             m_currViewGpu,
@@ -1421,7 +1418,6 @@ void D3D12App::Render()
 
             DeferredLightingPass::Output deferredOutput = DeferredLightingPass::AddToGraph(
                 deferredGraph,
-                &m_deviceContext,
                 &m_resourceManager,
                 &m_pipelineManager,
                 m_currJitteredInvViewProjGpu,
