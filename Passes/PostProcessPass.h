@@ -10,6 +10,12 @@
 class PostProcessPass
 {
 public:
+    struct TextureOutput
+    {
+        RDGTextureHandle texture;
+        RDGPassHandle pass;
+    };
+
     static void ExecuteNoBarrier(
         ID3D12GraphicsCommandList* cmdList,
         ResourceManager* resourceManager,
@@ -44,6 +50,79 @@ public:
         cmdList->SetGraphicsRoot32BitConstants(0, 2, postProcessConstants, 0);
 
         cmdList->DrawInstanced(3, 1, 0, 0);
+    }
+
+    static TextureOutput AddToTextureGraph(
+        RDGBuilder& graph,
+        ResourceManager* resourceManager,
+        PipelineManager* pipelineManager,
+        int frameIndex,
+        const D3D12_VIEWPORT& viewport,
+        const D3D12_RECT& scissorRect,
+        int width,
+        int height,
+        RDGTextureHandle inputTexture,
+        bool visualizeScalar = false,
+        bool enableSharpen = false)
+    {
+        if (resourceManager == nullptr ||
+            pipelineManager == nullptr ||
+            width <= 0 ||
+            height <= 0 ||
+            !inputTexture.IsValid())
+        {
+            return {};
+        }
+
+        RDGTextureDesc outputDesc = {};
+        outputDesc.width = static_cast<uint32_t>(width);
+        outputDesc.height = static_cast<uint32_t>(height);
+        outputDesc.format = DXGI_FORMAT_R8G8B8A8_UNORM;
+        outputDesc.flags = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
+        outputDesc.hasClearValue = true;
+        outputDesc.clearValue.Format = outputDesc.format;
+
+        RDGTextureHandle outputTexture = graph.CreateTexture(
+            outputDesc,
+            D3D12_RESOURCE_STATE_COMMON,
+            D3D12_RESOURCE_STATE_COMMON,
+            "PostProcess.ToneMappedColor");
+        if (!outputTexture.IsValid())
+        {
+            return {};
+        }
+
+        RDGTextureSRVHandle inputSrv = graph.CreateTextureSRVView(inputTexture);
+        RDGTextureRTVHandle outputRtv = graph.CreateTextureRTVView(outputTexture);
+        if (!inputSrv.IsValid() || !outputRtv.IsValid())
+        {
+            return {};
+        }
+
+        RDGPassParameters parameters = {};
+        parameters.ReadSRV(inputSrv);
+        parameters.WriteRTV(outputRtv);
+
+        RDGPassHandle pass = graph.AddPass(
+            "PostProcess.ToneMap",
+            ERDGPassFlags::Graphics,
+            parameters,
+            [=](ID3D12GraphicsCommandList* cmdList)
+            {
+                ExecuteNoBarrier(
+                    cmdList,
+                    resourceManager,
+                    pipelineManager,
+                    frameIndex,
+                    viewport,
+                    scissorRect,
+                    outputRtv.cpuHandle,
+                    inputSrv.descriptorIndex,
+                    visualizeScalar,
+                    enableSharpen);
+            });
+
+        return { outputTexture, pass };
     }
 
     static RDGPassHandle AddToGraph(

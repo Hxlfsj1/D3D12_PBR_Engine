@@ -19,6 +19,7 @@
 #include "MotionVectorPass.h"
 #include "TAAPass.h"
 #include "TSRPass.h"
+#include "SMAAPass.h"
 #include "TemporalReconstructionShared.h"
 #include "ScalarTemporalFilterPass.h"
 #include "DLSSPass.h"
@@ -311,6 +312,8 @@ bool D3D12App::InitD3D()
         !m_pipelineManager.InitializeTAA(&m_deviceContext)) return false;
     if (m_antiAliasingMode == AntiAliasingMode::TSR &&
         !m_pipelineManager.InitializeTSR(&m_deviceContext)) return false;
+    if (m_antiAliasingMode == AntiAliasingMode::SMAA &&
+        !m_pipelineManager.InitializeSMAA(&m_deviceContext)) return false;
 
     // Stream Assets & Build IBL: Load 3D models and HDR textures into VRAM and bake IBL components
     if (!m_resourceManager.LoadAssets(&m_deviceContext, SettingsManager::LoadSceneFromJson("Settings/Scene.json"), frameBufferCount)) return false;
@@ -336,6 +339,14 @@ bool D3D12App::InitD3D()
 
     if (dlssConfigured &&
         !m_resourceManager.InitDLSSResources(&m_deviceContext, Width, Height))
+    {
+        return false;
+    }
+
+    if (m_antiAliasingMode == AntiAliasingMode::SMAA &&
+        !SMAAPass::InitializeLookupTextures(
+            &m_deviceContext,
+            &m_resourceManager))
     {
         return false;
     }
@@ -1049,28 +1060,89 @@ void D3D12App::Render()
             }
         }
 
-        RDGPassHandle postProcessPass = PostProcessPass::AddFinalToGraph(
-            forwardGraph,
-            &m_deviceContext,
-            &m_resourceManager,
-            &m_pipelineManager,
-            frameIndex,
-            viewport,
-            scissorRect,
-            forwardFinalColor,
-            false,
-            enablePostProcessSharpen);
-        if (!postProcessPass.IsValid())
+        if (m_antiAliasingMode == AntiAliasingMode::SMAA)
         {
-            OutputDebugStringA(
-                "Error: Forward post-process RDG construction failed; rendering stopped instead of degrading.\n");
-            Running = false;
-            EndFrame();
-            return;
+            PostProcessPass::TextureOutput toneMapOutput =
+                PostProcessPass::AddToTextureGraph(
+                    forwardGraph,
+                    &m_resourceManager,
+                    &m_pipelineManager,
+                    frameIndex,
+                    viewport,
+                    scissorRect,
+                    Width,
+                    Height,
+                    forwardFinalColor,
+                    false,
+                    false);
+            if (!toneMapOutput.texture.IsValid() ||
+                !toneMapOutput.pass.IsValid())
+            {
+                OutputDebugStringA(
+                    "Error: Forward SMAA tone-map RDG construction failed; rendering stopped instead of degrading.\n");
+                Running = false;
+                EndFrame();
+                return;
+            }
+            forwardGraph.AddPassDependency(
+                toneMapOutput.pass,
+                forwardFinalColorProducer);
+
+            RDGTextureHandle backBuffer =
+                forwardGraph.RegisterExternalTextureOutput(
+                    m_deviceContext.GetRenderTarget(frameIndex),
+                    D3D12_RESOURCE_STATE_PRESENT,
+                    D3D12_RESOURCE_STATE_PRESENT,
+                    "BackBuffer");
+
+            SMAAPass::Input smaaInput = {};
+            smaaInput.color = toneMapOutput.texture;
+            smaaInput.output = backBuffer;
+            SMAAPass::Output smaaOutput = SMAAPass::AddToGraph(
+                forwardGraph,
+                &m_resourceManager,
+                &m_pipelineManager,
+                Width,
+                Height,
+                smaaInput);
+            if (!smaaOutput.color.IsValid() ||
+                !smaaOutput.neighborhoodPass.IsValid())
+            {
+                OutputDebugStringA(
+                    "Error: Forward SMAA RDG construction failed; rendering stopped instead of degrading.\n");
+                Running = false;
+                EndFrame();
+                return;
+            }
+            forwardGraph.AddPassDependency(
+                smaaOutput.edgePass,
+                toneMapOutput.pass);
         }
-        forwardGraph.AddPassDependencies(
-            postProcessPass,
-            { forwardFinalColorProducer });
+        else
+        {
+            RDGPassHandle postProcessPass = PostProcessPass::AddFinalToGraph(
+                forwardGraph,
+                &m_deviceContext,
+                &m_resourceManager,
+                &m_pipelineManager,
+                frameIndex,
+                viewport,
+                scissorRect,
+                forwardFinalColor,
+                false,
+                enablePostProcessSharpen);
+            if (!postProcessPass.IsValid())
+            {
+                OutputDebugStringA(
+                    "Error: Forward post-process RDG construction failed; rendering stopped instead of degrading.\n");
+                Running = false;
+                EndFrame();
+                return;
+            }
+            forwardGraph.AddPassDependencies(
+                postProcessPass,
+                { forwardFinalColorProducer });
+        }
 
         forwardGraph.Execute(m_deviceContext.GetCommandList());
 
@@ -1600,28 +1672,89 @@ void D3D12App::Render()
                 }
             }
 
-            RDGPassHandle postProcessPass = PostProcessPass::AddFinalToGraph(
-                deferredGraph,
-                &m_deviceContext,
-                &m_resourceManager,
-                &m_pipelineManager,
-                frameIndex,
-                viewport,
-                scissorRect,
-                deferredFinalColor,
-                false,
-                enablePostProcessSharpen);
-            if (!postProcessPass.IsValid())
+            if (m_antiAliasingMode == AntiAliasingMode::SMAA)
             {
-                OutputDebugStringA(
-                    "Error: Deferred post-process RDG construction failed; rendering stopped instead of degrading.\n");
-                Running = false;
-                EndFrame();
-                return;
+                PostProcessPass::TextureOutput toneMapOutput =
+                    PostProcessPass::AddToTextureGraph(
+                        deferredGraph,
+                        &m_resourceManager,
+                        &m_pipelineManager,
+                        frameIndex,
+                        viewport,
+                        scissorRect,
+                        Width,
+                        Height,
+                        deferredFinalColor,
+                        false,
+                        false);
+                if (!toneMapOutput.texture.IsValid() ||
+                    !toneMapOutput.pass.IsValid())
+                {
+                    OutputDebugStringA(
+                        "Error: Deferred SMAA tone-map RDG construction failed; rendering stopped instead of degrading.\n");
+                    Running = false;
+                    EndFrame();
+                    return;
+                }
+                deferredGraph.AddPassDependency(
+                    toneMapOutput.pass,
+                    deferredFinalColorProducer);
+
+                RDGTextureHandle backBuffer =
+                    deferredGraph.RegisterExternalTextureOutput(
+                        m_deviceContext.GetRenderTarget(frameIndex),
+                        D3D12_RESOURCE_STATE_PRESENT,
+                        D3D12_RESOURCE_STATE_PRESENT,
+                        "BackBuffer");
+
+                SMAAPass::Input smaaInput = {};
+                smaaInput.color = toneMapOutput.texture;
+                smaaInput.output = backBuffer;
+                SMAAPass::Output smaaOutput = SMAAPass::AddToGraph(
+                    deferredGraph,
+                    &m_resourceManager,
+                    &m_pipelineManager,
+                    Width,
+                    Height,
+                    smaaInput);
+                if (!smaaOutput.color.IsValid() ||
+                    !smaaOutput.neighborhoodPass.IsValid())
+                {
+                    OutputDebugStringA(
+                        "Error: Deferred SMAA RDG construction failed; rendering stopped instead of degrading.\n");
+                    Running = false;
+                    EndFrame();
+                    return;
+                }
+                deferredGraph.AddPassDependency(
+                    smaaOutput.edgePass,
+                    toneMapOutput.pass);
             }
-            deferredGraph.AddPassDependencies(
-                postProcessPass,
-                { deferredFinalColorProducer });
+            else
+            {
+                RDGPassHandle postProcessPass = PostProcessPass::AddFinalToGraph(
+                    deferredGraph,
+                    &m_deviceContext,
+                    &m_resourceManager,
+                    &m_pipelineManager,
+                    frameIndex,
+                    viewport,
+                    scissorRect,
+                    deferredFinalColor,
+                    false,
+                    enablePostProcessSharpen);
+                if (!postProcessPass.IsValid())
+                {
+                    OutputDebugStringA(
+                        "Error: Deferred post-process RDG construction failed; rendering stopped instead of degrading.\n");
+                    Running = false;
+                    EndFrame();
+                    return;
+                }
+                deferredGraph.AddPassDependencies(
+                    postProcessPass,
+                    { deferredFinalColorProducer });
+            }
         }
 
         // Execute the entire graph after all passes have been added

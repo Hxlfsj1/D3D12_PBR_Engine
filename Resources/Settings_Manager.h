@@ -68,6 +68,7 @@ enum class AntiAliasingMode
     None,
     TAA,
     TSR,
+    SMAA,
     DLSS
 };
 
@@ -238,6 +239,10 @@ private:
             else if (antiAliasing == "TSR")
             {
                 pipeline.antiAliasing = AntiAliasingMode::TSR;
+            }
+            else if (antiAliasing == "SMAA")
+            {
+                pipeline.antiAliasing = AntiAliasingMode::SMAA;
             }
             else if (antiAliasing == "DLSS")
             {

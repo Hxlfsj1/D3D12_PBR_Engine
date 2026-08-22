@@ -19,6 +19,9 @@
     <Filter Include="ThirdParty">
       <UniqueIdentifier>{2d1ea517-2c8a-49e3-a49d-f0a69ccec94b}</UniqueIdentifier>
     </Filter>
+    <Filter Include="ThirdParty\LUTs">
+      <UniqueIdentifier>{c6212d7e-170f-4ff4-844d-ad1626315ead}</UniqueIdentifier>
+    </Filter>
     <Filter Include="Passes">
       <UniqueIdentifier>{945c425c-948b-42f5-9ee1-2ab5d4ce9f51}</UniqueIdentifier>
     </Filter>
@@ -89,6 +92,9 @@
       <Filter>Shaders</Filter>
     </None>
     <None Include="Shaders\Shaders_For_TAA.hlsl">
+      <Filter>Shaders</Filter>
+    </None>
+    <None Include="Shaders\Shaders_For_SMAA.hlsl">
       <Filter>Shaders</Filter>
     </None>
     <None Include="Shaders\Shaders_For_TSR.hlsl">
@@ -194,6 +200,15 @@
     </ClInclude>
     <ClInclude Include="Passes\TAAPass.h">
       <Filter>Passes</Filter>
+    </ClInclude>
+    <ClInclude Include="Passes\SMAAPass.h">
+      <Filter>Passes</Filter>
+    </ClInclude>
+    <ClInclude Include="ThirdParty\LUTs\AreaTex.h">
+      <Filter>ThirdParty\LUTs</Filter>
+    </ClInclude>
+    <ClInclude Include="ThirdParty\LUTs\SearchTex.h">
+      <Filter>ThirdParty\LUTs</Filter>
     </ClInclude>
     <ClInclude Include="Passes\TemporalReconstructionShared.h">
       <Filter>Passes</Filter>

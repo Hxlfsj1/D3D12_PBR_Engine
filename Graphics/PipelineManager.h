@@ -48,6 +48,11 @@ public:
         return BuildTSRPipeline(dc);
     }
 
+    bool InitializeSMAA(RenderDevice* dc)
+    {
+        return BuildSMAAPipeline(dc);
+    }
+
     ID3D12RootSignature* GetRootSignature()
     {
         return rootSignature.Get();
@@ -219,6 +224,26 @@ public:
     ID3D12PipelineState* GetMotionVectorPSO()
     {
         return motionVectorPSO.Get();
+    }
+
+    ID3D12RootSignature* GetSMAARootSignature()
+    {
+        return smaaRootSignature.Get();
+    }
+
+    ID3D12PipelineState* GetSMAAEdgePSO()
+    {
+        return smaaEdgePSO.Get();
+    }
+
+    ID3D12PipelineState* GetSMAAWeightPSO()
+    {
+        return smaaWeightPSO.Get();
+    }
+
+    ID3D12PipelineState* GetSMAANeighborhoodPSO()
+    {
+        return smaaNeighborhoodPSO.Get();
     }
 
 private:
@@ -1210,6 +1235,149 @@ private:
         return true;
     }
 
+    bool BuildSMAAPipeline(RenderDevice* dc)
+    {
+        constexpr UINT SmaaRootConstantCount = 12;
+
+        CD3DX12_ROOT_PARAMETER rootParameter;
+        rootParameter.InitAsConstants(
+            SmaaRootConstantCount,
+            0,
+            0,
+            D3D12_SHADER_VISIBILITY_ALL);
+
+        D3D12_STATIC_SAMPLER_DESC samplers[2] =
+        {
+            CD3DX12_STATIC_SAMPLER_DESC(0, D3D12_FILTER_MIN_MAG_MIP_POINT),
+            CD3DX12_STATIC_SAMPLER_DESC(1, D3D12_FILTER_MIN_MAG_MIP_LINEAR)
+        };
+        for (D3D12_STATIC_SAMPLER_DESC& sampler : samplers)
+        {
+            sampler.AddressU = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+            sampler.AddressV = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+            sampler.AddressW = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+            sampler.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+        }
+
+        CD3DX12_ROOT_SIGNATURE_DESC rootSignatureDesc;
+        rootSignatureDesc.Init(
+            1,
+            &rootParameter,
+            2,
+            samplers,
+            D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT |
+            D3D12_ROOT_SIGNATURE_FLAG_CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED);
+
+        ComPtr<ID3DBlob> serializedRootSignature;
+        ComPtr<ID3DBlob> errorBlob;
+        HRESULT hr = D3D12SerializeRootSignature(
+            &rootSignatureDesc,
+            D3D_ROOT_SIGNATURE_VERSION_1,
+            &serializedRootSignature,
+            &errorBlob);
+        if (FAILED(hr))
+        {
+            return false;
+        }
+
+        hr = dc->GetDevice()->CreateRootSignature(
+            0,
+            serializedRootSignature->GetBufferPointer(),
+            serializedRootSignature->GetBufferSize(),
+            IID_PPV_ARGS(&smaaRootSignature));
+        if (FAILED(hr))
+        {
+            return false;
+        }
+
+        auto edgeVS = ShaderCompiler::CompileFromFile(
+            L"Shaders/Shaders_For_SMAA.hlsl",
+            L"EdgeVS",
+            L"vs_6_6");
+        auto edgePS = ShaderCompiler::CompileFromFile(
+            L"Shaders/Shaders_For_SMAA.hlsl",
+            L"EdgePS",
+            L"ps_6_6");
+        auto weightVS = ShaderCompiler::CompileFromFile(
+            L"Shaders/Shaders_For_SMAA.hlsl",
+            L"WeightVS",
+            L"vs_6_6");
+        auto weightPS = ShaderCompiler::CompileFromFile(
+            L"Shaders/Shaders_For_SMAA.hlsl",
+            L"WeightPS",
+            L"ps_6_6");
+        auto neighborhoodVS = ShaderCompiler::CompileFromFile(
+            L"Shaders/Shaders_For_SMAA.hlsl",
+            L"NeighborhoodVS",
+            L"vs_6_6");
+        auto neighborhoodPS = ShaderCompiler::CompileFromFile(
+            L"Shaders/Shaders_For_SMAA.hlsl",
+            L"NeighborhoodPS",
+            L"ps_6_6");
+        if (!edgeVS ||
+            !edgePS ||
+            !weightVS ||
+            !weightPS ||
+            !neighborhoodVS ||
+            !neighborhoodPS)
+        {
+            return false;
+        }
+
+        D3D12_GRAPHICS_PIPELINE_STATE_DESC pipelineDesc = {};
+        pipelineDesc.InputLayout = { nullptr, 0 };
+        pipelineDesc.pRootSignature = smaaRootSignature.Get();
+        pipelineDesc.VS = CD3DX12_SHADER_BYTECODE(
+            edgeVS->GetBufferPointer(),
+            edgeVS->GetBufferSize());
+        pipelineDesc.PS = CD3DX12_SHADER_BYTECODE(
+            edgePS->GetBufferPointer(),
+            edgePS->GetBufferSize());
+        pipelineDesc.RasterizerState = CD3DX12_RASTERIZER_DESC(D3D12_DEFAULT);
+        pipelineDesc.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
+        pipelineDesc.BlendState = CD3DX12_BLEND_DESC(D3D12_DEFAULT);
+        pipelineDesc.DepthStencilState.DepthEnable = FALSE;
+        pipelineDesc.DepthStencilState.StencilEnable = FALSE;
+        pipelineDesc.SampleMask = UINT_MAX;
+        pipelineDesc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+        pipelineDesc.NumRenderTargets = 1;
+        pipelineDesc.RTVFormats[0] = DXGI_FORMAT_R8G8_UNORM;
+        pipelineDesc.SampleDesc.Count = 1;
+
+        if (FAILED(dc->GetDevice()->CreateGraphicsPipelineState(
+            &pipelineDesc,
+            IID_PPV_ARGS(&smaaEdgePSO))))
+        {
+            return false;
+        }
+
+        pipelineDesc.VS = CD3DX12_SHADER_BYTECODE(
+            weightVS->GetBufferPointer(),
+            weightVS->GetBufferSize());
+        pipelineDesc.PS = CD3DX12_SHADER_BYTECODE(
+            weightPS->GetBufferPointer(),
+            weightPS->GetBufferSize());
+        pipelineDesc.RTVFormats[0] = DXGI_FORMAT_R8G8B8A8_UNORM;
+
+        if (FAILED(dc->GetDevice()->CreateGraphicsPipelineState(
+            &pipelineDesc,
+            IID_PPV_ARGS(&smaaWeightPSO))))
+        {
+            return false;
+        }
+
+        pipelineDesc.VS = CD3DX12_SHADER_BYTECODE(
+            neighborhoodVS->GetBufferPointer(),
+            neighborhoodVS->GetBufferSize());
+        pipelineDesc.PS = CD3DX12_SHADER_BYTECODE(
+            neighborhoodPS->GetBufferPointer(),
+            neighborhoodPS->GetBufferSize());
+
+        return SUCCEEDED(dc->GetDevice()->CreateGraphicsPipelineState(
+            &pipelineDesc,
+            IID_PPV_ARGS(&smaaNeighborhoodPSO)));
+    }
+
 private:
 
     ComPtr<ID3D12PipelineState> psoZPrepass;
@@ -1251,6 +1419,11 @@ private:
 
     ComPtr<ID3D12RootSignature> motionVectorRootSignature;
     ComPtr<ID3D12PipelineState> motionVectorPSO;
+
+    ComPtr<ID3D12RootSignature> smaaRootSignature;
+    ComPtr<ID3D12PipelineState> smaaEdgePSO;
+    ComPtr<ID3D12PipelineState> smaaWeightPSO;
+    ComPtr<ID3D12PipelineState> smaaNeighborhoodPSO;
 
 };
 

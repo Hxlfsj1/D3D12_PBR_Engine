@@ -177,6 +177,9 @@
     <ClInclude Include="ThirdParty\stb_image.h" />
     <ClInclude Include="Core\stdafx.h" />
     <ClInclude Include="Passes\TAAPass.h" />
+    <ClInclude Include="Passes\SMAAPass.h" />
+    <ClInclude Include="ThirdParty\LUTs\AreaTex.h" />
+    <ClInclude Include="ThirdParty\LUTs\SearchTex.h" />
     <ClInclude Include="Passes\TemporalReconstructionShared.h" />
     <ClInclude Include="Passes\TSRPass.h" />
     <ClInclude Include="ThirdParty\tiny_gltf.h" />
@@ -261,6 +264,9 @@
   </ItemGroup>
   <ItemGroup>
     <None Include="Shaders\Shaders_For_TAA.hlsl">
+      <FileType>Document</FileType>
+    </None>
+    <None Include="Shaders\Shaders_For_SMAA.hlsl">
       <FileType>Document</FileType>
     </None>
     <None Include="Shaders\Shaders_For_TSR.hlsl">

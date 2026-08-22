@@ -1,6 +1,6 @@
 {
   "use_deferred": true,
   "use_z_prepass": false,
-  "anti_aliasing": "DLSS",
+  "anti_aliasing": "SMAA",
   "dlss_quality": "Quality"
 }
