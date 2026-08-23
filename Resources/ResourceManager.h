@@ -21,6 +21,31 @@
 
 using Microsoft::WRL::ComPtr;
 
+namespace SMAALookupData
+{
+#include "LUTs/AreaTex.h"
+#include "LUTs/SearchTex.h"
+
+    constexpr UINT AreaWidth = AREATEX_WIDTH;
+    constexpr UINT AreaHeight = AREATEX_HEIGHT;
+    constexpr size_t AreaByteCount = AREATEX_SIZE;
+    constexpr UINT SearchWidth = SEARCHTEX_WIDTH;
+    constexpr UINT SearchHeight = SEARCHTEX_HEIGHT;
+    constexpr size_t SearchByteCount = SEARCHTEX_SIZE;
+
+    static_assert(sizeof(areaTexBytes) == AreaByteCount);
+    static_assert(sizeof(searchTexBytes) == SearchByteCount);
+}
+
+#undef AREATEX_WIDTH
+#undef AREATEX_HEIGHT
+#undef AREATEX_PITCH
+#undef AREATEX_SIZE
+#undef SEARCHTEX_WIDTH
+#undef SEARCHTEX_HEIGHT
+#undef SEARCHTEX_PITCH
+#undef SEARCHTEX_SIZE
+
 class ResourceManager
 {
 public:
@@ -598,6 +623,109 @@ public:
                 pair.second->FreeUploadHeaps();
             }
         }
+
+        m_smaaAreaUpload.Reset();
+        m_smaaSearchUpload.Reset();
+    }
+
+    bool InitializeSMAALookupTextures(RenderDevice* deviceContext)
+    {
+        if (HasSMAALookupTextures())
+        {
+            return true;
+        }
+
+        if (deviceContext == nullptr || mainDescriptorHeap == nullptr)
+        {
+            return false;
+        }
+
+        const int frameIndex = static_cast<int>(
+            deviceContext->GetSwapChain()->GetCurrentBackBufferIndex());
+        if (FAILED(deviceContext->GetCommandAllocator(frameIndex)->Reset()) ||
+            FAILED(deviceContext->GetCommandList()->Reset(
+                deviceContext->GetCommandAllocator(frameIndex),
+                nullptr)))
+        {
+            return false;
+        }
+
+        ID3D12GraphicsCommandList* commandList = deviceContext->GetCommandList();
+        if (!CreatePersistentTexture2DFromMemory(
+                deviceContext,
+                commandList,
+                SMAALookupData::areaTexBytes,
+                SMAALookupData::AreaWidth,
+                SMAALookupData::AreaHeight,
+                DXGI_FORMAT_R8G8_UNORM,
+                2,
+                L"SMAA.AreaTex",
+                m_smaaAreaTexture,
+                m_smaaAreaUpload,
+                m_smaaAreaTextureIdx) ||
+            !CreatePersistentTexture2DFromMemory(
+                deviceContext,
+                commandList,
+                SMAALookupData::searchTexBytes,
+                SMAALookupData::SearchWidth,
+                SMAALookupData::SearchHeight,
+                DXGI_FORMAT_R8_UNORM,
+                1,
+                L"SMAA.SearchTex",
+                m_smaaSearchTexture,
+                m_smaaSearchUpload,
+                m_smaaSearchTextureIdx))
+        {
+            return false;
+        }
+
+        if (FAILED(commandList->Close()))
+        {
+            return false;
+        }
+
+        ID3D12CommandList* commandLists[] = { commandList };
+        deviceContext->GetCommandQueue()->ExecuteCommandLists(1, commandLists);
+
+        ++deviceContext->GetFenceValue(frameIndex);
+        if (FAILED(deviceContext->GetCommandQueue()->Signal(
+                deviceContext->GetFence(frameIndex),
+                deviceContext->GetFenceValue(frameIndex))))
+        {
+            return false;
+        }
+
+        if (deviceContext->GetFence(frameIndex)->GetCompletedValue() <
+            deviceContext->GetFenceValue(frameIndex))
+        {
+            if (FAILED(deviceContext->GetFence(frameIndex)->SetEventOnCompletion(
+                    deviceContext->GetFenceValue(frameIndex),
+                    deviceContext->GetFenceEvent())))
+            {
+                return false;
+            }
+            WaitForSingleObject(deviceContext->GetFenceEvent(), INFINITE);
+        }
+
+        return true;
+    }
+
+    bool HasSMAALookupTextures() const
+    {
+        return m_smaaAreaTexture != nullptr &&
+            m_smaaSearchTexture != nullptr &&
+            m_smaaAreaTextureIdx != UINT_MAX &&
+            m_smaaSearchTextureIdx != UINT_MAX;
+    }
+
+    UINT GetSMAAAreaTextureIdx() const
+    {
+        return m_smaaAreaTextureIdx;
+    }
+
+    UINT GetSMAASearchTextureIdx() const
+    {
+        return m_smaaSearchTextureIdx;
     }
 
     int GetTemporalCurrentHistoryIdx()
@@ -963,6 +1091,94 @@ public:
     }
 
 private:
+    bool CreatePersistentTexture2DFromMemory(
+        RenderDevice* deviceContext,
+        ID3D12GraphicsCommandList* commandList,
+        const uint8_t* sourceData,
+        UINT width,
+        UINT height,
+        DXGI_FORMAT format,
+        UINT bytesPerPixel,
+        const wchar_t* debugName,
+        ComPtr<ID3D12Resource>& texture,
+        ComPtr<ID3D12Resource>& upload,
+        UINT& descriptorIndex)
+    {
+        ID3D12Device* device = deviceContext->GetDevice();
+        const D3D12_RESOURCE_DESC textureDesc = CD3DX12_RESOURCE_DESC::Tex2D(
+            format,
+            width,
+            height,
+            1,
+            1);
+        const CD3DX12_HEAP_PROPERTIES defaultHeap(D3D12_HEAP_TYPE_DEFAULT);
+        if (FAILED(device->CreateCommittedResource(
+                &defaultHeap,
+                D3D12_HEAP_FLAG_NONE,
+                &textureDesc,
+                D3D12_RESOURCE_STATE_COPY_DEST,
+                nullptr,
+                IID_PPV_ARGS(&texture))))
+        {
+            return false;
+        }
+        texture->SetName(debugName);
+
+        const UINT64 uploadSize = GetRequiredIntermediateSize(
+            texture.Get(),
+            0,
+            1);
+        const CD3DX12_HEAP_PROPERTIES uploadHeap(D3D12_HEAP_TYPE_UPLOAD);
+        const D3D12_RESOURCE_DESC uploadDesc =
+            CD3DX12_RESOURCE_DESC::Buffer(uploadSize);
+        if (FAILED(device->CreateCommittedResource(
+                &uploadHeap,
+                D3D12_HEAP_FLAG_NONE,
+                &uploadDesc,
+                D3D12_RESOURCE_STATE_GENERIC_READ,
+                nullptr,
+                IID_PPV_ARGS(&upload))))
+        {
+            return false;
+        }
+
+        D3D12_SUBRESOURCE_DATA subresource = {};
+        subresource.pData = sourceData;
+        subresource.RowPitch = static_cast<LONG_PTR>(width) * bytesPerPixel;
+        subresource.SlicePitch = subresource.RowPitch * height;
+        if (UpdateSubresources(
+                commandList,
+                texture.Get(),
+                upload.Get(),
+                0,
+                0,
+                1,
+                &subresource) == 0)
+        {
+            return false;
+        }
+
+        const CD3DX12_RESOURCE_BARRIER barrier =
+            CD3DX12_RESOURCE_BARRIER::Transition(
+                texture.Get(),
+                D3D12_RESOURCE_STATE_COPY_DEST,
+                D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+        commandList->ResourceBarrier(1, &barrier);
+
+        descriptorIndex = AllocateSrvUavDescriptor();
+        D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
+        srvDesc.Format = format;
+        srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+        srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+        srvDesc.Texture2D.MipLevels = 1;
+        device->CreateShaderResourceView(
+            texture.Get(),
+            &srvDesc,
+            GetSrvUavCPUHandle(descriptorIndex));
+
+        return true;
+    }
+
     struct RDGTransientResourcePoolEntry : public RDGTransientResourceLeaseState
     {
         D3D12_RESOURCE_DESC desc = {};
@@ -1055,6 +1271,13 @@ private:
     ComPtr<ID3D12Resource> texEnvCube;
     ComPtr<ID3D12Resource> texPrefilterCube;
     ComPtr<ID3D12Resource> texBRDFLUT;
+
+    ComPtr<ID3D12Resource> m_smaaAreaTexture;
+    ComPtr<ID3D12Resource> m_smaaAreaUpload;
+    ComPtr<ID3D12Resource> m_smaaSearchTexture;
+    ComPtr<ID3D12Resource> m_smaaSearchUpload;
+    UINT m_smaaAreaTextureIdx = UINT_MAX;
+    UINT m_smaaSearchTextureIdx = UINT_MAX;
 
     ComPtr<ID3D12Resource> dummyAlbedo;
     UINT dummyAlbedoIdx;

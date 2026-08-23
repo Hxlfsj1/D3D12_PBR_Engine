@@ -6,31 +6,6 @@
 #include "PipelineManager.h"
 #include "RDG.h"
 
-namespace SMAALookupData
-{
-#include "LUTs/AreaTex.h"
-#include "LUTs/SearchTex.h"
-
-    constexpr UINT AreaWidth = AREATEX_WIDTH;
-    constexpr UINT AreaHeight = AREATEX_HEIGHT;
-    constexpr size_t AreaByteCount = AREATEX_SIZE;
-    constexpr UINT SearchWidth = SEARCHTEX_WIDTH;
-    constexpr UINT SearchHeight = SEARCHTEX_HEIGHT;
-    constexpr size_t SearchByteCount = SEARCHTEX_SIZE;
-
-    static_assert(sizeof(areaTexBytes) == AreaByteCount);
-    static_assert(sizeof(searchTexBytes) == SearchByteCount);
-}
-
-#undef AREATEX_WIDTH
-#undef AREATEX_HEIGHT
-#undef AREATEX_PITCH
-#undef AREATEX_SIZE
-#undef SEARCHTEX_WIDTH
-#undef SEARCHTEX_HEIGHT
-#undef SEARCHTEX_PITCH
-#undef SEARCHTEX_SIZE
-
 struct SMAAConstants
 {
     DirectX::XMFLOAT4 rtMetrics;
@@ -83,94 +58,6 @@ public:
         RDGPassHandle weightPass;
         RDGPassHandle neighborhoodPass;
     };
-
-    static bool InitializeLookupTextures(
-        RenderDevice* deviceContext,
-        ResourceManager* resourceManager)
-    {
-        if (areaTexture && searchTexture)
-        {
-            return true;
-        }
-
-        if (deviceContext == nullptr ||
-            resourceManager == nullptr ||
-            resourceManager->GetMainDescriptorHeap() == nullptr)
-        {
-            return false;
-        }
-
-        const int frameIndex = static_cast<int>(
-            deviceContext->GetSwapChain()->GetCurrentBackBufferIndex());
-        if (FAILED(deviceContext->GetCommandAllocator(frameIndex)->Reset()) ||
-            FAILED(deviceContext->GetCommandList()->Reset(
-                deviceContext->GetCommandAllocator(frameIndex),
-                nullptr)))
-        {
-            return false;
-        }
-
-        ID3D12GraphicsCommandList* commandList = deviceContext->GetCommandList();
-        if (!CreateLookupTexture(
-                deviceContext,
-                resourceManager,
-                commandList,
-                SMAALookupData::areaTexBytes,
-                SMAALookupData::AreaWidth,
-                SMAALookupData::AreaHeight,
-                DXGI_FORMAT_R8G8_UNORM,
-                2,
-                L"SMAA.AreaTex",
-                areaTexture,
-                areaUpload,
-                areaTextureIdx) ||
-            !CreateLookupTexture(
-                deviceContext,
-                resourceManager,
-                commandList,
-                SMAALookupData::searchTexBytes,
-                SMAALookupData::SearchWidth,
-                SMAALookupData::SearchHeight,
-                DXGI_FORMAT_R8_UNORM,
-                1,
-                L"SMAA.SearchTex",
-                searchTexture,
-                searchUpload,
-                searchTextureIdx))
-        {
-            return false;
-        }
-
-        if (FAILED(commandList->Close()))
-        {
-            return false;
-        }
-
-        ID3D12CommandList* commandLists[] = { commandList };
-        deviceContext->GetCommandQueue()->ExecuteCommandLists(1, commandLists);
-
-        ++deviceContext->GetFenceValue(frameIndex);
-        if (FAILED(deviceContext->GetCommandQueue()->Signal(
-                deviceContext->GetFence(frameIndex),
-                deviceContext->GetFenceValue(frameIndex))))
-        {
-            return false;
-        }
-
-        if (deviceContext->GetFence(frameIndex)->GetCompletedValue() <
-            deviceContext->GetFenceValue(frameIndex))
-        {
-            if (FAILED(deviceContext->GetFence(frameIndex)->SetEventOnCompletion(
-                    deviceContext->GetFenceValue(frameIndex),
-                    deviceContext->GetFenceEvent())))
-            {
-                return false;
-            }
-            WaitForSingleObject(deviceContext->GetFenceEvent(), INFINITE);
-        }
-
-        return true;
-    }
 
     static EdgeOutput AddEdgeDetectionToGraph(
         RDGBuilder& graph,
@@ -245,10 +132,8 @@ public:
         int height,
         const Input& input)
     {
-        if (!areaTexture ||
-            !searchTexture ||
-            areaTextureIdx == UINT_MAX ||
-            searchTextureIdx == UINT_MAX)
+        if (resourceManager == nullptr ||
+            !resourceManager->HasSMAALookupTextures())
         {
             return {};
         }
@@ -439,95 +324,6 @@ public:
     }
 
 private:
-    static bool CreateLookupTexture(
-        RenderDevice* deviceContext,
-        ResourceManager* resourceManager,
-        ID3D12GraphicsCommandList* commandList,
-        const uint8_t* sourceData,
-        UINT width,
-        UINT height,
-        DXGI_FORMAT format,
-        UINT bytesPerPixel,
-        const wchar_t* debugName,
-        ComPtr<ID3D12Resource>& texture,
-        ComPtr<ID3D12Resource>& upload,
-        UINT& descriptorIndex)
-    {
-        ID3D12Device* device = deviceContext->GetDevice();
-        const D3D12_RESOURCE_DESC textureDesc = CD3DX12_RESOURCE_DESC::Tex2D(
-            format,
-            width,
-            height,
-            1,
-            1);
-        const CD3DX12_HEAP_PROPERTIES defaultHeap(D3D12_HEAP_TYPE_DEFAULT);
-        if (FAILED(device->CreateCommittedResource(
-                &defaultHeap,
-                D3D12_HEAP_FLAG_NONE,
-                &textureDesc,
-                D3D12_RESOURCE_STATE_COPY_DEST,
-                nullptr,
-                IID_PPV_ARGS(&texture))))
-        {
-            return false;
-        }
-        texture->SetName(debugName);
-
-        const UINT64 uploadSize = GetRequiredIntermediateSize(
-            texture.Get(),
-            0,
-            1);
-        const CD3DX12_HEAP_PROPERTIES uploadHeap(D3D12_HEAP_TYPE_UPLOAD);
-        const D3D12_RESOURCE_DESC uploadDesc =
-            CD3DX12_RESOURCE_DESC::Buffer(uploadSize);
-        if (FAILED(device->CreateCommittedResource(
-                &uploadHeap,
-                D3D12_HEAP_FLAG_NONE,
-                &uploadDesc,
-                D3D12_RESOURCE_STATE_GENERIC_READ,
-                nullptr,
-                IID_PPV_ARGS(&upload))))
-        {
-            return false;
-        }
-
-        D3D12_SUBRESOURCE_DATA subresource = {};
-        subresource.pData = sourceData;
-        subresource.RowPitch = static_cast<LONG_PTR>(width) * bytesPerPixel;
-        subresource.SlicePitch = subresource.RowPitch * height;
-        if (UpdateSubresources(
-                commandList,
-                texture.Get(),
-                upload.Get(),
-                0,
-                0,
-                1,
-                &subresource) == 0)
-        {
-            return false;
-        }
-
-        const CD3DX12_RESOURCE_BARRIER barrier =
-            CD3DX12_RESOURCE_BARRIER::Transition(
-                texture.Get(),
-                D3D12_RESOURCE_STATE_COPY_DEST,
-                D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
-        commandList->ResourceBarrier(1, &barrier);
-
-        descriptorIndex = resourceManager->AllocateSrvUavDescriptor();
-        D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
-        srvDesc.Format = format;
-        srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
-        srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-        srvDesc.Texture2D.MipLevels = 1;
-        device->CreateShaderResourceView(
-            texture.Get(),
-            &srvDesc,
-            resourceManager->GetSrvUavCPUHandle(descriptorIndex));
-
-        return true;
-    }
-
     static void ExecuteEdgeDetectionNoBarrier(
         ID3D12GraphicsCommandList* cmdList,
         ResourceManager* resourceManager,
@@ -630,8 +426,8 @@ private:
             static_cast<float>(width),
             static_cast<float>(height));
         constants.edgesTextureIdx = edgeSrvIdx;
-        constants.areaTextureIdx = areaTextureIdx;
-        constants.searchTextureIdx = searchTextureIdx;
+        constants.areaTextureIdx = resourceManager->GetSMAAAreaTextureIdx();
+        constants.searchTextureIdx = resourceManager->GetSMAASearchTextureIdx();
 
         cmdList->SetGraphicsRoot32BitConstants(
             0,
@@ -698,12 +494,6 @@ private:
         cmdList->DrawInstanced(3, 1, 0, 0);
     }
 
-    inline static ComPtr<ID3D12Resource> areaTexture;
-    inline static ComPtr<ID3D12Resource> areaUpload;
-    inline static ComPtr<ID3D12Resource> searchTexture;
-    inline static ComPtr<ID3D12Resource> searchUpload;
-    inline static UINT areaTextureIdx = UINT_MAX;
-    inline static UINT searchTextureIdx = UINT_MAX;
 };
 
 #endif

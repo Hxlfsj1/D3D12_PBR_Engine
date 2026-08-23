@@ -344,9 +344,7 @@ bool D3D12App::InitD3D()
     }
 
     if (m_antiAliasingMode == AntiAliasingMode::SMAA &&
-        !SMAAPass::InitializeLookupTextures(
-            &m_deviceContext,
-            &m_resourceManager))
+        !m_resourceManager.InitializeSMAALookupTextures(&m_deviceContext))
     {
         return false;
     }
