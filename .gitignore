@@ -1,8 +1,48 @@
-/.vs
-/x64
-/x64/Debug
-/LearnDirectX/x64
+# Visual Studio user data and caches
+/.vs/
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
 
-/LearnDirectX/x64
-/LearnDirectX/x64/Debug
-Models/Town.glb
+# Build outputs and intermediate files
+/x64/
+/x86/
+/arm64/
+/Debug/
+/Release/
+/LearnDirectX/Debug/
+/LearnDirectX/Release/
+/LearnDirectX/x64/
+/LearnDirectX/x86/
+/LearnDirectX/arm64/
+**/obj/
+**/bin/
+*.obj
+*.iobj
+*.ipdb
+*.ilk
+*.pdb
+*.idb
+*.tlog
+*.lastbuildstate
+*.recipe
+*.Build.CppClean.log
+*.VC.db
+*.VC.opendb
+*.opendb
+*.sdf
+*.ipch
+
+# Restorable NuGet packages (keep packages.config tracked)
+/packages/
+
+# Local runtime art assets
+/Models/
+/HDRs/
+/Scene_Assets/
+
+# Temporary files
+/tmp/
+*.tmp
+*.temp
