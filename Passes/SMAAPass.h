@@ -73,6 +73,7 @@ public:
             height <= 0 ||
             !input.color.IsValid())
         {
+            ErrorLog::Write("SMAAPass: invalid pipeline, dimensions, or color input.");
             return {};
         }
 
@@ -91,6 +92,7 @@ public:
             "SMAA.Edges");
         if (!edgeTexture.IsValid())
         {
+            ErrorLog::Write("SMAAPass: failed to create the edge texture.");
             return {};
         }
 
@@ -98,6 +100,7 @@ public:
         RDGTextureRTVHandle edgeRtv = graph.CreateTextureRTVView(edgeTexture);
         if (!colorSrv.IsValid() || !edgeRtv.IsValid())
         {
+            ErrorLog::Write("SMAAPass: failed to create the color SRV or edge RTV.");
             return {};
         }
 
@@ -135,6 +138,7 @@ public:
         if (resourceManager == nullptr ||
             !resourceManager->HasSMAALookupTextures())
         {
+            ErrorLog::Write("SMAAPass: SMAA lookup textures are unavailable.");
             return {};
         }
 
@@ -147,6 +151,7 @@ public:
             input);
         if (!edgeOutput.edgeTexture.IsValid() || !edgeOutput.edgePass.IsValid())
         {
+            ErrorLog::Write("SMAAPass: edge-detection pass construction failed.");
             return {};
         }
 
@@ -165,6 +170,7 @@ public:
             "SMAA.BlendWeights");
         if (!blendWeightTexture.IsValid())
         {
+            ErrorLog::Write("SMAAPass: failed to create the blend-weight texture.");
             return {};
         }
 
@@ -174,6 +180,7 @@ public:
             blendWeightTexture);
         if (!edgeSrv.IsValid() || !blendWeightRtv.IsValid())
         {
+            ErrorLog::Write("SMAAPass: failed to create the edge SRV or blend-weight RTV.");
             return {};
         }
 
@@ -216,6 +223,7 @@ public:
     {
         if (width <= 0 || height <= 0 || !input.color.IsValid())
         {
+            ErrorLog::Write("SMAAPass: invalid dimensions or color input for resolve.");
             return {};
         }
 
@@ -224,6 +232,7 @@ public:
             colorDesc->width != static_cast<uint32_t>(width) ||
             colorDesc->height != static_cast<uint32_t>(height))
         {
+            ErrorLog::Write("SMAAPass: color input dimensions do not match the requested resolve size.");
             return {};
         }
 
@@ -237,6 +246,7 @@ public:
         if (!weightOutput.blendWeightTexture.IsValid() ||
             !weightOutput.weightPass.IsValid())
         {
+            ErrorLog::Write("SMAAPass: blend-weight pass construction failed.");
             return {};
         }
 
@@ -245,6 +255,7 @@ public:
         {
             if (outputTexture.index == input.color.index)
             {
+                ErrorLog::Write("SMAAPass: output texture aliases the input color texture.");
                 return {};
             }
 
@@ -255,6 +266,7 @@ public:
                 outputDesc->format != DXGI_FORMAT_R8G8B8A8_UNORM ||
                 (outputDesc->flags & D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET) == 0)
             {
+                ErrorLog::Write("SMAAPass: supplied output texture has incompatible dimensions, format, or flags.");
                 return {};
             }
         }
@@ -275,6 +287,7 @@ public:
                 "SMAA.Output");
             if (!outputTexture.IsValid())
             {
+                ErrorLog::Write("SMAAPass: failed to create the resolve output texture.");
                 return {};
             }
         }
@@ -287,6 +300,7 @@ public:
             !blendWeightSrv.IsValid() ||
             !outputRtv.IsValid())
         {
+            ErrorLog::Write("SMAAPass: failed to create one or more resolve resource views.");
             return {};
         }
 

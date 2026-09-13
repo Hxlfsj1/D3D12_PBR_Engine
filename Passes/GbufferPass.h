@@ -210,6 +210,7 @@ public:
         const RDGTextureDesc* depthDesc = graph.GetTextureDesc(depth);
         if (depthDesc == nullptr)
         {
+            ErrorLog::Write("GBufferPass: scene depth has no registered RDG description.");
             return {};
         }
 
@@ -254,6 +255,7 @@ public:
             !gbufferORM.IsValid() ||
             !gbufferEmissive.IsValid())
         {
+            ErrorLog::Write("GBufferPass: failed to create one or more G-buffer textures.");
             return {};
         }
 
@@ -269,6 +271,7 @@ public:
             !emissiveRtv.IsValid() ||
             !depthDsv.IsValid())
         {
+            ErrorLog::Write("GBufferPass: failed to create one or more G-buffer render/depth views.");
             return {};
         }
 

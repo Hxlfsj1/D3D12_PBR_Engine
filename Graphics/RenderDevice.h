@@ -9,6 +9,7 @@
 
 #include "stdafx.h"
 #include <wrl/client.h>
+#include <string>
 #include <vector>
 
 using Microsoft::WRL::ComPtr;
@@ -46,10 +47,27 @@ public:
 
     bool CreateDevice()
     {
+#if defined(_DEBUG)
+        // Activate the D3D12 validation layer BEFORE any device is created;
+        // every subsequent API misuse is then reported to the debug output
+        ComPtr<ID3D12Debug> debugController;
+        if (SUCCEEDED(D3D12GetDebugInterface(IID_PPV_ARGS(&debugController))))
+        {
+            debugController->EnableDebugLayer();
+        }
+        else
+        {
+            ErrorLog::Write(
+                "RenderDevice: the D3D12 debug layer is unavailable "
+                "(enable the Windows Graphics Tools optional feature).");
+        }
+#endif
+
         HRESULT hr = CreateDXGIFactory1(IID_PPV_ARGS(&dxgiFactory));
 
         if (FAILED(hr))
         {
+            ErrorLog::HRESULT("RenderDevice: CreateDXGIFactory1 failed.", hr);
             return false;
         }
 
@@ -60,10 +78,24 @@ public:
         bool adapterFound = false;
 
         // Enumerate all graphics adapters
-        while (dxgiFactory->EnumAdapters1(adapterIndex, &adapter) != DXGI_ERROR_NOT_FOUND)
+        while ((hr = dxgiFactory->EnumAdapters1(adapterIndex, &adapter)) != DXGI_ERROR_NOT_FOUND)
         {
-            DXGI_ADAPTER_DESC1 desc;
-            adapter->GetDesc1(&desc);
+            if (FAILED(hr))
+            {
+                ErrorLog::HRESULT("RenderDevice: EnumAdapters1 failed while enumerating adapters.", hr);
+                // A hard enumeration failure invalidates the adapter output; stop enumerating
+                break;
+            }
+
+            DXGI_ADAPTER_DESC1 desc = {};
+            hr = adapter->GetDesc1(&desc);
+            if (FAILED(hr))
+            {
+                ErrorLog::HRESULT("RenderDevice: IDXGIAdapter1::GetDesc1 failed.", hr);
+                // Skip this adapter instead of reading an uninitialized descriptor
+                adapterIndex++;
+                continue;
+            }
 
             // Filter out the software rasterizer
             if (desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE)
@@ -91,6 +123,8 @@ public:
 
         if (!adapterFound || bestAdapter == nullptr)
         {
+            ErrorLog::Write(
+                "RenderDevice: no compatible hardware adapter was found for D3D_FEATURE_LEVEL_11_0.");
             return false;
         }
 
@@ -99,8 +133,24 @@ public:
 
         if (FAILED(hr))
         {
+            ErrorLog::HRESULT("RenderDevice: D3D12CreateDevice failed for the selected adapter.", hr);
             return false;
         }
+
+#if defined(_DEBUG)
+        // Hook up the validation message queue. GPU corruption always breaks
+        // into the debugger; ordinary API errors only break when the flag is
+        // flipped to true (the break lands on the exact offending call)
+        ComPtr<ID3D12InfoQueue> infoQueue;
+        if (SUCCEEDED(device->QueryInterface(IID_PPV_ARGS(&infoQueue))))
+        {
+            constexpr bool kBreakOnDebugLayerError = false;
+            infoQueue->SetBreakOnSeverity(D3D12_MESSAGE_SEVERITY_CORRUPTION, TRUE);
+            infoQueue->SetBreakOnSeverity(
+                D3D12_MESSAGE_SEVERITY_ERROR,
+                kBreakOnDebugLayerError ? TRUE : FALSE);
+        }
+#endif
 
         return true;
     }
@@ -116,6 +166,7 @@ public:
 
         if (FAILED(hr))
         {
+            ErrorLog::HRESULT("RenderDevice: CreateCommandQueue failed.", hr);
             return false;
         }
 
@@ -126,6 +177,10 @@ public:
 
             if (FAILED(hr))
             {
+                ErrorLog::HRESULT(
+                    "RenderDevice: CreateCommandAllocator failed for frame index " +
+                    std::to_string(i) + '.',
+                    hr);
                 return false;
             }
         }
@@ -135,6 +190,7 @@ public:
 
         if (FAILED(hr))
         {
+            ErrorLog::HRESULT("RenderDevice: CreateCommandList failed.", hr);
             return false;
         }
 
@@ -145,6 +201,10 @@ public:
 
             if (FAILED(hr))
             {
+                ErrorLog::HRESULT(
+                    "RenderDevice: CreateFence failed for frame index " +
+                    std::to_string(i) + '.',
+                    hr);
                 return false;
             }
 
@@ -155,6 +215,7 @@ public:
 
         if (!m_fenceEvent)
         {
+            ErrorLog::Win32("RenderDevice: CreateEvent failed.", GetLastError());
             return false;
         }
 
@@ -188,15 +249,31 @@ public:
 
         if (FAILED(hr))
         {
+            ErrorLog::HRESULT("RenderDevice: CreateSwapChain failed.", hr);
             return false;
         }
 
         // Acquire an idle back buffer and signal the GPU to begin rendering
-        tempSwapChain.As(&swapChain);
+        hr = tempSwapChain.As(&swapChain);
+        if (FAILED(hr))
+        {
+            ErrorLog::HRESULT("RenderDevice: failed to query IDXGISwapChain3.", hr);
+            // Continuing with a null swap chain would crash in GetBuffer below
+            return false;
+        }
 
         for (int i = 0; i < frameBufferCount; i++)
         {
-            swapChain->GetBuffer(i, IID_PPV_ARGS(&m_renderTargets[i]));
+            hr = swapChain->GetBuffer(i, IID_PPV_ARGS(&m_renderTargets[i]));
+            if (FAILED(hr))
+            {
+                ErrorLog::HRESULT(
+                    "RenderDevice: GetBuffer failed for back-buffer index " +
+                    std::to_string(i) + '.',
+                    hr);
+                // A partially populated back-buffer set is not presentable
+                return false;
+            }
         }
 
         return true;
@@ -229,6 +306,7 @@ public:
 
         if (FAILED(hr))
         {
+            ErrorLog::HRESULT("RenderDevice: CreateCommittedResource failed for the depth buffer.", hr);
             return false;
         }
 
@@ -240,7 +318,18 @@ public:
     {
         if (m_fence[frameIndex]->GetCompletedValue() < m_fenceValue[frameIndex])
         {
-            m_fence[frameIndex]->SetEventOnCompletion(m_fenceValue[frameIndex], m_fenceEvent);
+            const HRESULT hr = m_fence[frameIndex]->SetEventOnCompletion(
+                m_fenceValue[frameIndex],
+                m_fenceEvent);
+            if (FAILED(hr))
+            {
+                ErrorLog::HRESULT(
+                    "RenderDevice: SetEventOnCompletion failed while waiting for frame " +
+                    std::to_string(frameIndex) + '.',
+                    hr);
+                // The event was never armed; waiting on it would hang the CPU indefinitely
+                return;
+            }
             WaitForSingleObject(m_fenceEvent, INFINITE);
         }
     }

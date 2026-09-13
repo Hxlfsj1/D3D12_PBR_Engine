@@ -48,6 +48,9 @@ inline bool D3D12App::InitializeWindow(int nShowCmd)
 
     if (!RegisterClassEx(&wc))
     {
+        ErrorLog::Win32(
+            "Window: RegisterClassEx failed.",
+            GetLastError());
         return false;
     }
 
@@ -55,6 +58,9 @@ inline bool D3D12App::InitializeWindow(int nShowCmd)
 
     if (!hwnd)
     {
+        ErrorLog::Win32(
+            "Window: CreateWindowEx failed.",
+            GetLastError());
         return false;
     }
 

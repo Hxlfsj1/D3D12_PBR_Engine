@@ -112,6 +112,10 @@ private:
         UINT vertexBufferSize = static_cast<UINT>(vertices.size() * sizeof(Vertex));
 
         vertexBuffer = CreateDefaultBuffer(device, cmdList, vertices.data(), vertexBufferSize, vertexBufferUploader);
+        if (vertexBuffer == nullptr)
+        {
+            ErrorLog::Write("Model: failed to create a mesh vertex buffer.");
+        }
         vertexBufferView.BufferLocation = vertexBuffer->GetGPUVirtualAddress();
         vertexBufferView.StrideInBytes = sizeof(Vertex);
         vertexBufferView.SizeInBytes = vertexBufferSize;
@@ -121,6 +125,12 @@ private:
             UINT indexBufferSize = static_cast<UINT>(lodIndices[i].size() * sizeof(unsigned int));
             ComPtr<ID3D12Resource> ibUploader;
             ComPtr<ID3D12Resource> iBuffer = CreateDefaultBuffer(device, cmdList, lodIndices[i].data(), indexBufferSize, ibUploader);
+            if (iBuffer == nullptr)
+            {
+                ErrorLog::Write(
+                    "Model: failed to create a mesh index buffer for LOD " +
+                    std::to_string(i) + '.');
+            }
 
             D3D12_INDEX_BUFFER_VIEW ibView;
             ibView.BufferLocation = iBuffer->GetGPUVirtualAddress();
@@ -138,10 +148,30 @@ private:
         ComPtr<ID3D12Resource> defaultBuffer;
         auto heapPropsDefault = CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_DEFAULT);
         auto bufferDesc = CD3DX12_RESOURCE_DESC::Buffer(byteSize);
-        device->CreateCommittedResource(&heapPropsDefault, D3D12_HEAP_FLAG_NONE, &bufferDesc, D3D12_RESOURCE_STATE_COMMON, nullptr, IID_PPV_ARGS(&defaultBuffer));
+        HRESULT hr = device->CreateCommittedResource(
+            &heapPropsDefault,
+            D3D12_HEAP_FLAG_NONE,
+            &bufferDesc,
+            D3D12_RESOURCE_STATE_COMMON,
+            nullptr,
+            IID_PPV_ARGS(&defaultBuffer));
+        if (FAILED(hr))
+        {
+            ErrorLog::HRESULT("Model: failed to create the default mesh buffer.", hr);
+        }
 
         auto heapPropsUpload = CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_UPLOAD);
-        device->CreateCommittedResource(&heapPropsUpload, D3D12_HEAP_FLAG_NONE, &bufferDesc, D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&uploadBuffer));
+        hr = device->CreateCommittedResource(
+            &heapPropsUpload,
+            D3D12_HEAP_FLAG_NONE,
+            &bufferDesc,
+            D3D12_RESOURCE_STATE_GENERIC_READ,
+            nullptr,
+            IID_PPV_ARGS(&uploadBuffer));
+        if (FAILED(hr))
+        {
+            ErrorLog::HRESULT("Model: failed to create the mesh upload buffer.", hr);
+        }
 
         D3D12_SUBRESOURCE_DATA subResourceData = {};
         subResourceData.pData = initData;
@@ -150,7 +180,10 @@ private:
 
         auto barrierEnter = CD3DX12_RESOURCE_BARRIER::Transition(defaultBuffer.Get(), D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_COPY_DEST);
         cmdList->ResourceBarrier(1, &barrierEnter);
-        UpdateSubresources<1>(cmdList, defaultBuffer.Get(), uploadBuffer.Get(), 0, 0, 1, &subResourceData);
+        if (UpdateSubresources<1>(cmdList, defaultBuffer.Get(), uploadBuffer.Get(), 0, 0, 1, &subResourceData) == 0)
+        {
+            ErrorLog::Write("Model: failed to upload mesh buffer data.");
+        }
         auto barrierExit = CD3DX12_RESOURCE_BARRIER::Transition(defaultBuffer.Get(), D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_GENERIC_READ);
         cmdList->ResourceBarrier(1, &barrierExit);
 
@@ -169,6 +202,7 @@ public:
     {
         if (path.substr(path.find_last_of(".") + 1) != "glb")
         {
+            ErrorLog::Write("Model: unsupported model format: " + path);
             return;
         }
         loadModel(device, cmdList, upload, path);
@@ -204,6 +238,7 @@ private:
         std::vector<unsigned char> modelData = ReadFileToBuffer(path);
         if (modelData.empty())
         {
+            ErrorLog::Write("Model: model file is missing or empty: " + path);
             return;
         }
 
@@ -212,7 +247,20 @@ private:
 
         tinygltf::TinyGLTF loader;
         std::string err, warn;
-        loader.LoadBinaryFromMemory(&gltfModel, &err, &warn, modelData.data(), static_cast<unsigned int>(modelData.size()));
+        const bool gltfLoaded = loader.LoadBinaryFromMemory(
+            &gltfModel,
+            &err,
+            &warn,
+            modelData.data(),
+            static_cast<unsigned int>(modelData.size()));
+        if (!warn.empty())
+        {
+            ErrorLog::Write("Model: tinygltf warning for " + path + ": " + warn);
+        }
+        if (!gltfLoaded || !err.empty())
+        {
+            ErrorLog::Write("Model: tinygltf failed to load " + path + ": " + err);
+        }
 
         Assimp::Importer importer;
         unsigned int flags = aiProcess_Triangulate | aiProcess_GenSmoothNormals |
@@ -222,6 +270,9 @@ private:
         const aiScene* scene = importer.ReadFileFromMemory(modelData.data(), modelData.size(), flags, path.c_str());
         if (!scene || scene->mFlags & AI_SCENE_FLAGS_INCOMPLETE || !scene->mRootNode)
         {
+            ErrorLog::Write(
+                "Model: Assimp failed to load " + path + ": " +
+                importer.GetErrorString());
             return;
         }
 
@@ -463,6 +514,16 @@ private:
                         const aiTexture* embeddedTex = scene->mTextures[imageIndex];
                         TextureFromMemory(device, upload, embeddedTex, texture);
                     }
+                    else
+                    {
+                        ErrorLog::Write(
+                            "Model: embedded texture index is out of range: " + path);
+                    }
+                }
+                else if (!path.empty())
+                {
+                    ErrorLog::Write(
+                        "Model: external texture is not embedded and was not loaded: " + path);
                 }
 
                 if (texture.Resource != nullptr)
@@ -479,7 +540,17 @@ private:
     void TextureFromMemory(ID3D12Device* device, DirectX::ResourceUploadBatch& upload, const aiTexture* aiTex, Texture& outTex)
     {
         size_t dataSize = aiTex->mHeight == 0 ? aiTex->mWidth : aiTex->mWidth * aiTex->mHeight * 4;
-        DirectX::CreateWICTextureFromMemory(device, upload, reinterpret_cast<const uint8_t*>(aiTex->pcData), dataSize, outTex.Resource.GetAddressOf(), true);
+        const HRESULT hr = DirectX::CreateWICTextureFromMemory(
+            device,
+            upload,
+            reinterpret_cast<const uint8_t*>(aiTex->pcData),
+            dataSize,
+            outTex.Resource.GetAddressOf(),
+            true);
+        if (FAILED(hr))
+        {
+            ErrorLog::HRESULT("Model: failed to decode an embedded texture.", hr);
+        }
     }
 
     std::vector<unsigned char> ReadFileToBuffer(const std::string& path)
@@ -487,12 +558,17 @@ private:
         std::ifstream file(path, std::ios::binary | std::ios::ate);
         if (!file.is_open())
         {
+            ErrorLog::Write("Model: failed to open model file: " + path);
             return {};
         }
         std::streamsize size = file.tellg();
         file.seekg(0, std::ios::beg);
         std::vector<unsigned char> buffer(size);
         file.read(reinterpret_cast<char*>(buffer.data()), size);
+        if (!file)
+        {
+            ErrorLog::Write("Model: failed to read the complete model file: " + path);
+        }
         return buffer;
     }
 };

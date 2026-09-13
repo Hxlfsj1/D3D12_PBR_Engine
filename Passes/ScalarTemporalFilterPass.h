@@ -104,6 +104,7 @@ public:
             !input.historyOutput.IsValid() ||
             !input.depth.IsValid())
         {
+            ErrorLog::Write("ScalarTemporalFilterPass: one or more temporal inputs are invalid.");
             return {};
         }
 
@@ -151,6 +152,7 @@ public:
                  !previousDepthSrv.IsValid() ||
                  !previousNormalSrv.IsValid())))
         {
+            ErrorLog::Write("ScalarTemporalFilterPass: failed to create one or more temporal resource views.");
             return {};
         }
 

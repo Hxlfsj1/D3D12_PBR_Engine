@@ -26,31 +26,78 @@ public:
 
     bool Initialize(RenderDevice* dc)
     {
-        if (!BuildRootSignature(dc)) return false;
-        if (!BuildPipelineStates(dc)) return false;
-        if (!BuildShadowPipeline(dc)) return false;
-        if (!BuildPostProcessPipeline(dc)) return false;
-        if (!BuildDeferredPipeline(dc)) return false;
-        if (!BuildHBAOPipeline(dc)) return false;
-        if (!BuildMotionVectorPipeline(dc)) return false;
-        if (!BuildScalarTemporalPipeline(dc)) return false;
+        if (!BuildRootSignature(dc))
+        {
+            ErrorLog::Write("PipelineManager: main root-signature construction failed.");
+            return false;
+        }
+        if (!BuildPipelineStates(dc))
+        {
+            ErrorLog::Write("PipelineManager: main PBR pipeline-state construction failed.");
+            return false;
+        }
+        if (!BuildShadowPipeline(dc))
+        {
+            ErrorLog::Write("PipelineManager: shadow pipeline construction failed.");
+            return false;
+        }
+        if (!BuildPostProcessPipeline(dc))
+        {
+            ErrorLog::Write("PipelineManager: post-process pipeline construction failed.");
+            return false;
+        }
+        if (!BuildDeferredPipeline(dc))
+        {
+            ErrorLog::Write("PipelineManager: deferred pipeline construction failed.");
+            return false;
+        }
+        if (!BuildHBAOPipeline(dc))
+        {
+            ErrorLog::Write("PipelineManager: HBAO pipeline construction failed.");
+            return false;
+        }
+        if (!BuildMotionVectorPipeline(dc))
+        {
+            ErrorLog::Write("PipelineManager: motion-vector pipeline construction failed.");
+            return false;
+        }
+        if (!BuildScalarTemporalPipeline(dc))
+        {
+            ErrorLog::Write("PipelineManager: scalar-temporal pipeline construction failed.");
+            return false;
+        }
 
         return true;
     }
 
     bool InitializeTAA(RenderDevice* dc)
     {
-        return BuildTAAPipeline(dc);
+        const bool result = BuildTAAPipeline(dc);
+        if (!result)
+        {
+            ErrorLog::Write("PipelineManager: TAA pipeline construction failed.");
+        }
+        return result;
     }
 
     bool InitializeTSR(RenderDevice* dc)
     {
-        return BuildTSRPipeline(dc);
+        const bool result = BuildTSRPipeline(dc);
+        if (!result)
+        {
+            ErrorLog::Write("PipelineManager: TSR pipeline construction failed.");
+        }
+        return result;
     }
 
     bool InitializeSMAA(RenderDevice* dc)
     {
-        return BuildSMAAPipeline(dc);
+        const bool result = BuildSMAAPipeline(dc);
+        if (!result)
+        {
+            ErrorLog::Write("PipelineManager: SMAA pipeline construction failed.");
+        }
+        return result;
     }
 
     ID3D12RootSignature* GetRootSignature()
@@ -311,10 +358,18 @@ private:
 
         ComPtr<ID3DBlob> rsBlob;
         HRESULT hr = D3D12SerializeRootSignature(&rsDesc, D3D_ROOT_SIGNATURE_VERSION_1, &rsBlob, nullptr);
-        if (FAILED(hr)) return false;
+        if (FAILED(hr))
+        {
+            ErrorLog::HRESULT("PipelineManager: main root-signature serialization failed.", hr);
+            return false;
+        }
 
         hr = dc->GetDevice()->CreateRootSignature(0, rsBlob->GetBufferPointer(), rsBlob->GetBufferSize(), IID_PPV_ARGS(&rootSignature));
-        if (FAILED(hr)) return false;
+        if (FAILED(hr))
+        {
+            ErrorLog::HRESULT("PipelineManager: main root-signature creation failed.", hr);
+            return false;
+        }
 
         return true;
     }
@@ -699,11 +754,13 @@ private:
 
         if (FAILED(D3D12SerializeRootSignature(&rsDesc, D3D_ROOT_SIGNATURE_VERSION_1, &rsBlob, nullptr)))
         {
+            ErrorLog::Write("PipelineManager: post-process root-signature serialization failed.");
             return false;
         }
 
         if (FAILED(dc->GetDevice()->CreateRootSignature(0, rsBlob->GetBufferPointer(), rsBlob->GetBufferSize(), IID_PPV_ARGS(&postProcessRootSignature))))
         {
+            ErrorLog::Write("PipelineManager: post-process root-signature creation failed.");
             return false;
         }
 
@@ -750,6 +807,7 @@ private:
             &psoDesc,
             IID_PPV_ARGS(&postProcessPSO[0]))))
         {
+            ErrorLog::Write("PipelineManager: post-process PSO creation failed for the non-sharpen path.");
             return false;
         }
 
@@ -760,6 +818,7 @@ private:
             &psoDesc,
             IID_PPV_ARGS(&postProcessPSO[1]))))
         {
+            ErrorLog::Write("PipelineManager: post-process PSO creation failed for the sharpen path.");
             return false;
         }
 
@@ -813,8 +872,16 @@ private:
             D3D12_ROOT_SIGNATURE_FLAG_CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED);
 
         ComPtr<ID3DBlob> rsBlob;
-        if (FAILED(D3D12SerializeRootSignature(&rsDesc, D3D_ROOT_SIGNATURE_VERSION_1, &rsBlob, nullptr))) return false;
-        if (FAILED(dc->GetDevice()->CreateRootSignature(0, rsBlob->GetBufferPointer(), rsBlob->GetBufferSize(), IID_PPV_ARGS(&deferredRootSignature)))) return false;
+        if (FAILED(D3D12SerializeRootSignature(&rsDesc, D3D_ROOT_SIGNATURE_VERSION_1, &rsBlob, nullptr)))
+        {
+            ErrorLog::Write("PipelineManager: deferred root-signature serialization failed.");
+            return false;
+        }
+        if (FAILED(dc->GetDevice()->CreateRootSignature(0, rsBlob->GetBufferPointer(), rsBlob->GetBufferSize(), IID_PPV_ARGS(&deferredRootSignature))))
+        {
+            ErrorLog::Write("PipelineManager: deferred root-signature creation failed.");
+            return false;
+        }
 
         auto vs = ShaderCompiler::CompileFromFile(L"Shaders/Shaders_For_Deferred.hlsl", L"VSMain", L"vs_6_6");
         auto ps = ShaderCompiler::CompileFromFile(L"Shaders/Shaders_For_Deferred.hlsl", L"PSMain", L"ps_6_6");
@@ -839,7 +906,11 @@ private:
         psoDesc.RTVFormats[0] = DXGI_FORMAT_R16G16B16A16_FLOAT;
         psoDesc.SampleDesc.Count = 1;
 
-        if (FAILED(dc->GetDevice()->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(&deferredPSO)))) return false;
+        if (FAILED(dc->GetDevice()->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(&deferredPSO))))
+        {
+            ErrorLog::Write("PipelineManager: deferred PSO creation failed.");
+            return false;
+        }
 
         return true;
     }
@@ -891,11 +962,13 @@ private:
 
         if (FAILED(D3D12SerializeRootSignature(&rsDesc, D3D_ROOT_SIGNATURE_VERSION_1, &rsBlob, nullptr)))
         {
+            ErrorLog::Write("PipelineManager: HBAO root-signature serialization failed.");
             return false;
         }
 
         if (FAILED(dc->GetDevice()->CreateRootSignature(0, rsBlob->GetBufferPointer(), rsBlob->GetBufferSize(), IID_PPV_ARGS(&hbaoRootSignature))))
         {
+            ErrorLog::Write("PipelineManager: HBAO root-signature creation failed.");
             return false;
         }
 
@@ -923,6 +996,7 @@ private:
 
         if (FAILED(dc->GetDevice()->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(&hbaoPSO))))
         {
+            ErrorLog::Write("PipelineManager: HBAO raw PSO creation failed.");
             return false;
         }
 
@@ -930,6 +1004,7 @@ private:
 
         if (FAILED(dc->GetDevice()->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(&hbaoBlurPSO))))
         {
+            ErrorLog::Write("PipelineManager: HBAO blur PSO creation failed.");
             return false;
         }
 
@@ -958,15 +1033,24 @@ private:
         ComPtr<ID3DBlob> serializedRootSig = nullptr;
         ComPtr<ID3DBlob> errorBlob = nullptr;
         HRESULT hr = D3D12SerializeRootSignature(&rootSigDesc, D3D_ROOT_SIGNATURE_VERSION_1, &serializedRootSig, &errorBlob);
-        if (FAILED(hr)) return false;
+        if (FAILED(hr))
+        {
+            ErrorLog::HRESULT("PipelineManager: TAA root-signature serialization failed.", hr);
+            return false;
+        }
 
         hr = dc->GetDevice()->CreateRootSignature(0, serializedRootSig->GetBufferPointer(), serializedRootSig->GetBufferSize(), IID_PPV_ARGS(&taaRootSignature));
-        if (FAILED(hr)) return false;
+        if (FAILED(hr))
+        {
+            ErrorLog::HRESULT("PipelineManager: TAA root-signature creation failed.", hr);
+            return false;
+        }
 
         auto vs = ShaderCompiler::CompileFromFile(L"Shaders/Shaders_For_TAA.hlsl", L"VSMain", L"vs_6_6");
         auto ps = ShaderCompiler::CompileFromFile(L"Shaders/Shaders_For_TAA.hlsl", L"PSMain", L"ps_6_6");
         if (!vs || !ps)
         {
+            ErrorLog::Write("PipelineManager: TAA shader compilation returned an empty blob.");
             MessageBox(NULL, L"TAA shader compilation failed.", L"Engine Error", MB_OK);
             return false;
         }
@@ -987,8 +1071,12 @@ private:
         psoDesc.RTVFormats[0] = DXGI_FORMAT_R16G16B16A16_FLOAT;
         psoDesc.SampleDesc.Count = 1;
 
-        if (FAILED(dc->GetDevice()->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(&psoTAA))))
+        hr = dc->GetDevice()->CreateGraphicsPipelineState(
+            &psoDesc,
+            IID_PPV_ARGS(&psoTAA));
+        if (FAILED(hr))
         {
+            ErrorLog::HRESULT("PipelineManager: TAA PSO creation failed.", hr);
             MessageBox(NULL, L"Failed to create TAA PSO!", L"Engine Error", MB_OK);
             return false;
         }
@@ -1027,14 +1115,22 @@ private:
             D3D_ROOT_SIGNATURE_VERSION_1,
             &serializedRootSig,
             &errorBlob);
-        if (FAILED(hr)) return false;
+        if (FAILED(hr))
+        {
+            ErrorLog::HRESULT("PipelineManager: TSR root-signature serialization failed.", hr);
+            return false;
+        }
 
         hr = dc->GetDevice()->CreateRootSignature(
             0,
             serializedRootSig->GetBufferPointer(),
             serializedRootSig->GetBufferSize(),
             IID_PPV_ARGS(&tsrRootSignature));
-        if (FAILED(hr)) return false;
+        if (FAILED(hr))
+        {
+            ErrorLog::HRESULT("PipelineManager: TSR root-signature creation failed.", hr);
+            return false;
+        }
 
         auto vs = ShaderCompiler::CompileFromFile(
             L"Shaders/Shaders_For_TSR.hlsl",
@@ -1046,6 +1142,7 @@ private:
             L"ps_6_6");
         if (!vs || !ps)
         {
+            ErrorLog::Write("PipelineManager: TSR shader compilation returned an empty blob.");
             MessageBox(NULL, L"TSR shader compilation failed.", L"Engine Error", MB_OK);
             return false;
         }
@@ -1066,10 +1163,12 @@ private:
         psoDesc.RTVFormats[0] = DXGI_FORMAT_R16G16B16A16_FLOAT;
         psoDesc.SampleDesc.Count = 1;
 
-        if (FAILED(dc->GetDevice()->CreateGraphicsPipelineState(
+        hr = dc->GetDevice()->CreateGraphicsPipelineState(
             &psoDesc,
-            IID_PPV_ARGS(&psoTSR))))
+            IID_PPV_ARGS(&psoTSR));
+        if (FAILED(hr))
         {
+            ErrorLog::HRESULT("PipelineManager: TSR PSO creation failed.", hr);
             MessageBox(NULL, L"Failed to create TSR PSO!", L"Engine Error", MB_OK);
             return false;
         }
@@ -1115,6 +1214,7 @@ private:
             &errorBlob);
         if (FAILED(hr))
         {
+            ErrorLog::HRESULT("PipelineManager: scalar-temporal root-signature serialization failed.", hr);
             return false;
         }
 
@@ -1125,6 +1225,7 @@ private:
             IID_PPV_ARGS(&scalarTemporalRootSignature));
         if (FAILED(hr))
         {
+            ErrorLog::HRESULT("PipelineManager: scalar-temporal root-signature creation failed.", hr);
             return false;
         }
 
@@ -1138,6 +1239,7 @@ private:
             L"ps_6_6");
         if (!vs || !ps)
         {
+            ErrorLog::Write("PipelineManager: scalar-temporal shader compilation returned an empty blob.");
             return false;
         }
 
@@ -1161,9 +1263,14 @@ private:
         psoDesc.RTVFormats[0] = DXGI_FORMAT_R16_FLOAT;
         psoDesc.SampleDesc.Count = 1;
 
-        return SUCCEEDED(dc->GetDevice()->CreateGraphicsPipelineState(
+        hr = dc->GetDevice()->CreateGraphicsPipelineState(
             &psoDesc,
-            IID_PPV_ARGS(&scalarTemporalPSO)));
+            IID_PPV_ARGS(&scalarTemporalPSO));
+        if (FAILED(hr))
+        {
+            ErrorLog::HRESULT("PipelineManager: scalar-temporal PSO creation failed.", hr);
+        }
+        return SUCCEEDED(hr);
     }
 
     bool BuildMotionVectorPipeline(RenderDevice* dc)
@@ -1192,20 +1299,29 @@ private:
             D3D_ROOT_SIGNATURE_VERSION_1,
             &serializedRootSig,
             &errorBlob);
-        if (FAILED(hr)) return false;
+        if (FAILED(hr))
+        {
+            ErrorLog::HRESULT("PipelineManager: motion-vector root-signature serialization failed.", hr);
+            return false;
+        }
 
         hr = dc->GetDevice()->CreateRootSignature(
             0,
             serializedRootSig->GetBufferPointer(),
             serializedRootSig->GetBufferSize(),
             IID_PPV_ARGS(&motionVectorRootSignature));
-        if (FAILED(hr)) return false;
+        if (FAILED(hr))
+        {
+            ErrorLog::HRESULT("PipelineManager: motion-vector root-signature creation failed.", hr);
+            return false;
+        }
 
         auto vs = ShaderCompiler::CompileFromFile(L"Shaders/Shaders_For_MotionVector.hlsl", L"VSMain", L"vs_6_6");
         auto ps = ShaderCompiler::CompileFromFile(L"Shaders/Shaders_For_MotionVector.hlsl", L"PSMain", L"ps_6_6");
 
         if (!vs || !ps)
         {
+            ErrorLog::Write("PipelineManager: motion-vector shader compilation returned an empty blob.");
             MessageBox(NULL, L"Motion vector shader compilation failed! Please check if Shaders_For_MotionVector.hlsl exists in the Shaders directory.", L"Engine Error", MB_OK);
             return false;
         }
@@ -1226,8 +1342,12 @@ private:
         psoDesc.RTVFormats[0] = DXGI_FORMAT_R16G16_FLOAT;
         psoDesc.SampleDesc.Count = 1;
 
-        if (FAILED(dc->GetDevice()->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(&motionVectorPSO))))
+        hr = dc->GetDevice()->CreateGraphicsPipelineState(
+            &psoDesc,
+            IID_PPV_ARGS(&motionVectorPSO));
+        if (FAILED(hr))
         {
+            ErrorLog::HRESULT("PipelineManager: motion-vector PSO creation failed.", hr);
             MessageBox(NULL, L"Failed to create motion vector PSO!", L"Engine Error", MB_OK);
             return false;
         }
@@ -1277,6 +1397,7 @@ private:
             &errorBlob);
         if (FAILED(hr))
         {
+            ErrorLog::HRESULT("PipelineManager: SMAA root-signature serialization failed.", hr);
             return false;
         }
 
@@ -1287,6 +1408,7 @@ private:
             IID_PPV_ARGS(&smaaRootSignature));
         if (FAILED(hr))
         {
+            ErrorLog::HRESULT("PipelineManager: SMAA root-signature creation failed.", hr);
             return false;
         }
 
@@ -1321,6 +1443,7 @@ private:
             !neighborhoodVS ||
             !neighborhoodPS)
         {
+            ErrorLog::Write("PipelineManager: SMAA shader compilation returned an empty blob.");
             return false;
         }
 
@@ -1348,6 +1471,7 @@ private:
             &pipelineDesc,
             IID_PPV_ARGS(&smaaEdgePSO))))
         {
+            ErrorLog::Write("PipelineManager: SMAA edge PSO creation failed.");
             return false;
         }
 
@@ -1363,6 +1487,7 @@ private:
             &pipelineDesc,
             IID_PPV_ARGS(&smaaWeightPSO))))
         {
+            ErrorLog::Write("PipelineManager: SMAA weight PSO creation failed.");
             return false;
         }
 
@@ -1373,9 +1498,14 @@ private:
             neighborhoodPS->GetBufferPointer(),
             neighborhoodPS->GetBufferSize());
 
-        return SUCCEEDED(dc->GetDevice()->CreateGraphicsPipelineState(
+        hr = dc->GetDevice()->CreateGraphicsPipelineState(
             &pipelineDesc,
-            IID_PPV_ARGS(&smaaNeighborhoodPSO)));
+            IID_PPV_ARGS(&smaaNeighborhoodPSO));
+        if (FAILED(hr))
+        {
+            ErrorLog::HRESULT("PipelineManager: SMAA neighborhood PSO creation failed.", hr);
+        }
+        return SUCCEEDED(hr);
     }
 
 private:

@@ -45,15 +45,19 @@ private:
     void Update();
 
     // Render passes
-    void BeginFrame();
+    bool BeginFrame();
     void DrawShadowMap();
     void DrawPBRModel();
     void DrawSkybox();
     void DrawPostProcess();
-    void EndFrame();
+    bool EndFrame();
 
     void Render();
     void WaitForPreviousFrame();
+
+    // Log a per-frame HRESULT failure; if the D3D12 device has been removed,
+    // report the underlying removal reason and stop the main loop cleanly
+    void ReportFrameError(const char* operation, HRESULT hr);
 
     // Populated when D3D12App() is invoked
     HINSTANCE mhAppInst;

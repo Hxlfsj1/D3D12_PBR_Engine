@@ -98,6 +98,7 @@ public:
         RDGTextureDSVHandle depthDsv = graph.CreateTextureDSVView(depth);
         if (!sceneColorRtv.IsValid() || !depthDsv.IsValid())
         {
+            ErrorLog::Write("SkyboxPass: failed to create the scene color RTV or depth DSV.");
             return {};
         }
 

@@ -133,6 +133,7 @@ public:
     {
         if (!input.depth.IsValid() || !input.gbufferNormal.IsValid())
         {
+            ErrorLog::Write("HBAOPass: depth or G-buffer normal input is invalid.");
             return {};
         }
 
@@ -162,6 +163,7 @@ public:
 
         if (!hbaoRaw.IsValid() || !hbaoBlurred.IsValid())
         {
+            ErrorLog::Write("HBAOPass: failed to create the raw or blurred AO texture.");
             return {};
         }
 
@@ -183,6 +185,7 @@ public:
             !hbaoRawRtv.IsValid() ||
             !hbaoBlurredRtv.IsValid())
         {
+            ErrorLog::Write("HBAOPass: failed to create one or more AO resource views.");
             return {};
         }
 

@@ -31,15 +31,38 @@ public:
     void Bake(ID3D12Device* device, ID3D12CommandQueue* commandQueue, const float* data, int w, int h)
     {
         Microsoft::WRL::ComPtr<ID3D12CommandAllocator> allocator;
-        device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&allocator));
+        HRESULT hr = device->CreateCommandAllocator(
+            D3D12_COMMAND_LIST_TYPE_DIRECT,
+            IID_PPV_ARGS(&allocator));
+        if (FAILED(hr))
+        {
+            ErrorLog::HRESULT("IBLBaker: failed to create the command allocator.", hr);
+        }
 
         Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList> cmdList;
-        device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, allocator.Get(), nullptr, IID_PPV_ARGS(&cmdList));
+        hr = device->CreateCommandList(
+            0,
+            D3D12_COMMAND_LIST_TYPE_DIRECT,
+            allocator.Get(),
+            nullptr,
+            IID_PPV_ARGS(&cmdList));
+        if (FAILED(hr))
+        {
+            ErrorLog::HRESULT("IBLBaker: failed to create the command list.", hr);
+        }
 
         Microsoft::WRL::ComPtr<ID3D12Fence> fence;
-        device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&fence));
+        hr = device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&fence));
+        if (FAILED(hr))
+        {
+            ErrorLog::HRESULT("IBLBaker: failed to create the fence.", hr);
+        }
 
         HANDLE fenceEvent = CreateEvent(nullptr, FALSE, FALSE, nullptr);
+        if (fenceEvent == nullptr)
+        {
+            ErrorLog::Win32("IBLBaker: failed to create the fence event.", GetLastError());
+        }
         UINT64 fenceValue = 1;
 
         CD3DX12_HEAP_PROPERTIES defHeap(D3D12_HEAP_TYPE_DEFAULT);
@@ -47,40 +70,97 @@ public:
 
         Microsoft::WRL::ComPtr<ID3D12Resource> texHDR;
         D3D12_RESOURCE_DESC texDesc = CD3DX12_RESOURCE_DESC::Tex2D(DXGI_FORMAT_R32G32B32A32_FLOAT, w, h, 1, 1);
-        device->CreateCommittedResource(&defHeap, D3D12_HEAP_FLAG_NONE, &texDesc, D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS(&texHDR));
+        hr = device->CreateCommittedResource(
+            &defHeap,
+            D3D12_HEAP_FLAG_NONE,
+            &texDesc,
+            D3D12_RESOURCE_STATE_COPY_DEST,
+            nullptr,
+            IID_PPV_ARGS(&texHDR));
+        if (FAILED(hr))
+        {
+            ErrorLog::HRESULT("IBLBaker: failed to create the HDR texture.", hr);
+        }
 
         UINT64 uploadSize = GetRequiredIntermediateSize(texHDR.Get(), 0, 1);
         Microsoft::WRL::ComPtr<ID3D12Resource> texUpload;
         CD3DX12_RESOURCE_DESC upDesc = CD3DX12_RESOURCE_DESC::Buffer(uploadSize);
-        device->CreateCommittedResource(&upHeap, D3D12_HEAP_FLAG_NONE, &upDesc, D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&texUpload));
+        hr = device->CreateCommittedResource(
+            &upHeap,
+            D3D12_HEAP_FLAG_NONE,
+            &upDesc,
+            D3D12_RESOURCE_STATE_GENERIC_READ,
+            nullptr,
+            IID_PPV_ARGS(&texUpload));
+        if (FAILED(hr))
+        {
+            ErrorLog::HRESULT("IBLBaker: failed to create the HDR upload buffer.", hr);
+        }
 
         D3D12_SUBRESOURCE_DATA subData = {};
         subData.pData = data;
         subData.RowPitch = w * 16;
         subData.SlicePitch = subData.RowPitch * h;
 
-        UpdateSubresources(cmdList.Get(), texHDR.Get(), texUpload.Get(), 0, 0, 1, &subData);
+        if (UpdateSubresources(cmdList.Get(), texHDR.Get(), texUpload.Get(), 0, 0, 1, &subData) == 0)
+        {
+            ErrorLog::Write("IBLBaker: failed to upload the HDR texture data.");
+        }
 
         CD3DX12_RESOURCE_BARRIER t1 = CD3DX12_RESOURCE_BARRIER::Transition(texHDR.Get(), D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
         cmdList->ResourceBarrier(1, &t1);
 
         D3D12_RESOURCE_DESC cubeDesc = CD3DX12_RESOURCE_DESC::Tex2D(DXGI_FORMAT_R16G16B16A16_FLOAT, 512, 512, 6, 1);
         cubeDesc.Flags = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
-        device->CreateCommittedResource(&defHeap, D3D12_HEAP_FLAG_NONE, &cubeDesc, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, nullptr, IID_PPV_ARGS(&m_envCube));
+        hr = device->CreateCommittedResource(
+            &defHeap,
+            D3D12_HEAP_FLAG_NONE,
+            &cubeDesc,
+            D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+            nullptr,
+            IID_PPV_ARGS(&m_envCube));
+        if (FAILED(hr))
+        {
+            ErrorLog::HRESULT("IBLBaker: failed to create the environment cubemap.", hr);
+        }
 
         D3D12_RESOURCE_DESC preDesc = CD3DX12_RESOURCE_DESC::Tex2D(DXGI_FORMAT_R16G16B16A16_FLOAT, 128, 128, 6, 5);
         preDesc.Flags = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
-        device->CreateCommittedResource(&defHeap, D3D12_HEAP_FLAG_NONE, &preDesc, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, nullptr, IID_PPV_ARGS(&m_prefilterCube));
+        hr = device->CreateCommittedResource(
+            &defHeap,
+            D3D12_HEAP_FLAG_NONE,
+            &preDesc,
+            D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+            nullptr,
+            IID_PPV_ARGS(&m_prefilterCube));
+        if (FAILED(hr))
+        {
+            ErrorLog::HRESULT("IBLBaker: failed to create the prefiltered cubemap.", hr);
+        }
 
         D3D12_RESOURCE_DESC lutDesc = CD3DX12_RESOURCE_DESC::Tex2D(DXGI_FORMAT_R16G16_FLOAT, 512, 512, 1, 1);
         lutDesc.Flags = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
-        device->CreateCommittedResource(&defHeap, D3D12_HEAP_FLAG_NONE, &lutDesc, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, nullptr, IID_PPV_ARGS(&m_brdfLUT));
+        hr = device->CreateCommittedResource(
+            &defHeap,
+            D3D12_HEAP_FLAG_NONE,
+            &lutDesc,
+            D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+            nullptr,
+            IID_PPV_ARGS(&m_brdfLUT));
+        if (FAILED(hr))
+        {
+            ErrorLog::HRESULT("IBLBaker: failed to create the BRDF LUT.", hr);
+        }
 
         Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> rtvHeap;
         D3D12_DESCRIPTOR_HEAP_DESC rtvHDesc = {};
         rtvHDesc.NumDescriptors = 60;
         rtvHDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
-        device->CreateDescriptorHeap(&rtvHDesc, IID_PPV_ARGS(&rtvHeap));
+        hr = device->CreateDescriptorHeap(&rtvHDesc, IID_PPV_ARGS(&rtvHeap));
+        if (FAILED(hr))
+        {
+            ErrorLog::HRESULT("IBLBaker: failed to create the RTV descriptor heap.", hr);
+        }
 
         UINT rtvSize = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
         CD3DX12_CPU_DESCRIPTOR_HANDLE rtvHandle(rtvHeap->GetCPUDescriptorHandleForHeapStart());
@@ -122,7 +202,11 @@ public:
         srvHeapDesc.NumDescriptors = 2;
         srvHeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
         srvHeapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
-        device->CreateDescriptorHeap(&srvHeapDesc, IID_PPV_ARGS(&localSrvHeap));
+        hr = device->CreateDescriptorHeap(&srvHeapDesc, IID_PPV_ARGS(&localSrvHeap));
+        if (FAILED(hr))
+        {
+            ErrorLog::HRESULT("IBLBaker: failed to create the SRV descriptor heap.", hr);
+        }
 
         UINT srvSize = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
 
@@ -166,8 +250,16 @@ public:
         rsDesc.Init(3, rootParams, 1, &samp, D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT);
 
         Microsoft::WRL::ComPtr<ID3DBlob> rsBlob;
-        D3D12SerializeRootSignature(&rsDesc, D3D_ROOT_SIGNATURE_VERSION_1, &rsBlob, nullptr);
-        device->CreateRootSignature(0, rsBlob->GetBufferPointer(), rsBlob->GetBufferSize(), IID_PPV_ARGS(&rootSig));
+        hr = D3D12SerializeRootSignature(&rsDesc, D3D_ROOT_SIGNATURE_VERSION_1, &rsBlob, nullptr);
+        if (FAILED(hr))
+        {
+            ErrorLog::HRESULT("IBLBaker: failed to serialize the graphics root signature.", hr);
+        }
+        hr = device->CreateRootSignature(0, rsBlob->GetBufferPointer(), rsBlob->GetBufferSize(), IID_PPV_ARGS(&rootSig));
+        if (FAILED(hr))
+        {
+            ErrorLog::HRESULT("IBLBaker: failed to create the graphics root signature.", hr);
+        }
 
         auto vsCube = ShaderCompiler::CompileFromFile(L"Shaders/Shaders_For_Cubemap.hlsl", L"VSMain", L"vs_6_6");
         auto psEqui = ShaderCompiler::CompileFromFile(L"Shaders/Shaders_For_Cubemap.hlsl", L"PSMain", L"ps_6_6");
@@ -195,12 +287,20 @@ public:
         psoDesc.SampleDesc.Count = 1;
 
         Microsoft::WRL::ComPtr<ID3D12PipelineState> psoEqui;
-        device->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(&psoEqui));
+        hr = device->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(&psoEqui));
+        if (FAILED(hr))
+        {
+            ErrorLog::HRESULT("IBLBaker: failed to create the equirectangular-to-cubemap PSO.", hr);
+        }
 
         psoDesc.VS = CD3DX12_SHADER_BYTECODE(vsPre->GetBufferPointer(), vsPre->GetBufferSize());
         psoDesc.PS = CD3DX12_SHADER_BYTECODE(psPre->GetBufferPointer(), psPre->GetBufferSize());
         Microsoft::WRL::ComPtr<ID3D12PipelineState> psoPreState;
-        device->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(&psoPreState));
+        hr = device->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(&psoPreState));
+        if (FAILED(hr))
+        {
+            ErrorLog::HRESULT("IBLBaker: failed to create the prefilter PSO.", hr);
+        }
 
         D3D12_INPUT_ELEMENT_DESC layoutQuad[] =
         {
@@ -212,7 +312,11 @@ public:
         psoDesc.PS = CD3DX12_SHADER_BYTECODE(psBrdf->GetBufferPointer(), psBrdf->GetBufferSize());
         psoDesc.RTVFormats[0] = DXGI_FORMAT_R16G16_FLOAT;
         Microsoft::WRL::ComPtr<ID3D12PipelineState> psoBrdfState;
-        device->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(&psoBrdfState));
+        hr = device->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(&psoBrdfState));
+        if (FAILED(hr))
+        {
+            ErrorLog::HRESULT("IBLBaker: failed to create the BRDF integration PSO.", hr);
+        }
 
         float cubeVerts[] =
         {
@@ -232,17 +336,33 @@ public:
 
         Microsoft::WRL::ComPtr<ID3D12Resource> vbCube;
         CD3DX12_RESOURCE_DESC vDescC = CD3DX12_RESOURCE_DESC::Buffer(sizeof(cubeVerts));
-        device->CreateCommittedResource(&upHeap, D3D12_HEAP_FLAG_NONE, &vDescC, D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&vbCube));
+        hr = device->CreateCommittedResource(&upHeap, D3D12_HEAP_FLAG_NONE, &vDescC, D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&vbCube));
+        if (FAILED(hr))
+        {
+            ErrorLog::HRESULT("IBLBaker: failed to create the cube vertex buffer.", hr);
+        }
         void* pD;
-        vbCube->Map(0, nullptr, &pD);
+        hr = vbCube->Map(0, nullptr, &pD);
+        if (FAILED(hr))
+        {
+            ErrorLog::HRESULT("IBLBaker: failed to map the cube vertex buffer.", hr);
+        }
         memcpy(pD, cubeVerts, sizeof(cubeVerts));
         vbCube->Unmap(0, nullptr);
         D3D12_VERTEX_BUFFER_VIEW vbvCube = { vbCube->GetGPUVirtualAddress(), sizeof(cubeVerts), 12 };
 
         Microsoft::WRL::ComPtr<ID3D12Resource> vbQuad;
         CD3DX12_RESOURCE_DESC vDescQ = CD3DX12_RESOURCE_DESC::Buffer(sizeof(quadVerts));
-        device->CreateCommittedResource(&upHeap, D3D12_HEAP_FLAG_NONE, &vDescQ, D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&vbQuad));
-        vbQuad->Map(0, nullptr, &pD);
+        hr = device->CreateCommittedResource(&upHeap, D3D12_HEAP_FLAG_NONE, &vDescQ, D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&vbQuad));
+        if (FAILED(hr))
+        {
+            ErrorLog::HRESULT("IBLBaker: failed to create the quad vertex buffer.", hr);
+        }
+        hr = vbQuad->Map(0, nullptr, &pD);
+        if (FAILED(hr))
+        {
+            ErrorLog::HRESULT("IBLBaker: failed to map the quad vertex buffer.", hr);
+        }
         memcpy(pD, quadVerts, sizeof(quadVerts));
         vbQuad->Unmap(0, nullptr);
         D3D12_VERTEX_BUFFER_VIEW vbvQuad = { vbQuad->GetGPUVirtualAddress(), sizeof(quadVerts), 20 };
@@ -368,19 +488,35 @@ public:
         CD3DX12_ROOT_SIGNATURE_DESC computeRSDesc;
         computeRSDesc.Init(3, computeRootParams, 0, nullptr, D3D12_ROOT_SIGNATURE_FLAG_NONE);
         Microsoft::WRL::ComPtr<ID3DBlob> cRsBlob;
-        D3D12SerializeRootSignature(&computeRSDesc, D3D_ROOT_SIGNATURE_VERSION_1, &cRsBlob, nullptr);
-        device->CreateRootSignature(0, cRsBlob->GetBufferPointer(), cRsBlob->GetBufferSize(), IID_PPV_ARGS(&computeRootSig));
+        hr = D3D12SerializeRootSignature(&computeRSDesc, D3D_ROOT_SIGNATURE_VERSION_1, &cRsBlob, nullptr);
+        if (FAILED(hr))
+        {
+            ErrorLog::HRESULT("IBLBaker: failed to serialize the compute root signature.", hr);
+        }
+        hr = device->CreateRootSignature(0, cRsBlob->GetBufferPointer(), cRsBlob->GetBufferSize(), IID_PPV_ARGS(&computeRootSig));
+        if (FAILED(hr))
+        {
+            ErrorLog::HRESULT("IBLBaker: failed to create the compute root signature.", hr);
+        }
 
         auto csShader = ShaderCompiler::CompileFromFile(L"Shaders/Shaders_For_SH_Calculate.hlsl", L"CSMain", L"cs_6_6");
         D3D12_COMPUTE_PIPELINE_STATE_DESC computePsoDesc = {};
         computePsoDesc.pRootSignature = computeRootSig.Get();
         computePsoDesc.CS = CD3DX12_SHADER_BYTECODE(csShader->GetBufferPointer(), csShader->GetBufferSize());
         Microsoft::WRL::ComPtr<ID3D12PipelineState> computePSO;
-        device->CreateComputePipelineState(&computePsoDesc, IID_PPV_ARGS(&computePSO));
+        hr = device->CreateComputePipelineState(&computePsoDesc, IID_PPV_ARGS(&computePSO));
+        if (FAILED(hr))
+        {
+            ErrorLog::HRESULT("IBLBaker: failed to create the spherical-harmonics compute PSO.", hr);
+        }
 
         constexpr UINT64 shBufferByteSize = 256;
         D3D12_RESOURCE_DESC uavDesc = CD3DX12_RESOURCE_DESC::Buffer(shBufferByteSize, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
-        device->CreateCommittedResource(&defHeap, D3D12_HEAP_FLAG_NONE, &uavDesc, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, nullptr, IID_PPV_ARGS(&m_shBuffer));
+        hr = device->CreateCommittedResource(&defHeap, D3D12_HEAP_FLAG_NONE, &uavDesc, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, nullptr, IID_PPV_ARGS(&m_shBuffer));
+        if (FAILED(hr))
+        {
+            ErrorLog::HRESULT("IBLBaker: failed to create the spherical-harmonics buffer.", hr);
+        }
 
         cmdList->SetPipelineState(computePSO.Get());
         cmdList->SetComputeRootSignature(computeRootSig.Get());
@@ -398,14 +534,26 @@ public:
         D3D12_RESOURCE_BARRIER uavToCbv = CD3DX12_RESOURCE_BARRIER::Transition(m_shBuffer.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER);
         cmdList->ResourceBarrier(1, &uavToCbv);
 
-        cmdList->Close();
+        hr = cmdList->Close();
+        if (FAILED(hr))
+        {
+            ErrorLog::HRESULT("IBLBaker: failed to close the bake command list.", hr);
+        }
         ID3D12CommandList* lists[] = { cmdList.Get() };
         commandQueue->ExecuteCommandLists(1, lists);
-        commandQueue->Signal(fence.Get(), fenceValue);
+        hr = commandQueue->Signal(fence.Get(), fenceValue);
+        if (FAILED(hr))
+        {
+            ErrorLog::HRESULT("IBLBaker: failed to signal the bake fence.", hr);
+        }
 
         if (fence->GetCompletedValue() < fenceValue)
         {
-            fence->SetEventOnCompletion(fenceValue, fenceEvent);
+            hr = fence->SetEventOnCompletion(fenceValue, fenceEvent);
+            if (FAILED(hr))
+            {
+                ErrorLog::HRESULT("IBLBaker: failed to wait for the bake fence.", hr);
+            }
             WaitForSingleObject(fenceEvent, INFINITE);
         }
 

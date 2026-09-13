@@ -490,6 +490,7 @@ public:
 
         if (m_deviceContext == nullptr || m_deviceContext->GetDevice() == nullptr)
         {
+            ErrorLog::Write("RDG: CreateTexture called without a valid device context.");
             return handle;
         }
 
@@ -520,6 +521,9 @@ public:
             clearValue,
             &texture.transientResource))
         {
+            ErrorLog::Write(
+                std::string("RDG: failed to allocate texture resource: ") +
+                (name ? name : "TransientTexture"));
             return handle;
         }
 
@@ -579,6 +583,7 @@ public:
             m_deviceContext == nullptr ||
             m_deviceContext->GetDevice() == nullptr)
         {
+            ErrorLog::Write("RDG: CreateBuffer received an invalid size or device context.");
             return handle;
         }
 
@@ -602,6 +607,9 @@ public:
             nullptr,
             &buffer.transientResource))
         {
+            ErrorLog::Write(
+                std::string("RDG: failed to allocate buffer resource: ") +
+                (name ? name : "TransientBuffer"));
             return handle;
         }
 
@@ -743,12 +751,14 @@ public:
             !texture.IsValid() ||
             texture.index >= m_textures.size())
         {
+            ErrorLog::Write("RDG: CreateTextureSRV received an invalid device or texture handle.");
             return false;
         }
 
         ID3D12Resource* resource = m_textures[texture.index].resource;
         if (resource == nullptr)
         {
+            ErrorLog::Write("RDG: CreateTextureSRV received a texture with no resource.");
             return false;
         }
 
@@ -801,6 +811,7 @@ public:
             !texture.IsValid() ||
             texture.index >= m_textures.size())
         {
+            ErrorLog::Write("RDG: CreateTextureUAV received an invalid device or texture handle.");
             return false;
         }
 
@@ -808,6 +819,7 @@ public:
         if (rdgTexture.resource == nullptr ||
             (rdgTexture.desc.flags & D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS) == 0)
         {
+            ErrorLog::Write("RDG: CreateTextureUAV requires a valid UAV-capable texture resource.");
             return false;
         }
 
@@ -865,12 +877,14 @@ public:
             !buffer.IsValid() ||
             buffer.index >= m_buffers.size())
         {
+            ErrorLog::Write("RDG: CreateBufferSRV received an invalid device or buffer handle.");
             return false;
         }
 
         const RDGBuffer& rdgBuffer = m_buffers[buffer.index];
         if (rdgBuffer.resource == nullptr)
         {
+            ErrorLog::Write("RDG: CreateBufferSRV received a buffer with no resource.");
             return false;
         }
 
@@ -883,6 +897,7 @@ public:
         {
             if (rdgBuffer.desc.structureByteStride == 0)
             {
+                ErrorLog::Write("RDG: CreateBufferSRV requires a non-zero structure byte stride.");
                 return false;
             }
 
@@ -930,6 +945,7 @@ public:
             !buffer.IsValid() ||
             buffer.index >= m_buffers.size())
         {
+            ErrorLog::Write("RDG: CreateBufferUAV received an invalid device or buffer handle.");
             return false;
         }
 
@@ -937,6 +953,7 @@ public:
         if (rdgBuffer.resource == nullptr ||
             (rdgBuffer.desc.flags & D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS) == 0)
         {
+            ErrorLog::Write("RDG: CreateBufferUAV requires a valid UAV-capable buffer resource.");
             return false;
         }
 
@@ -949,6 +966,7 @@ public:
         {
             if (rdgBuffer.desc.structureByteStride == 0)
             {
+                ErrorLog::Write("RDG: CreateBufferUAV requires a non-zero structure byte stride.");
                 return false;
             }
 
@@ -992,6 +1010,7 @@ public:
             !texture.IsValid() ||
             texture.index >= m_textures.size())
         {
+            ErrorLog::Write("RDG: CreateTextureRTV received an invalid device or texture handle.");
             return false;
         }
 
@@ -999,6 +1018,7 @@ public:
         if (rdgTexture.resource == nullptr ||
             (rdgTexture.desc.flags & D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET) == 0)
         {
+            ErrorLog::Write("RDG: CreateTextureRTV requires a render-target-capable texture resource.");
             return false;
         }
 
@@ -1024,6 +1044,7 @@ public:
     {
         if (outHandle == nullptr)
         {
+            ErrorLog::Write("RDG: transient RTV allocation received a null output handle.");
             return false;
         }
 
@@ -1034,11 +1055,13 @@ public:
 
         if (!m_transientRTVHeap)
         {
+            ErrorLog::Write("RDG: failed to create the transient RTV descriptor heap.");
             return false;
         }
 
         if (m_transientRTVCount >= MaxTransientRTVDescriptors)
         {
+            ErrorLog::Write("RDG: transient RTV descriptor heap is exhausted.");
             return false;
         }
 
@@ -1062,6 +1085,7 @@ public:
             !texture.IsValid() ||
             texture.index >= m_textures.size())
         {
+            ErrorLog::Write("RDG: CreateTransientTextureRTV received an invalid device or texture handle.");
             return false;
         }
 
@@ -1069,17 +1093,20 @@ public:
         if (rdgTexture.resource == nullptr ||
             (rdgTexture.desc.flags & D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET) == 0)
         {
+            ErrorLog::Write("RDG: CreateTransientTextureRTV requires a render-target-capable texture resource.");
             return false;
         }
 
         D3D12_CPU_DESCRIPTOR_HANDLE rtvHandle = {};
         if (!AllocateTransientRTV(&rtvHandle))
         {
+            ErrorLog::Write("RDG: failed to allocate a transient RTV descriptor.");
             return false;
         }
 
         if (!CreateTextureRTV(texture, rtvHandle, overrideDesc))
         {
+            ErrorLog::Write("RDG: failed to create the transient texture RTV.");
             return false;
         }
 
@@ -1091,6 +1118,7 @@ public:
     {
         if (outHandle == nullptr)
         {
+            ErrorLog::Write("RDG: transient DSV allocation received a null output handle.");
             return false;
         }
 
@@ -1101,11 +1129,13 @@ public:
 
         if (!m_transientDSVHeap)
         {
+            ErrorLog::Write("RDG: failed to create the transient DSV descriptor heap.");
             return false;
         }
 
         if (m_transientDSVCount >= MaxTransientDSVDescriptors)
         {
+            ErrorLog::Write("RDG: transient DSV descriptor heap is exhausted.");
             return false;
         }
 
@@ -1146,6 +1176,7 @@ public:
             !texture.IsValid() ||
             texture.index >= m_textures.size())
         {
+            ErrorLog::Write("RDG: CreateTextureDSV received an invalid device or texture handle.");
             return false;
         }
 
@@ -1153,6 +1184,7 @@ public:
         if (rdgTexture.resource == nullptr ||
             (rdgTexture.desc.flags & D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL) == 0)
         {
+            ErrorLog::Write("RDG: CreateTextureDSV requires a depth-stencil-capable texture resource.");
             return false;
         }
 
@@ -1185,6 +1217,7 @@ public:
             !texture.IsValid() ||
             texture.index >= m_textures.size())
         {
+            ErrorLog::Write("RDG: CreateTransientTextureDSV received an invalid device or texture handle.");
             return false;
         }
 
@@ -1192,17 +1225,20 @@ public:
         if (rdgTexture.resource == nullptr ||
             (rdgTexture.desc.flags & D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL) == 0)
         {
+            ErrorLog::Write("RDG: CreateTransientTextureDSV requires a depth-stencil-capable texture resource.");
             return false;
         }
 
         D3D12_CPU_DESCRIPTOR_HANDLE dsvHandle = {};
         if (!AllocateTransientDSV(&dsvHandle))
         {
+            ErrorLog::Write("RDG: failed to allocate a transient DSV descriptor.");
             return false;
         }
 
         if (!CreateTextureDSV(texture, dsvHandle, overrideDesc))
         {
+            ErrorLog::Write("RDG: failed to create the transient texture DSV.");
             return false;
         }
 
@@ -1451,15 +1487,21 @@ private:
         if (outResource == nullptr || !m_transientResourceAllocator)
         {
             TraceLifecycleWarning("CreateTexture/CreateBuffer called without a transient resource allocator");
+            ErrorLog::Write("RDG: transient resource allocation callback is missing or output is null.");
             return false;
         }
 
-        return m_transientResourceAllocator(
+        const bool allocated = m_transientResourceAllocator(
             resourceDesc,
             initialState,
             finalState,
             clearValue,
             outResource);
+        if (!allocated)
+        {
+            ErrorLog::Write("RDG: transient resource allocator failed to create a resource.");
+        }
+        return allocated;
     }
 
     bool AllocateTransientSrvUavDescriptor(
@@ -1470,10 +1512,16 @@ private:
             outCpuHandle == nullptr ||
             !m_transientSrvUavDescriptorAllocator)
         {
+            ErrorLog::Write("RDG: transient SRV/UAV descriptor allocator is missing or output is null.");
             return false;
         }
 
-        return m_transientSrvUavDescriptorAllocator(outDescriptorIndex, outCpuHandle);
+        const bool allocated = m_transientSrvUavDescriptorAllocator(outDescriptorIndex, outCpuHandle);
+        if (!allocated)
+        {
+            ErrorLog::Write("RDG: transient SRV/UAV descriptor allocator failed or is exhausted.");
+        }
+        return allocated;
     }
 
     void CreateTransientRTVHeap()
@@ -1488,10 +1536,12 @@ private:
         heapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
         heapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
 
-        if (FAILED(m_deviceContext->GetDevice()->CreateDescriptorHeap(
+        HRESULT hr = m_deviceContext->GetDevice()->CreateDescriptorHeap(
             &heapDesc,
-            IID_PPV_ARGS(&m_transientRTVHeap))))
+            IID_PPV_ARGS(&m_transientRTVHeap));
+        if (FAILED(hr))
         {
+            ErrorLog::HRESULT("RDG: failed to create the transient RTV descriptor heap.", hr);
             m_transientRTVHeap.Reset();
             return;
         }
@@ -1512,10 +1562,12 @@ private:
         heapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_DSV;
         heapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
 
-        if (FAILED(m_deviceContext->GetDevice()->CreateDescriptorHeap(
+        HRESULT hr = m_deviceContext->GetDevice()->CreateDescriptorHeap(
             &heapDesc,
-            IID_PPV_ARGS(&m_transientDSVHeap))))
+            IID_PPV_ARGS(&m_transientDSVHeap));
+        if (FAILED(hr))
         {
+            ErrorLog::HRESULT("RDG: failed to create the transient DSV descriptor heap.", hr);
             m_transientDSVHeap.Reset();
             return;
         }
@@ -1762,6 +1814,8 @@ private:
 #if defined(_DEBUG)
         OutputDebugStringA("[RDG][Compile] Dependency cycle detected, falling back to AddPass order.\n");
 #endif
+        ErrorLog::Write(
+            "[RDG][Compile] Dependency cycle detected; falling back to AddPass order.");
 
         BuildParallelPassBatches();
         return false;
@@ -2465,12 +2519,13 @@ private:
 
     void TraceLifecycleWarning(const char* message) const
     {
-    #if defined(_DEBUG)
         std::ostringstream oss;
         oss << "[RDG][Lifecycle] Graph '" << m_debugName
             << "': " << (message ? message : "Unknown lifecycle warning")
             << "\n";
+        ErrorLog::Write(oss.str());
 
+    #if defined(_DEBUG)
         OutputDebugStringA(oss.str().c_str());
     #endif
     }

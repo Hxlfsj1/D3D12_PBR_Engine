@@ -23,18 +23,37 @@ public:
         const std::vector<std::wstring>& defines = {})
     {
         Microsoft::WRL::ComPtr<IDxcUtils> pUtils;
-        DxcCreateInstance(CLSID_DxcUtils, IID_PPV_ARGS(&pUtils));
-
-        Microsoft::WRL::ComPtr<IDxcCompiler3> pCompiler;
-        DxcCreateInstance(CLSID_DxcCompiler, IID_PPV_ARGS(&pCompiler));
-
-        Microsoft::WRL::ComPtr<IDxcIncludeHandler> pIncludeHandler;
-        pUtils->CreateDefaultIncludeHandler(&pIncludeHandler);
-
-        Microsoft::WRL::ComPtr<IDxcBlobEncoding> pSource;
-        HRESULT hr = pUtils->LoadFile(fileName.c_str(), nullptr, &pSource);
+        HRESULT hr = DxcCreateInstance(CLSID_DxcUtils, IID_PPV_ARGS(&pUtils));
         if (FAILED(hr))
         {
+            ErrorLog::HRESULT("ShaderCompiler: DxcCreateInstance(CLSID_DxcUtils) failed.", hr);
+            return nullptr;
+        }
+
+        Microsoft::WRL::ComPtr<IDxcCompiler3> pCompiler;
+        hr = DxcCreateInstance(CLSID_DxcCompiler, IID_PPV_ARGS(&pCompiler));
+        if (FAILED(hr))
+        {
+            ErrorLog::HRESULT("ShaderCompiler: DxcCreateInstance(CLSID_DxcCompiler) failed.", hr);
+            return nullptr;
+        }
+
+        Microsoft::WRL::ComPtr<IDxcIncludeHandler> pIncludeHandler;
+        hr = pUtils->CreateDefaultIncludeHandler(&pIncludeHandler);
+        if (FAILED(hr))
+        {
+            ErrorLog::HRESULT("ShaderCompiler: failed to create the include handler.", hr);
+            return nullptr;
+        }
+
+        Microsoft::WRL::ComPtr<IDxcBlobEncoding> pSource;
+        hr = pUtils->LoadFile(fileName.c_str(), nullptr, &pSource);
+        if (FAILED(hr))
+        {
+            ErrorLog::HRESULT(
+                std::string("ShaderCompiler: failed to load shader file: ") +
+                ErrorLog::Narrow(fileName),
+                hr);
             MessageBoxA(NULL, "Shaders not found!", "Error", MB_OK | MB_ICONERROR);
             exit(1);
         }
@@ -69,16 +88,28 @@ public:
         sourceBuffer.Encoding = DXC_CP_ACP;
 
         Microsoft::WRL::ComPtr<IDxcResult> pResults;
-        pCompiler->Compile(
+        hr = pCompiler->Compile(
             &sourceBuffer,
             arguments.data(),
             (UINT32)arguments.size(),
             pIncludeHandler.Get(),
             IID_PPV_ARGS(&pResults)
         );
+        if (FAILED(hr))
+        {
+            ErrorLog::HRESULT(
+                std::string("ShaderCompiler: DXC Compile failed for: ") +
+                ErrorLog::Narrow(fileName),
+                hr);
+            return nullptr;
+        }
 
         Microsoft::WRL::ComPtr<IDxcBlobUtf8> pErrors;
-        pResults->GetOutput(DXC_OUT_ERRORS, IID_PPV_ARGS(&pErrors), nullptr);
+        hr = pResults->GetOutput(DXC_OUT_ERRORS, IID_PPV_ARGS(&pErrors), nullptr);
+        if (FAILED(hr))
+        {
+            ErrorLog::HRESULT("ShaderCompiler: failed to retrieve DXC diagnostics.", hr);
+        }
         if (pErrors != nullptr && pErrors->GetStringLength() > 0)
         {
             OutputDebugStringA(pErrors->GetStringPointer());
@@ -87,7 +118,12 @@ public:
         }
 
         Microsoft::WRL::ComPtr<IDxcBlob> pShader;
-        pResults->GetOutput(DXC_OUT_OBJECT, IID_PPV_ARGS(&pShader), nullptr);
+        hr = pResults->GetOutput(DXC_OUT_OBJECT, IID_PPV_ARGS(&pShader), nullptr);
+        if (FAILED(hr))
+        {
+            ErrorLog::HRESULT("ShaderCompiler: failed to retrieve compiled shader bytecode.", hr);
+            return nullptr;
+        }
 
         return pShader;
     }

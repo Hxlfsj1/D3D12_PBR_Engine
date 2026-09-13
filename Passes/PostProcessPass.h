@@ -71,6 +71,7 @@ public:
             height <= 0 ||
             !inputTexture.IsValid())
         {
+            ErrorLog::Write("PostProcessPass: invalid device, pipeline, dimensions, or input texture.");
             return {};
         }
 
@@ -89,6 +90,7 @@ public:
             "PostProcess.ToneMappedColor");
         if (!outputTexture.IsValid())
         {
+            ErrorLog::Write("PostProcessPass: failed to create the tone-mapped output texture.");
             return {};
         }
 
@@ -96,6 +98,7 @@ public:
         RDGTextureRTVHandle outputRtv = graph.CreateTextureRTVView(outputTexture);
         if (!inputSrv.IsValid() || !outputRtv.IsValid())
         {
+            ErrorLog::Write("PostProcessPass: failed to create the input SRV or output RTV.");
             return {};
         }
 
@@ -158,6 +161,7 @@ public:
         RDGTextureRTVHandle backBufferRtv = graph.CreateTextureRTVView(backBuffer);
         if (!inputSrv.IsValid() || !backBufferRtv.IsValid())
         {
+            ErrorLog::Write("PostProcessPass: failed to create the post-process input SRV or back-buffer RTV.");
             return {};
         }
 

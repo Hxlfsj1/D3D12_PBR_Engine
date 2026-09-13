@@ -109,6 +109,7 @@ public:
             !input.hbaoBlurred.IsValid() ||
             !input.shadowMap.IsValid())
         {
+            ErrorLog::Write("DeferredLightingPass: one or more lighting inputs are invalid.");
             return {};
         }
 
@@ -150,6 +151,7 @@ public:
             !shadowMapSrv.IsValid() ||
             !sceneColorRtv.IsValid())
         {
+            ErrorLog::Write("DeferredLightingPass: failed to create one or more lighting resource views.");
             return {};
         }
 

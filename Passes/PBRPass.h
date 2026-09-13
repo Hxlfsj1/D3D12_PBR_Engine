@@ -103,6 +103,7 @@ public:
             !depthDsv.IsValid() ||
             !shadowMapSrv.IsValid())
         {
+            ErrorLog::Write("PBRPass: failed to create the required scene, depth, or shadow views.");
             return {};
         }
 
@@ -174,6 +175,7 @@ public:
         RDGTextureDSVHandle depthDsv = graph.CreateTextureDSVView(depth);
         if (!depthDsv.IsValid())
         {
+            ErrorLog::Write("PBRPass: failed to create the Z-prepass depth view.");
             return {};
         }
 
@@ -357,6 +359,7 @@ public:
             !shadowMapSrv.IsValid() ||
             !sceneColorRtv.IsValid())
         {
+            ErrorLog::Write("PBRPass: failed to create the transparent-pass resource views.");
             return {};
         }
 
@@ -446,6 +449,7 @@ private:
     {
         if (deviceContext == nullptr || deviceContext->GetDepthStencilBuffer() == nullptr)
         {
+            ErrorLog::Write("PBRPass: scene depth is unavailable because the device or depth buffer is null.");
             return {};
         }
 
@@ -456,6 +460,7 @@ private:
 
         if (sceneWidth == 0 || sceneHeight == 0)
         {
+            ErrorLog::Write("PBRPass: scene depth cannot be created with a zero-sized viewport.");
             return {};
         }
 

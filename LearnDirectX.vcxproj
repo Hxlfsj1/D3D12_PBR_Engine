@@ -151,6 +151,7 @@
     <ClInclude Include="Resources\Settings_Manager.h" />
     <ClInclude Include="Logic\Camera.h" />
     <ClInclude Include="Core\D3D12App.h" />
+    <ClInclude Include="Core\ErrorLog.h" />
     <ClInclude Include="Passes\DeferredLightingPass.h" />
     <ClInclude Include="Passes\GbufferPass.h" />
     <ClInclude Include="Passes\HBAOPass.h" />

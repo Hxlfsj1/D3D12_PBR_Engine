@@ -202,6 +202,7 @@ public:
             !depthSrv.IsValid() ||
             !historyRtv.IsValid())
         {
+            ErrorLog::Write("TAAPass: failed to create one or more temporal resource views.");
             return {};
         }
 

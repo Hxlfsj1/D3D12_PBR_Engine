@@ -135,6 +135,7 @@ public:
             outputWidth <= 0 ||
             outputHeight <= 0)
         {
+            ErrorLog::Write("TSRPass: invalid device, pipeline, dimensions, or temporal input.");
             return {};
         }
 
@@ -173,6 +174,7 @@ public:
             !depthSrv.IsValid() ||
             !historyRtv.IsValid())
         {
+            ErrorLog::Write("TSRPass: failed to create one or more temporal resource views.");
             return {};
         }
 

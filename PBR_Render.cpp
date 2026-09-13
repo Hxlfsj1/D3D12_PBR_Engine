@@ -55,6 +55,7 @@ int WINAPI WinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance, _
 
     if (!app.Initialize(nShowCmd))
     {
+        ErrorLog::Write("Application: initialization failed; WinMain is returning failure.");
         return 1;
     }
 
@@ -119,12 +120,14 @@ bool D3D12App::Initialize(int nShowCmd)
     // Ask the system for a window
     if (!InitializeWindow(nShowCmd))
     {
+        ErrorLog::Write("Application: window initialization failed.");
         return false;
     }
 
     // "Fuel" the engine
     if (!InitD3D())
     {
+        ErrorLog::Write("Application: Direct3D initialization failed.");
         return false;
     }
 
@@ -202,7 +205,11 @@ LRESULT D3D12App::MsgProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 bool D3D12App::InitD3D()
 {
     // Bootstrap Hardware : Initialize DXGI infrastructure, Device, Command Queue, and Swap Chain
-    if (!m_deviceContext.Initialize(hwnd, Width, Height, frameBufferCount)) return false;
+    if (!m_deviceContext.Initialize(hwnd, Width, Height, frameBufferCount))
+    {
+        ErrorLog::Write("Application: RenderDevice initialization failed.");
+        return false;
+    }
 
     // DLSS is an explicit mode. TSR and the other AA modes never initialize NGX.
     const bool dlssRequested = m_antiAliasingMode == AntiAliasingMode::DLSS;
@@ -274,6 +281,8 @@ bool D3D12App::InitD3D()
 
         if (!dlssConfigured)
         {
+            ErrorLog::Write(
+                "Application: DLSS was requested but NGX initialization, capability detection, or feature configuration failed.");
             OutputDebugStringA(
                 "Error: DLSS was requested but NGX initialization, capability detection, or feature configuration failed; initialization aborted.\n");
             return false;
@@ -286,6 +295,7 @@ bool D3D12App::InitD3D()
          tsrUpscaleFactor < 1.0f ||
          tsrUpscaleFactor > 4.0f))
     {
+        ErrorLog::Write("Application: TSR upscale factor is outside the supported [1.0, 4.0] range.");
         OutputDebugStringA(
             "Error: TSR upscale factor must be finite and within [1.0, 4.0]; initialization aborted.\n");
         return false;
@@ -307,26 +317,58 @@ bool D3D12App::InitD3D()
     frameIndex = m_deviceContext.GetSwapChain()->GetCurrentBackBufferIndex();
 
     // Compile Pipeline States: Precompute Root Signatures and PSOs for both Graphics and Compute pipelines
-    if (!m_pipelineManager.Initialize(&m_deviceContext)) return false;
+    if (!m_pipelineManager.Initialize(&m_deviceContext))
+    {
+        ErrorLog::Write("Application: main pipeline initialization failed.");
+        return false;
+    }
     if (m_antiAliasingMode == AntiAliasingMode::TAA &&
-        !m_pipelineManager.InitializeTAA(&m_deviceContext)) return false;
+        !m_pipelineManager.InitializeTAA(&m_deviceContext))
+    {
+        ErrorLog::Write("Application: TAA pipeline initialization failed.");
+        return false;
+    }
     if (m_antiAliasingMode == AntiAliasingMode::TSR &&
-        !m_pipelineManager.InitializeTSR(&m_deviceContext)) return false;
+        !m_pipelineManager.InitializeTSR(&m_deviceContext))
+    {
+        ErrorLog::Write("Application: TSR pipeline initialization failed.");
+        return false;
+    }
     if (m_antiAliasingMode == AntiAliasingMode::SMAA &&
-        !m_pipelineManager.InitializeSMAA(&m_deviceContext)) return false;
+        !m_pipelineManager.InitializeSMAA(&m_deviceContext))
+    {
+        ErrorLog::Write("Application: SMAA pipeline initialization failed.");
+        return false;
+    }
 
     // Stream Assets & Build IBL: Load 3D models and HDR textures into VRAM and bake IBL components
-    if (!m_resourceManager.LoadAssets(&m_deviceContext, SettingsManager::LoadSceneFromJson("Settings/Scene.json"), frameBufferCount)) return false;
+    if (!m_resourceManager.LoadAssets(&m_deviceContext, SettingsManager::LoadSceneFromJson("Settings/Scene.json"), frameBufferCount))
+    {
+        ErrorLog::Write("Application: resource loading failed.");
+        return false;
+    }
     m_resourceManager.BuildGlobalMaterialPool(&m_deviceContext);
     currentHDRPath = SettingsManager::GetSkyboxPathFromJson();
-    if (!m_resourceManager.InitIBL(&m_deviceContext, currentHDRPath.c_str())) return false;
+    if (!m_resourceManager.InitIBL(&m_deviceContext, currentHDRPath.c_str()))
+    {
+        ErrorLog::Write("Application: image-based-lighting initialization failed.");
+        return false;
+    }
 
-    if (!m_resourceManager.InitShadowResources(&m_deviceContext)) return false;
+    if (!m_resourceManager.InitShadowResources(&m_deviceContext))
+    {
+        ErrorLog::Write("Application: shadow resource initialization failed.");
+        return false;
+    }
 
     if (!m_resourceManager.InitPostProcess(
         &m_deviceContext,
         SceneWidth,
-        SceneHeight)) return false;
+        SceneHeight))
+    {
+        ErrorLog::Write("Application: post-process resource initialization failed.");
+        return false;
+    }
 
     const bool temporalReconstructionRequested =
         m_antiAliasingMode == AntiAliasingMode::TAA ||
@@ -334,18 +376,21 @@ bool D3D12App::InitD3D()
     if (temporalReconstructionRequested &&
         !m_resourceManager.InitTemporalHistoryResources(&m_deviceContext, Width, Height))
     {
+        ErrorLog::Write("Application: temporal history resource initialization failed.");
         return false;
     }
 
     if (dlssConfigured &&
         !m_resourceManager.InitDLSSResources(&m_deviceContext, Width, Height))
     {
+        ErrorLog::Write("Application: DLSS resource initialization failed.");
         return false;
     }
 
     if (m_antiAliasingMode == AntiAliasingMode::SMAA &&
         !m_resourceManager.InitializeSMAALookupTextures(&m_deviceContext))
     {
+        ErrorLog::Write("Application: SMAA lookup texture initialization failed.");
         return false;
     }
 
@@ -690,22 +735,67 @@ void D3D12App::Update()
     }
 }
 
-void D3D12App::BeginFrame()
+// Log a per-frame HRESULT failure; if the D3D12 device has been removed,
+// report the underlying removal reason and stop the main loop cleanly
+void D3D12App::ReportFrameError(const char* operation, HRESULT hr)
+{
+    ErrorLog::HRESULT(operation, hr);
+
+    ID3D12Device* device = m_deviceContext.GetDevice();
+    if (device == nullptr)
+    {
+        return;
+    }
+
+    // GetDeviceRemovedReason returns S_OK while the device is still alive
+    const HRESULT removedReason = device->GetDeviceRemovedReason();
+    if (removedReason != S_OK)
+    {
+        ErrorLog::HRESULT(
+            "Application: the D3D12 device has been removed; shutting down. GetDeviceRemovedReason:",
+            removedReason);
+        Running = false;
+        PostQuitMessage(0);
+    }
+}
+
+bool D3D12App::BeginFrame()
 {
     m_resourceManager.ResetTransientSrvUavDescriptors(frameIndex);
     m_resourceManager.BeginRDGFrame(&m_deviceContext, frameIndex);
 
     // Reset the command sequence from the previous frame
-    m_deviceContext.GetCommandAllocator(frameIndex)->Reset();
-    m_deviceContext.GetCommandList()->Reset(m_deviceContext.GetCommandAllocator(frameIndex), m_pipelineManager.GetPBR_PSO());
+    HRESULT hr = m_deviceContext.GetCommandAllocator(frameIndex)->Reset();
+    if (FAILED(hr))
+    {
+        ReportFrameError("Application: failed to reset the frame command allocator.", hr);
+        return false;
+    }
+    hr = m_deviceContext.GetCommandList()->Reset(
+        m_deviceContext.GetCommandAllocator(frameIndex),
+        m_pipelineManager.GetPBR_PSO());
+    if (FAILED(hr))
+    {
+        ReportFrameError("Application: failed to reset the frame command list.", hr);
+        return false;
+    }
+
+    return true;
 }
 
-void D3D12App::EndFrame()
+bool D3D12App::EndFrame()
 {
     // Close the Command List to finalize recording, no further commands can be added until the next Reset
     // CPU recording is complete, but the GPU has yet to begin execution; therefore
     // A Fence must be signaled to track GPU progress, ensuring the CPU waits before reusing this memory in the NEXT frame
-    m_deviceContext.GetCommandList()->Close();
+    HRESULT hr = m_deviceContext.GetCommandList()->Close();
+    if (FAILED(hr))
+    {
+        ReportFrameError("Application: failed to close the frame command list.", hr);
+        return false;
+    }
+
+    return true;
 }
 
 void D3D12App::Render()
@@ -716,7 +806,11 @@ void D3D12App::Render()
     const bool enablePostProcessSharpen =
         m_antiAliasingMode == AntiAliasingMode::TAA ||
         m_antiAliasingMode == AntiAliasingMode::TSR;
-    BeginFrame();
+    if (!BeginFrame())
+    {
+        // The command infrastructure is unusable this frame (e.g. the device was removed)
+        return;
+    }
 
     if (m_antiAliasingMode == AntiAliasingMode::DLSS)
     {
@@ -1786,16 +1880,30 @@ void D3D12App::Render()
         }
     }
 
-    EndFrame();
+    if (!EndFrame())
+    {
+        // The command list could not be finalized; skip submission and presentation
+        return;
+    }
 
     ID3D12CommandList* lists[] = { m_deviceContext.GetCommandList() };
     // Submit recorded rendering commands to the GPU for execution
     m_deviceContext.GetCommandQueue()->ExecuteCommandLists(1, lists);
     // Insert a signal into the queue to track GPU progress
-    m_deviceContext.GetCommandQueue()->Signal(m_deviceContext.GetFence(frameIndex), ++m_deviceContext.GetFenceValue(frameIndex));
+    HRESULT hr = m_deviceContext.GetCommandQueue()->Signal(
+        m_deviceContext.GetFence(frameIndex),
+        ++m_deviceContext.GetFenceValue(frameIndex));
+    if (FAILED(hr))
+    {
+        ReportFrameError("Application: failed to signal the frame fence.", hr);
+    }
 
     // Flip the back buffer to the front screen
-    m_deviceContext.GetSwapChain()->Present(0, 0);
+    hr = m_deviceContext.GetSwapChain()->Present(0, 0);
+    if (FAILED(hr))
+    {
+        ReportFrameError("Application: swap-chain Present failed.", hr);
+    }
 }
 
 // Track GPU progress, prevent data updates until execution is complete, provide an 'alarm' mechanism for the CPU (via Fence Events)

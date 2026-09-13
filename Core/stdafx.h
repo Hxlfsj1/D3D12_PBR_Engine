@@ -7,7 +7,10 @@
 #include <windows.h>
 #include <windowsx.h>
 
+#include "ErrorLog.h"
+
 #include <d3d12.h>
+#include <d3d12sdklayers.h>
 #include <dxgi1_4.h>
 #include <dxcapi.h>
 #include <DirectXMath.h>

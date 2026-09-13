@@ -82,6 +82,7 @@ public:
 
         if (FAILED(hr))
         {
+            ErrorLog::HRESULT("ResourceManager: failed to create the main descriptor heap.", hr);
             return false;
         }
 
@@ -181,8 +182,33 @@ public:
             auto prop = CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_UPLOAD);
             auto buf = CD3DX12_RESOURCE_DESC::Buffer(4096 * 4096);
 
-            dc->GetDevice()->CreateCommittedResource(&prop, D3D12_HEAP_FLAG_NONE, &buf, D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&constantBufferUploadHeap[i]));
-            constantBufferUploadHeap[i]->Map(0, nullptr, reinterpret_cast<void**>(&cbvGPUAddress[i]));
+            hr = dc->GetDevice()->CreateCommittedResource(
+                &prop,
+                D3D12_HEAP_FLAG_NONE,
+                &buf,
+                D3D12_RESOURCE_STATE_GENERIC_READ,
+                nullptr,
+                IID_PPV_ARGS(&constantBufferUploadHeap[i]));
+            if (FAILED(hr))
+            {
+                ErrorLog::HRESULT(
+                    "ResourceManager: failed to create constant-buffer upload heap for frame " +
+                    std::to_string(i) + '.',
+                    hr);
+            }
+            {
+                hr = constantBufferUploadHeap[i]->Map(
+                    0,
+                    nullptr,
+                    reinterpret_cast<void**>(&cbvGPUAddress[i]));
+                if (FAILED(hr))
+                {
+                    ErrorLog::HRESULT(
+                        "ResourceManager: failed to map constant-buffer upload heap for frame " +
+                        std::to_string(i) + '.',
+                        hr);
+                }
+            }
         }
 
         float cubeVerts[] =
@@ -198,27 +224,59 @@ public:
         auto upHeap = CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_UPLOAD);
         auto vDescC = CD3DX12_RESOURCE_DESC::Buffer(sizeof(cubeVerts));
 
-        dc->GetDevice()->CreateCommittedResource(&upHeap, D3D12_HEAP_FLAG_NONE, &vDescC, D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&skyboxVB));
+        hr = dc->GetDevice()->CreateCommittedResource(
+            &upHeap,
+            D3D12_HEAP_FLAG_NONE,
+            &vDescC,
+            D3D12_RESOURCE_STATE_GENERIC_READ,
+            nullptr,
+            IID_PPV_ARGS(&skyboxVB));
+        if (FAILED(hr))
+        {
+            ErrorLog::HRESULT("ResourceManager: failed to create the skybox vertex buffer.", hr);
+        }
 
         void* pD;
-        skyboxVB->Map(0, nullptr, &pD);
-        memcpy(pD, cubeVerts, sizeof(cubeVerts));
-        skyboxVB->Unmap(0, nullptr);
+        {
+            hr = skyboxVB->Map(0, nullptr, &pD);
+            if (FAILED(hr))
+            {
+                ErrorLog::HRESULT("ResourceManager: failed to map the skybox vertex buffer.", hr);
+            }
+            memcpy(pD, cubeVerts, sizeof(cubeVerts));
+            skyboxVB->Unmap(0, nullptr);
+        }
 
         skyboxVBV = { skyboxVB->GetGPUVirtualAddress(), sizeof(cubeVerts), 12 };
 
-        dc->GetCommandList()->Close();
+        hr = dc->GetCommandList()->Close();
+        if (FAILED(hr))
+        {
+            ErrorLog::HRESULT("ResourceManager: failed to close the initial upload command list.", hr);
+        }
 
         ID3D12CommandList* lists[] = { dc->GetCommandList() };
         dc->GetCommandQueue()->ExecuteCommandLists(1, lists);
 
         int frameIndex = dc->GetSwapChain()->GetCurrentBackBufferIndex();
         dc->GetFenceValue(frameIndex)++;
-        dc->GetCommandQueue()->Signal(dc->GetFence(frameIndex), dc->GetFenceValue(frameIndex));
+        hr = dc->GetCommandQueue()->Signal(
+            dc->GetFence(frameIndex),
+            dc->GetFenceValue(frameIndex));
+        if (FAILED(hr))
+        {
+            ErrorLog::HRESULT("ResourceManager: failed to signal the initial upload fence.", hr);
+        }
 
         if (dc->GetFence(frameIndex)->GetCompletedValue() < dc->GetFenceValue(frameIndex))
         {
-            dc->GetFence(frameIndex)->SetEventOnCompletion(dc->GetFenceValue(frameIndex), dc->GetFenceEvent());
+            hr = dc->GetFence(frameIndex)->SetEventOnCompletion(
+                dc->GetFenceValue(frameIndex),
+                dc->GetFenceEvent());
+            if (FAILED(hr))
+            {
+                ErrorLog::HRESULT("ResourceManager: failed to wait for the initial upload fence.", hr);
+            }
             WaitForSingleObject(dc->GetFenceEvent(), INFINITE);
         }
 
@@ -271,10 +329,30 @@ public:
 
         auto heapPropsDefault = CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_DEFAULT);
         auto bufferDesc = CD3DX12_RESOURCE_DESC::Buffer(bufferSize);
-        dc->GetDevice()->CreateCommittedResource(&heapPropsDefault, D3D12_HEAP_FLAG_NONE, &bufferDesc, D3D12_RESOURCE_STATE_COMMON, nullptr, IID_PPV_ARGS(&m_materialBuffer));
+        HRESULT hr = dc->GetDevice()->CreateCommittedResource(
+            &heapPropsDefault,
+            D3D12_HEAP_FLAG_NONE,
+            &bufferDesc,
+            D3D12_RESOURCE_STATE_COMMON,
+            nullptr,
+            IID_PPV_ARGS(&m_materialBuffer));
+        if (FAILED(hr))
+        {
+            ErrorLog::HRESULT("ResourceManager: failed to create the material buffer.", hr);
+        }
 
         auto heapPropsUpload = CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_UPLOAD);
-        dc->GetDevice()->CreateCommittedResource(&heapPropsUpload, D3D12_HEAP_FLAG_NONE, &bufferDesc, D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&m_materialUploadBuffer));
+        hr = dc->GetDevice()->CreateCommittedResource(
+            &heapPropsUpload,
+            D3D12_HEAP_FLAG_NONE,
+            &bufferDesc,
+            D3D12_RESOURCE_STATE_GENERIC_READ,
+            nullptr,
+            IID_PPV_ARGS(&m_materialUploadBuffer));
+        if (FAILED(hr))
+        {
+            ErrorLog::HRESULT("ResourceManager: failed to create the material upload buffer.", hr);
+        }
 
         D3D12_SUBRESOURCE_DATA subData = {};
         subData.pData = globalMaterials.data();
@@ -284,22 +362,41 @@ public:
         auto transition1 = CD3DX12_RESOURCE_BARRIER::Transition(m_materialBuffer.Get(), D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_COPY_DEST);
         cmdList->ResourceBarrier(1, &transition1);
 
-        UpdateSubresources(cmdList, m_materialBuffer.Get(), m_materialUploadBuffer.Get(), 0, 0, 1, &subData);
+        if (UpdateSubresources(cmdList, m_materialBuffer.Get(), m_materialUploadBuffer.Get(), 0, 0, 1, &subData) == 0)
+        {
+            ErrorLog::Write("ResourceManager: failed to upload the global material buffer.");
+        }
 
         auto transition2 = CD3DX12_RESOURCE_BARRIER::Transition(m_materialBuffer.Get(), D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
         cmdList->ResourceBarrier(1, &transition2);
 
-        cmdList->Close();
+        hr = cmdList->Close();
+        if (FAILED(hr))
+        {
+            ErrorLog::HRESULT("ResourceManager: failed to close the material upload command list.", hr);
+        }
         ID3D12CommandList* lists[] = { cmdList };
         dc->GetCommandQueue()->ExecuteCommandLists(1, lists);
 
         int frameIndex = dc->GetSwapChain()->GetCurrentBackBufferIndex();
         dc->GetFenceValue(frameIndex)++;
-        dc->GetCommandQueue()->Signal(dc->GetFence(frameIndex), dc->GetFenceValue(frameIndex));
+        hr = dc->GetCommandQueue()->Signal(
+            dc->GetFence(frameIndex),
+            dc->GetFenceValue(frameIndex));
+        if (FAILED(hr))
+        {
+            ErrorLog::HRESULT("ResourceManager: failed to signal the material upload fence.", hr);
+        }
 
         if (dc->GetFence(frameIndex)->GetCompletedValue() < dc->GetFenceValue(frameIndex))
         {
-            dc->GetFence(frameIndex)->SetEventOnCompletion(dc->GetFenceValue(frameIndex), dc->GetFenceEvent());
+            hr = dc->GetFence(frameIndex)->SetEventOnCompletion(
+                dc->GetFenceValue(frameIndex),
+                dc->GetFenceEvent());
+            if (FAILED(hr))
+            {
+                ErrorLog::HRESULT("ResourceManager: failed to wait for the material upload fence.", hr);
+            }
             WaitForSingleObject(dc->GetFenceEvent(), INFINITE);
         }
     }
@@ -316,6 +413,10 @@ public:
 
         if (!data)
         {
+            ErrorLog::Write(
+                std::string("ResourceManager: failed to load HDRI: ") +
+                (currentHDRPath != nullptr ? currentHDRPath : "<null>") +
+                "\nReason: " + stbi_failure_reason());
             return false;
         }
 
@@ -329,6 +430,7 @@ public:
 
         if (!texEnvCube || !texPrefilterCube || !texBRDFLUT || !shBuffer)
         {
+            ErrorLog::Write("ResourceManager: IBL baker did not produce all required outputs.");
             stbi_image_free(data);
             return false;
         }
@@ -376,20 +478,43 @@ public:
         D3D12_RESOURCE_DESC texDesc = CD3DX12_RESOURCE_DESC::Tex2D(DXGI_FORMAT_R8G8B8A8_UNORM, 1, 1, 1, 1);
         auto defHeap = CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_DEFAULT);
 
-        device->CreateCommittedResource(&defHeap, D3D12_HEAP_FLAG_NONE, &texDesc, D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS(&outTex));
+        HRESULT hr = device->CreateCommittedResource(
+            &defHeap,
+            D3D12_HEAP_FLAG_NONE,
+            &texDesc,
+            D3D12_RESOURCE_STATE_COPY_DEST,
+            nullptr,
+            IID_PPV_ARGS(&outTex));
+        if (FAILED(hr))
+        {
+            ErrorLog::HRESULT("ResourceManager: failed to create a dummy texture.", hr);
+        }
 
         UINT64 uploadSize = 0;
         device->GetCopyableFootprints(&texDesc, 0, 1, 0, nullptr, nullptr, nullptr, &uploadSize);
 
         auto upHeap = CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_UPLOAD);
         auto upDesc = CD3DX12_RESOURCE_DESC::Buffer(uploadSize);
-        device->CreateCommittedResource(&upHeap, D3D12_HEAP_FLAG_NONE, &upDesc, D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&outUpload));
+        hr = device->CreateCommittedResource(
+            &upHeap,
+            D3D12_HEAP_FLAG_NONE,
+            &upDesc,
+            D3D12_RESOURCE_STATE_GENERIC_READ,
+            nullptr,
+            IID_PPV_ARGS(&outUpload));
+        if (FAILED(hr))
+        {
+            ErrorLog::HRESULT("ResourceManager: failed to create a dummy texture upload buffer.", hr);
+        }
 
         D3D12_SUBRESOURCE_DATA subData = {};
         subData.pData = colorData;
         subData.RowPitch = 4;
         subData.SlicePitch = 4;
-        UpdateSubresources(cmdList, outTex.Get(), outUpload.Get(), 0, 0, 1, &subData);
+        if (UpdateSubresources(cmdList, outTex.Get(), outUpload.Get(), 0, 0, 1, &subData) == 0)
+        {
+            ErrorLog::Write("ResourceManager: failed to upload a dummy texture.");
+        }
 
         auto barrier = CD3DX12_RESOURCE_BARRIER::Transition(outTex.Get(), D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
         cmdList->ResourceBarrier(1, &barrier);
@@ -419,6 +544,7 @@ public:
             &optClear,
             IID_PPV_ARGS(&m_shadowMap))))
         {
+            ErrorLog::Write("ResourceManager: failed to create the shadow-map resource.");
             return false;
         }
 
@@ -452,6 +578,7 @@ public:
             &clearVal,
             IID_PPV_ARGS(&m_offscreenRT))))
         {
+            ErrorLog::Write("ResourceManager: failed to create the post-process render target.");
             return false;
         }
 
@@ -469,6 +596,7 @@ public:
             nullptr,
             IID_PPV_ARGS(&m_transparentSceneColorCopy))))
         {
+            ErrorLog::Write("ResourceManager: failed to create the transparent scene-color copy.");
             return false;
         }
 
@@ -492,6 +620,9 @@ public:
                 &hbaoHistoryClearValue,
                 IID_PPV_ARGS(&m_hbaoHistoryRT[i]))))
             {
+                ErrorLog::Write(
+                    "ResourceManager: failed to create HBAO history render target " +
+                    std::to_string(i) + '.');
                 return false;
             }
         }
@@ -513,6 +644,9 @@ public:
                 nullptr,
                 IID_PPV_ARGS(&m_hbaoDepthHistoryRT[i]))))
             {
+                ErrorLog::Write(
+                    "ResourceManager: failed to create HBAO depth history resource " +
+                    std::to_string(i) + '.');
                 return false;
             }
 
@@ -524,6 +658,9 @@ public:
                 nullptr,
                 IID_PPV_ARGS(&m_hbaoNormalHistoryRT[i]))))
             {
+                ErrorLog::Write(
+                    "ResourceManager: failed to create HBAO normal history resource " +
+                    std::to_string(i) + '.');
                 return false;
             }
         }
@@ -535,6 +672,7 @@ public:
     {
         if (dc == nullptr || dc->GetDevice() == nullptr || width <= 0 || height <= 0)
         {
+            ErrorLog::Write("ResourceManager: invalid dimensions or device for temporal history resources.");
             return false;
         }
 
@@ -561,6 +699,9 @@ public:
                 &clearValue,
                 IID_PPV_ARGS(&m_temporalHistoryRT[index]))))
             {
+                ErrorLog::Write(
+                    "ResourceManager: failed to create temporal history resource " +
+                    std::to_string(index) + '.');
                 return false;
             }
         }
@@ -573,6 +714,7 @@ public:
         if (dc == nullptr || dc->GetDevice() == nullptr ||
             outputWidth <= 0 || outputHeight <= 0)
         {
+            ErrorLog::Write("ResourceManager: invalid dimensions or device for DLSS resources.");
             return false;
         }
 
@@ -597,6 +739,7 @@ public:
             IID_PPV_ARGS(&output));
         if (FAILED(result))
         {
+            ErrorLog::HRESULT("ResourceManager: failed to create the DLSS output resource.", result);
             OutputDebugStringA("DLSS: failed to create the output resource.\n");
             return false;
         }
@@ -637,6 +780,7 @@ public:
 
         if (deviceContext == nullptr || mainDescriptorHeap == nullptr)
         {
+            ErrorLog::Write("ResourceManager: SMAA lookup textures have no device context or descriptor heap.");
             return false;
         }
 
@@ -647,6 +791,7 @@ public:
                 deviceContext->GetCommandAllocator(frameIndex),
                 nullptr)))
         {
+            ErrorLog::Write("ResourceManager: failed to reset the command list for SMAA lookup textures.");
             return false;
         }
 
@@ -676,11 +821,13 @@ public:
                 m_smaaSearchUpload,
                 m_smaaSearchTextureIdx))
         {
+            ErrorLog::Write("ResourceManager: failed to upload SMAA lookup textures.");
             return false;
         }
 
         if (FAILED(commandList->Close()))
         {
+            ErrorLog::Write("ResourceManager: failed to close the SMAA lookup upload command list.");
             return false;
         }
 
@@ -692,6 +839,7 @@ public:
                 deviceContext->GetFence(frameIndex),
                 deviceContext->GetFenceValue(frameIndex))))
         {
+            ErrorLog::Write("ResourceManager: failed to signal the SMAA lookup upload fence.");
             return false;
         }
 
@@ -702,6 +850,7 @@ public:
                     deviceContext->GetFenceValue(frameIndex),
                     deviceContext->GetFenceEvent())))
             {
+                ErrorLog::Write("ResourceManager: failed to wait for the SMAA lookup upload fence.");
                 return false;
             }
             WaitForSingleObject(deviceContext->GetFenceEvent(), INFINITE);
@@ -801,12 +950,14 @@ public:
     {
         if (outDescriptorIndex == nullptr || outCpuHandle == nullptr)
         {
+            ErrorLog::Write("ResourceManager: transient descriptor allocation received a null output pointer.");
             return false;
         }
 
         const UINT descriptorIndex = AllocateTransientSrvUavDescriptor();
         if (descriptorIndex == UINT_MAX)
         {
+            ErrorLog::Write("ResourceManager: transient SRV/UAV descriptor heap is exhausted.");
             return false;
         }
 
@@ -830,6 +981,7 @@ public:
             frameIndex < 0 ||
             frameIndex >= static_cast<int>(m_rdgTransientResourcePools.size()))
         {
+            ErrorLog::Write("ResourceManager: invalid device, output, frame index, or RDG transient pool.");
             return false;
         }
 
@@ -881,6 +1033,7 @@ public:
 
         if (FAILED(hr))
         {
+            ErrorLog::HRESULT("ResourceManager: failed to create an RDG transient resource.", hr);
             return false;
         }
 
@@ -908,6 +1061,7 @@ public:
             frameIndex < 0 ||
             frameIndex >= static_cast<int>(m_rdgTransientResourcePools.size()))
         {
+            ErrorLog::Write("ResourceManager: BeginRDGFrame received an invalid device or frame index.");
             return;
         }
 
@@ -1120,6 +1274,9 @@ private:
                 nullptr,
                 IID_PPV_ARGS(&texture))))
         {
+            ErrorLog::Write(
+                "ResourceManager: failed to create persistent texture: " +
+                std::string(debugName != nullptr ? "named resource" : "unnamed resource"));
             return false;
         }
         texture->SetName(debugName);
@@ -1139,6 +1296,7 @@ private:
                 nullptr,
                 IID_PPV_ARGS(&upload))))
         {
+            ErrorLog::Write("ResourceManager: failed to create persistent texture upload buffer.");
             return false;
         }
 
@@ -1155,6 +1313,7 @@ private:
                 1,
                 &subresource) == 0)
         {
+            ErrorLog::Write("ResourceManager: UpdateSubresources failed for a persistent texture.");
             return false;
         }
 

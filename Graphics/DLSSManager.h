@@ -3,6 +3,7 @@
 
 #include <Windows.h>
 #include <d3d12.h>
+#include "../Core/ErrorLog.h"
 #include "DLSSQuality.h"
 
 #if defined(_WIN64)
@@ -50,6 +51,7 @@ public:
 
         if (device == nullptr)
         {
+            ErrorLog::Write("DLSS: cannot initialize NGX with a null D3D12 device.");
             OutputDebugStringA("DLSS: cannot initialize NGX with a null D3D12 device.\n");
             return false;
         }
@@ -57,6 +59,7 @@ public:
         m_applicationDataPath = BuildApplicationDataPath();
         if (m_applicationDataPath.empty())
         {
+            ErrorLog::Write("DLSS: failed to create the writable NGX application-data directory.");
             OutputDebugStringA("DLSS: failed to create the writable NGX application-data directory.\n");
             return false;
         }
@@ -90,6 +93,7 @@ public:
 
         if (!m_initialized)
         {
+            ErrorLog::Write("DLSS: cannot query capabilities before NGX initialization.");
             OutputDebugStringA("DLSS: cannot query capabilities before NGX initialization.\n");
             return false;
         }
@@ -250,6 +254,7 @@ public:
             m_capabilityParameters == nullptr ||
             !settings.IsValid())
         {
+            ErrorLog::Write("DLSS: cannot configure the feature before capability validation or with invalid optimal settings.");
             OutputDebugStringA("DLSS: cannot configure the feature before capability validation or with invalid optimal settings.\n");
             return false;
         }
@@ -315,6 +320,7 @@ public:
         if (!m_initialized || !m_dlssAvailable || !m_featureConfigured ||
             m_capabilityParameters == nullptr || commandList == nullptr)
         {
+            ErrorLog::Write("DLSS: cannot create the feature before configuration or without a recording command list.");
             OutputDebugStringA("DLSS: cannot create the feature before configuration or without a recording command list.\n");
             return false;
         }

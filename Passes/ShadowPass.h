@@ -289,6 +289,7 @@ public:
             shadowDsvViews[cascadeIdx] = graph.CreateTextureDSVView(shadowMap, &shadowDsvDesc);
             if (!shadowDsvViews[cascadeIdx].IsValid())
             {
+                ErrorLog::Write("ShadowPass: failed to create a cascade depth view.");
                 return {};
             }
 
@@ -305,6 +306,7 @@ public:
         RDGTextureSRVHandle shadowMapSrv = graph.CreateTextureSRVView(shadowMap, &shadowSrvDesc);
         if (!shadowMapSrv.IsValid())
         {
+            ErrorLog::Write("ShadowPass: failed to create the shadow-map SRV.");
             return {};
         }
 

@@ -86,11 +86,8 @@ float4 PSMain_HBAO(VS_OUTPUT input) : SV_TARGET
     // Rotate the sampling pattern every frame so temporal accumulation can
     // average independent HBAO estimates instead of repeatedly blending the
     // same deterministic screen-space pattern.
-    float2 temporalNoiseOffset =
-        float2(0.754877666f, 0.569840296f) *
-        (float)(temporalFrameIndex & 7u);
-    float randomAngle =
-        Rand(input.uv + temporalNoiseOffset) * 3.1415926f * 2.0f;
+    float2 temporalNoiseOffset = float2(0.754877666f, 0.569840296f) * (float)(temporalFrameIndex & 7u);
+    float randomAngle = Rand(input.uv + temporalNoiseOffset) * 3.1415926f * 2.0f;
 
     // Define ray marching parameters
     int numDirs = 4;
@@ -98,7 +95,7 @@ float4 PSMain_HBAO(VS_OUTPUT input) : SV_TARGET
 
     float ao = 0.0f;
 
-    // Calculate and clamp the UV step size
+    // Calculate and clamp the UV step size (Approximate perspective division with radius / P.z to reduce cost)
     float stepSizeUV = (radius / P.z) / (float) numSteps;
     stepSizeUV = clamp(stepSizeUV, 0.001f, 0.05f);
 
@@ -186,7 +183,7 @@ float4 PSMain_Blur(VS_OUTPUT input) : SV_TARGET
             float3 sampleNormal = normalize(DecodeGBufferNormal(tNormal.SampleLevel(sPoint, sampleUV, 0).xyz));
 
             // Spatial weight (Distance falloff)
-            float spatialWeight = exp(-(x * x + y * y) / (2.0f * 2.0f));
+            float spatialWeight = exp(-(x * x + y * y) / 4.0f);
             // Depth weight (Edge preservation)
             float depthWeight = exp(-abs(centerDepth - sampleDepth) * 100.0f);
             // Normal weight (Angle-based rejection)

@@ -3,6 +3,7 @@
 
 #include "SceneObject.h"
 #include "DLSSQuality.h"
+#include "../Core/ErrorLog.h"
 #include <vector>
 #include <string>
 #include <fstream>
@@ -106,6 +107,7 @@ public:
         std::ifstream file(filepath);
         if (!file.is_open())
         {
+            ErrorLog::Write("Settings: scene file could not be opened: " + filepath);
             OutputDebugStringA(("Warning: Failed to open " + filepath + "\n").c_str());
             return {};
         }
@@ -117,27 +119,42 @@ public:
         }
         catch (const nlohmann::json::parse_error& e)
         {
+            ErrorLog::Write(
+                "Settings: scene JSON parse failed. File: " + filepath +
+                "\nReason: " + e.what());
             OutputDebugStringA(("Error: JSON Parse failed in " + filepath + "\nDetail: " + std::string(e.what()) + "\n").c_str());
             return {};
         }
 
-        if (j.is_object())
+        try
         {
-            s_skyboxPath = j.value("skybox_path", "HDRs/citrus_orchard_road_puresky_4k.hdr");
-
-            bool isStressTest = j.value("stress_test", false);
-            std::vector<InstanceDesc> instances = j.value("instances", nlohmann::json::array()).get<std::vector<InstanceDesc>>();
-
-            if (isStressTest && !instances.empty())
+            if (j.is_object())
             {
-                return GeneratePerformanceTestScene(instances[0].modelPath);
+                s_skyboxPath = j.value("skybox_path", "HDRs/citrus_orchard_road_puresky_4k.hdr");
+
+                bool isStressTest = j.value("stress_test", false);
+                std::vector<InstanceDesc> instances = j.value("instances", nlohmann::json::array()).get<std::vector<InstanceDesc>>();
+
+                if (isStressTest && !instances.empty())
+                {
+                    return GeneratePerformanceTestScene(instances[0].modelPath);
+                }
+
+                return instances;
+            }
+            else if (j.is_array())
+            {
+                return j.get<std::vector<InstanceDesc>>();
             }
 
-            return instances;
+            ErrorLog::Write("Settings: scene JSON root must be an object or array. File: " + filepath);
         }
-        else if (j.is_array())
+        catch (const nlohmann::json::exception& e)
         {
-            return j.get<std::vector<InstanceDesc>>();
+            ErrorLog::Write(
+                "Settings: scene JSON contains an invalid field. File: " + filepath +
+                "\nReason: " + e.what());
+            throw;
         }
 
         return {};
@@ -196,18 +213,32 @@ private:
             }
             catch (const nlohmann::json::parse_error& e)
             {
+                ErrorLog::Write(
+                    "Settings: window JSON parse failed. File: " + filepath +
+                    "\nReason: " + e.what());
                 OutputDebugStringA(("Error: Window Config JSON Parse failed in " + filepath + "\n").c_str());
                 return;
             }
 
-            window.width = j.value("width", window.width);
-            window.height = j.value("height", window.height);
-            window.fullScreen = j.value("fullscreen", window.fullScreen);
-            window.tsrUpscaleFactor = j.value("tsr_upscale_factor", window.tsrUpscaleFactor);
-            window.title = j.value("title", window.title);
+            try
+            {
+                window.width = j.value("width", window.width);
+                window.height = j.value("height", window.height);
+                window.fullScreen = j.value("fullscreen", window.fullScreen);
+                window.tsrUpscaleFactor = j.value("tsr_upscale_factor", window.tsrUpscaleFactor);
+                window.title = j.value("title", window.title);
+            }
+            catch (const nlohmann::json::exception& e)
+            {
+                ErrorLog::Write(
+                    "Settings: window JSON contains an invalid field. File: " + filepath +
+                    "\nReason: " + e.what());
+                throw;
+            }
         }
         else
         {
+            ErrorLog::Write("Settings: window file could not be opened: " + filepath);
             OutputDebugStringA(("Warning: Failed to open " + filepath + "\n").c_str());
         }
     }
@@ -224,14 +255,19 @@ private:
             }
             catch (const nlohmann::json::parse_error& e)
             {
+                ErrorLog::Write(
+                    "Settings: pipeline JSON parse failed. File: " + filepath +
+                    "\nReason: " + e.what());
                 OutputDebugStringA(("Error: Pipeline Config JSON Parse failed in " + filepath + "\n").c_str());
                 return;
             }
 
-            pipeline.useDeferred = j.value("use_deferred", pipeline.useDeferred);
-            pipeline.useZPrepass = j.value("use_z_prepass", pipeline.useZPrepass);
+            try
+            {
+                pipeline.useDeferred = j.value("use_deferred", pipeline.useDeferred);
+                pipeline.useZPrepass = j.value("use_z_prepass", pipeline.useZPrepass);
 
-            const std::string antiAliasing = j.value("anti_aliasing", std::string("None"));
+                const std::string antiAliasing = j.value("anti_aliasing", std::string("None"));
             if (antiAliasing == "TAA")
             {
                 pipeline.antiAliasing = AntiAliasingMode::TAA;
@@ -257,16 +293,25 @@ private:
                 }
             }
 
-            const std::string dlssQuality = j.value("dlss_quality", std::string("Quality"));
-            if (!TryParseDLSSQualityMode(dlssQuality, &pipeline.dlssQuality))
+                const std::string dlssQuality = j.value("dlss_quality", std::string("Quality"));
+                if (!TryParseDLSSQualityMode(dlssQuality, &pipeline.dlssQuality))
+                {
+                    pipeline.dlssQuality = DLSSQualityMode::Quality;
+                    OutputDebugStringA(
+                        ("Warning: Unknown dlss_quality value '" + dlssQuality + "'; using Quality.\n").c_str());
+                }
+            }
+            catch (const nlohmann::json::exception& e)
             {
-                pipeline.dlssQuality = DLSSQualityMode::Quality;
-                OutputDebugStringA(
-                    ("Warning: Unknown dlss_quality value '" + dlssQuality + "'; using Quality.\n").c_str());
+                ErrorLog::Write(
+                    "Settings: pipeline JSON contains an invalid field. File: " + filepath +
+                    "\nReason: " + e.what());
+                throw;
             }
         }
         else
         {
+            ErrorLog::Write("Settings: pipeline file could not be opened: " + filepath);
             OutputDebugStringA(("Warning: Failed to open " + filepath + "\n").c_str());
         }
     }
@@ -283,24 +328,38 @@ private:
             }
             catch (const nlohmann::json::parse_error& e)
             {
+                ErrorLog::Write(
+                    "Settings: lighting JSON parse failed. File: " + filepath +
+                    "\nReason: " + e.what());
                 OutputDebugStringA(("Error: Lighting Config JSON Parse failed in " + filepath + "\n").c_str());
                 return;
             }
 
-            if (j.contains("light_dir"))
+            try
             {
-                lighting.lightDir = j["light_dir"].get<DirectX::XMFLOAT3>();
+                if (j.contains("light_dir"))
+                {
+                    lighting.lightDir = j["light_dir"].get<DirectX::XMFLOAT3>();
+                }
+                if (j.contains("light_color"))
+                {
+                    lighting.lightColor = j["light_color"].get<DirectX::XMFLOAT3>();
+                }
+                lighting.sunAngularRadiusDegrees = j.value(
+                    "sun_angular_radius_degrees",
+                    lighting.sunAngularRadiusDegrees);
             }
-            if (j.contains("light_color"))
+            catch (const nlohmann::json::exception& e)
             {
-                lighting.lightColor = j["light_color"].get<DirectX::XMFLOAT3>();
+                ErrorLog::Write(
+                    "Settings: lighting JSON contains an invalid field. File: " + filepath +
+                    "\nReason: " + e.what());
+                throw;
             }
-            lighting.sunAngularRadiusDegrees = j.value(
-                "sun_angular_radius_degrees",
-                lighting.sunAngularRadiusDegrees);
         }
         else
         {
+            ErrorLog::Write("Settings: lighting file could not be opened: " + filepath);
             OutputDebugStringA(("Warning: Failed to open " + filepath + "\n").c_str());
         }
     }

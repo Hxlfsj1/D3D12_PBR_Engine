@@ -42,6 +42,7 @@ public:
             height <= 0 ||
             !input.depth.IsValid())
         {
+            ErrorLog::Write("MotionVectorPass: invalid device, resource manager, dimensions, or depth input.");
             return {};
         }
 
@@ -63,6 +64,7 @@ public:
 
         if (!motionTexture.IsValid())
         {
+            ErrorLog::Write("MotionVectorPass: failed to create the motion-vector texture.");
             return {};
         }
 
@@ -76,6 +78,7 @@ public:
         RDGTextureRTVHandle motionRtv = graph.CreateTextureRTVView(motionTexture);
         if (!depthSrv.IsValid() || !motionRtv.IsValid())
         {
+            ErrorLog::Write("MotionVectorPass: failed to create the depth SRV or motion-vector RTV.");
             return {};
         }
 

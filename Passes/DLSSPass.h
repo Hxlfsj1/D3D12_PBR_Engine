@@ -63,12 +63,14 @@ public:
             !input.depth.IsValid() ||
             !input.motionVectors.IsValid())
         {
+            ErrorLog::Write("DLSSPass: DLSS manager or input resource handles are invalid.");
             return {};
         }
 
         ID3D12Resource* dlssOutputResource = resourceManager->GetDLSSOutput();
         if (dlssOutputResource == nullptr)
         {
+            ErrorLog::Write("DLSSPass: ResourceManager returned a null DLSS output resource.");
             return {};
         }
 
@@ -93,6 +95,7 @@ public:
             evaluationInput.motionVectors == nullptr ||
             evaluationInput.output == nullptr)
         {
+            ErrorLog::Write("DLSSPass: one or more evaluation resources are null.");
             return {};
         }
 
