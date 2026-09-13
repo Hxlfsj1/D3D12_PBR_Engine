@@ -46,3 +46,6 @@
 /tmp/
 *.tmp
 *.temp
+
+# WorkBuddy agent workspace data (memory, logs) — never commit
+/.workbuddy/
