@@ -70,6 +70,7 @@ public:
         return true;
     }
 
+    // Choose one from three to use
     bool InitializeTAA(RenderDevice* dc)
     {
         const bool result = BuildTAAPipeline(dc);
@@ -323,6 +324,7 @@ private:
         rootParameters[3].Descriptor.RegisterSpace = 0;
         rootParameters[3].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
 
+        // Pass 17 Parameters to Root Constants
         rootParameters[4].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
         rootParameters[4].Constants.ShaderRegister = 1;
         rootParameters[4].Constants.Num32BitValues = 17;
