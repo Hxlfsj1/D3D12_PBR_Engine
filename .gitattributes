@@ -1,2 +1,26 @@
-# Auto detect text files and perform LF normalization
-* text=auto
+# ---------------------------------------------------------------------------
+# Line ending policy
+#   Repository stores text as LF; working tree is checked out as CRLF
+#   (Windows / MSVC native convention for this project).
+#
+#   eol=crlf makes this deterministic and independent of the machine-local
+#   core.autocrlf setting, so a fresh clone always matches the convention
+#   instead of silently falling back to LF.
+#
+#   Files are still auto-detected: anything containing NUL bytes is treated
+#   as binary and never converted.
+# ---------------------------------------------------------------------------
+* text=auto eol=crlf
+
+# ---------------------------------------------------------------------------
+# Never convert these: the listed files are binary or UTF-16LE, where a
+# byte-level EOL rewrite would corrupt the content.
+# ---------------------------------------------------------------------------
+*.reg -text
+*.lib -text
+*.dll -text
+*.pdb -text
+*.exe -text
+*.glb -text
+*.hdr -text
+*.pdf -text
