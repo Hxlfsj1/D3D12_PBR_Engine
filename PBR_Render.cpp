@@ -24,6 +24,14 @@
 #include "ScalarTemporalFilterPass.h"
 #include "DLSSPass.h"
 
+#include "imgui.h"
+#include "backends/imgui_impl_win32.h"
+#include "backends/imgui_impl_dx12.h"
+
+// The Win32 backend intentionally leaves this declaration inside a '#if 0' block in its header
+// (to avoid dragging <windows.h> in); the header instructs callers to copy it into their .cpp.
+extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
+
 #define STB_IMAGE_IMPLEMENTATION
 #include <stb_image.h>
 
@@ -98,6 +106,8 @@ D3D12App::~D3D12App()
     {
         WaitForPreviousFrame();
         m_dlssManager.Shutdown();
+        // The GPU is idle here; ImGui's device objects can be released safely
+        ShutdownImGui();
     }
 }
 
@@ -132,6 +142,13 @@ bool D3D12App::Initialize(int nShowCmd)
     }
 
     m_resourceManager.FreeUploadHeaps();
+
+    // ImGui rides on the fully initialized device and swap chain; it owns no engine resources
+    if (!InitImGui())
+    {
+        ErrorLog::Write("Application: ImGui initialization failed.");
+        return false;
+    }
 
     return true;
 }
@@ -179,6 +196,13 @@ void D3D12App::Run()
 // Handle user input
 LRESULT D3D12App::MsgProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 {
+    // Give Dear ImGui first refusal on every window message.
+    // The handler silently returns 0 until the context exists, so this is safe before InitImGui.
+    if (ImGui_ImplWin32_WndProcHandler(hwnd, msg, wParam, lParam))
+    {
+        return true;
+    }
+
     // Handle discrete input in MsgProc
     if (msg == WM_DESTROY)
     {
@@ -1880,6 +1904,15 @@ void D3D12App::Render()
         }
     }
 
+    // Dear ImGui frame. The NewFrame trio and Render() stay glued together here so that
+    // none of the early-out paths above can leave an ImGui frame open. No UI is built yet;
+    // this only keeps the backend pipeline alive and verified end-to-end.
+    ImGui_ImplDX12_NewFrame();
+    ImGui_ImplWin32_NewFrame();
+    ImGui::NewFrame();
+    ImGui::Render();
+    RecordImGuiDrawData();
+
     if (!EndFrame())
     {
         // The command list could not be finalized; skip submission and presentation
@@ -1904,6 +1937,149 @@ void D3D12App::Render()
     {
         ReportFrameError("Application: swap-chain Present failed.", hr);
     }
+}
+
+// Set up Dear ImGui: dedicated descriptor heaps, platform/renderer backends, and SRV allocator callbacks
+bool D3D12App::InitImGui()
+{
+    ID3D12Device* device = m_deviceContext.GetDevice();
+
+    // The engine creates RTVs only inside the RDG's transient heaps, so ImGui owns
+    // a tiny persistent RTV heap with one descriptor per back buffer.
+    D3D12_DESCRIPTOR_HEAP_DESC rtvHeapDesc = {};
+    rtvHeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
+    rtvHeapDesc.NumDescriptors = frameBufferCount;
+    rtvHeapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
+    HRESULT hr = device->CreateDescriptorHeap(&rtvHeapDesc, IID_PPV_ARGS(&m_imguiRtvHeap));
+    if (FAILED(hr))
+    {
+        ErrorLog::HRESULT("ImGui: failed to create the RTV descriptor heap.", hr);
+        return false;
+    }
+
+    const UINT rtvDescriptorSize = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
+    D3D12_CPU_DESCRIPTOR_HANDLE rtvHandle = m_imguiRtvHeap->GetCPUDescriptorHandleForHeapStart();
+    for (int i = 0; i < frameBufferCount; ++i)
+    {
+        device->CreateRenderTargetView(m_deviceContext.GetRenderTarget(i), nullptr, rtvHandle);
+        m_imguiRtvHandles[i] = rtvHandle;
+        rtvHandle.ptr += rtvDescriptorSize;
+    }
+
+    // ImGui textures must not occupy the engine's bindless heap; a small dedicated
+    // shader-visible heap with a free-list keeps allocation bookkeeping trivial.
+    D3D12_DESCRIPTOR_HEAP_DESC srvHeapDesc = {};
+    srvHeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
+    srvHeapDesc.NumDescriptors = imGuiSrvHeapSize;
+    srvHeapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
+    hr = device->CreateDescriptorHeap(&srvHeapDesc, IID_PPV_ARGS(&m_imguiSrvHeap));
+    if (FAILED(hr))
+    {
+        ErrorLog::HRESULT("ImGui: failed to create the SRV descriptor heap.", hr);
+        return false;
+    }
+
+    m_imguiSrvDescriptorSize = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+    m_imguiSrvHeapCpuStart = m_imguiSrvHeap->GetCPUDescriptorHandleForHeapStart();
+    m_imguiSrvHeapGpuStart = m_imguiSrvHeap->GetGPUDescriptorHandleForHeapStart();
+    m_imguiSrvFreeList.reserve(imGuiSrvHeapSize);
+    for (UINT i = 0; i < imGuiSrvHeapSize; ++i)
+    {
+        // Reverse order so slot 0 is served first
+        m_imguiSrvFreeList.push_back(imGuiSrvHeapSize - 1 - i);
+    }
+
+    IMGUI_CHECKVERSION();
+    ImGui::CreateContext();
+    ImGui::StyleColorsDark();
+
+    if (!ImGui_ImplWin32_Init(hwnd))
+    {
+        ErrorLog::Write("ImGui: Win32 platform backend initialization failed.");
+        ImGui::DestroyContext();
+        return false;
+    }
+
+    ImGui_ImplDX12_InitInfo initInfo = {};
+    initInfo.Device = device;
+    initInfo.CommandQueue = m_deviceContext.GetCommandQueue();
+    initInfo.NumFramesInFlight = frameBufferCount;
+    initInfo.RTVFormat = DXGI_FORMAT_R8G8B8A8_UNORM; // Must match the swap chain format
+    initInfo.DSVFormat = DXGI_FORMAT_UNKNOWN;        // ImGui draws to the back buffer without depth
+    initInfo.UserData = this;
+    initInfo.SrvDescriptorHeap = m_imguiSrvHeap.Get();
+    initInfo.SrvDescriptorAllocFn = &D3D12App::ImGuiSrvAlloc;
+    initInfo.SrvDescriptorFreeFn = &D3D12App::ImGuiSrvFree;
+    if (!ImGui_ImplDX12_Init(&initInfo))
+    {
+        ErrorLog::Write("ImGui: DX12 renderer backend initialization failed.");
+        ImGui_ImplWin32_Shutdown();
+        ImGui::DestroyContext();
+        return false;
+    }
+
+    m_imguiInitialized = true;
+    return true;
+}
+
+// Record ImGui's draw data onto the frame command list, after the RDG has finished with the back buffer
+void D3D12App::RecordImGuiDrawData()
+{
+    ID3D12GraphicsCommandList* commandList = m_deviceContext.GetCommandList();
+    ID3D12Resource* backBuffer = m_deviceContext.GetRenderTarget(frameIndex);
+
+    // The RDG leaves the back buffer in PRESENT state; promote it to RENDER_TARGET for ImGui
+    D3D12_RESOURCE_BARRIER barrier = {};
+    barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+    barrier.Transition.pResource = backBuffer;
+    barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+    barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_PRESENT;
+    barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_RENDER_TARGET;
+    commandList->ResourceBarrier(1, &barrier);
+
+    commandList->OMSetRenderTargets(1, &m_imguiRtvHandles[frameIndex], FALSE, nullptr);
+
+    // The DX12 backend never binds a descriptor heap itself; it samples from this one
+    ID3D12DescriptorHeap* heaps[] = { m_imguiSrvHeap.Get() };
+    commandList->SetDescriptorHeaps(1, heaps);
+    ImGui_ImplDX12_RenderDrawData(ImGui::GetDrawData(), commandList);
+
+    // Hand the back buffer back to the swap chain in PRESENT state
+    barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_RENDER_TARGET;
+    barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_PRESENT;
+    commandList->ResourceBarrier(1, &barrier);
+}
+
+// Tear down Dear ImGui; called while the GPU is idle, before the device is released
+void D3D12App::ShutdownImGui()
+{
+    if (!m_imguiInitialized)
+    {
+        return;
+    }
+
+    ImGui_ImplDX12_Shutdown();
+    ImGui_ImplWin32_Shutdown();
+    ImGui::DestroyContext();
+    m_imguiInitialized = false;
+}
+
+// SRV allocator callbacks handed to the DX12 backend: a free-list over m_imguiSrvHeap
+void D3D12App::ImGuiSrvAlloc(ImGui_ImplDX12_InitInfo* info, D3D12_CPU_DESCRIPTOR_HANDLE* outCpuHandle, D3D12_GPU_DESCRIPTOR_HANDLE* outGpuHandle)
+{
+    D3D12App* app = static_cast<D3D12App*>(info->UserData);
+    IM_ASSERT(!app->m_imguiSrvFreeList.empty());
+    const UINT index = app->m_imguiSrvFreeList.back();
+    app->m_imguiSrvFreeList.pop_back();
+    outCpuHandle->ptr = app->m_imguiSrvHeapCpuStart.ptr + static_cast<SIZE_T>(index) * app->m_imguiSrvDescriptorSize;
+    outGpuHandle->ptr = app->m_imguiSrvHeapGpuStart.ptr + static_cast<UINT64>(index) * app->m_imguiSrvDescriptorSize;
+}
+
+void D3D12App::ImGuiSrvFree(ImGui_ImplDX12_InitInfo* info, D3D12_CPU_DESCRIPTOR_HANDLE cpuHandle, D3D12_GPU_DESCRIPTOR_HANDLE)
+{
+    D3D12App* app = static_cast<D3D12App*>(info->UserData);
+    const UINT index = static_cast<UINT>((cpuHandle.ptr - app->m_imguiSrvHeapCpuStart.ptr) / app->m_imguiSrvDescriptorSize);
+    app->m_imguiSrvFreeList.push_back(index);
 }
 
 // Track GPU progress, prevent data updates until execution is complete, provide an 'alarm' mechanism for the CPU (via Fence Events)

@@ -21,6 +21,9 @@
 #include "PipelineManager.h"
 #include "RenderStructs.h"
 
+// Forward declaration keeps Dear ImGui headers out of this header
+struct ImGui_ImplDX12_InitInfo;
+
 class D3D12App
 {
 public:
@@ -54,6 +57,15 @@ private:
 
     void Render();
     void WaitForPreviousFrame();
+
+    // Dear ImGui integration: context, backends, and GPU-side plumbing.
+    // No business UI is built yet; the pipeline is kept alive and verified end-to-end.
+    bool InitImGui();
+    void RecordImGuiDrawData();
+    void ShutdownImGui();
+    // SRV allocator callbacks required by the 1.92 DX12 backend (SrvDescriptorAllocFn/FreeFn)
+    static void ImGuiSrvAlloc(ImGui_ImplDX12_InitInfo* info, D3D12_CPU_DESCRIPTOR_HANDLE* outCpuHandle, D3D12_GPU_DESCRIPTOR_HANDLE* outGpuHandle);
+    static void ImGuiSrvFree(ImGui_ImplDX12_InitInfo* info, D3D12_CPU_DESCRIPTOR_HANDLE cpuHandle, D3D12_GPU_DESCRIPTOR_HANDLE gpuHandle);
 
     // Log a per-frame HRESULT failure; if the D3D12 device has been removed,
     // report the underlying removal reason and stop the main loop cleanly
@@ -97,6 +109,17 @@ private:
     // FPS
     int frameCount = 0;
     float timeElapsed = 0.0f;
+
+    // Dear ImGui state
+    bool m_imguiInitialized = false;
+    ComPtr<ID3D12DescriptorHeap> m_imguiRtvHeap;                              // One RTV per back buffer; the engine keeps no persistent RTV heap
+    ComPtr<ID3D12DescriptorHeap> m_imguiSrvHeap;                              // Dedicated shader-visible heap for ImGui textures (font atlas, ...)
+    D3D12_CPU_DESCRIPTOR_HANDLE m_imguiRtvHandles[frameBufferCount] = {};
+    D3D12_CPU_DESCRIPTOR_HANDLE m_imguiSrvHeapCpuStart = {};
+    D3D12_GPU_DESCRIPTOR_HANDLE m_imguiSrvHeapGpuStart = {};
+    UINT m_imguiSrvDescriptorSize = 0;
+    std::vector<UINT> m_imguiSrvFreeList;                                     // Free descriptor slots inside m_imguiSrvHeap
+    static const UINT imGuiSrvHeapSize = 64;
 
     int m_visibleInstanceCount = 0;
     int m_frustumInstanceCount = 0;

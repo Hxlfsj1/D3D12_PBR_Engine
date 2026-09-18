@@ -1,0 +1,14 @@
+# EditorConfig (https://editorconfig.org)
+# Governs how EDITORS write files into the working tree (new files and saves).
+# Complements .gitattributes, which governs git checkouts; neither can command
+# non-editor writers (scripts, shell redirection), so tmp/normalize_eol.py
+# remains the final backstop.
+root = true
+
+[*]
+end_of_line = crlf
+
+# Binary or UTF-16 payloads (mirrors the -text list in .gitattributes):
+# an editor must never "fix" their line endings
+[*.{reg,lib,dll,pdb,exe,glb,hdr,pdf}]
+end_of_line = unset
