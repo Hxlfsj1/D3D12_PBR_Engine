@@ -31,6 +31,9 @@
     <Filter Include="RDG">
       <UniqueIdentifier>{2a9b3764-7b83-4719-b2e1-eab783846441}</UniqueIdentifier>
     </Filter>
+    <Filter Include="Editor">
+      <UniqueIdentifier>{5e1c8a94-3d6f-4b27-9c51-7a2e4f8d1b66}</UniqueIdentifier>
+    </Filter>
     <Filter Include="ThirdParty\imgui">
       <UniqueIdentifier>{7f3a9c21-5b8d-4e62-a1c0-9d6e8b2f4a55}</UniqueIdentifier>
     </Filter>
@@ -292,6 +295,9 @@
     </ClInclude>
     <ClInclude Include="ThirdParty\imgui\backends\imgui_impl_dx12.h">
       <Filter>ThirdParty\imgui\backends</Filter>
+    </ClInclude>
+    <ClInclude Include="Editor\EditorUI.h">
+      <Filter>Editor</Filter>
     </ClInclude>
   </ItemGroup>
 </Project>

@@ -23,6 +23,7 @@
 #include "TemporalReconstructionShared.h"
 #include "ScalarTemporalFilterPass.h"
 #include "DLSSPass.h"
+#include "EditorUI.h"
 
 #include "imgui.h"
 #include "backends/imgui_impl_win32.h"
@@ -201,6 +202,38 @@ LRESULT D3D12App::MsgProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
     if (ImGui_ImplWin32_WndProcHandler(hwnd, msg, wParam, lParam))
     {
         return true;
+    }
+
+    // When the editor UI owns the mouse or keyboard (hovering a panel, typing into a
+    // field), swallow the event here so the game input below never sees it. Without
+    // this arbitration, dragging a slider would also rotate the camera.
+    if (ImGui::GetCurrentContext() != nullptr)
+    {
+        const ImGuiIO& io = ImGui::GetIO();
+        switch (msg)
+        {
+        case WM_MOUSEMOVE:
+        case WM_LBUTTONDOWN: case WM_LBUTTONUP: case WM_LBUTTONDBLCLK:
+        case WM_RBUTTONDOWN: case WM_RBUTTONUP: case WM_RBUTTONDBLCLK:
+        case WM_MBUTTONDOWN: case WM_MBUTTONUP: case WM_MBUTTONDBLCLK:
+        case WM_XBUTTONDOWN: case WM_XBUTTONUP: case WM_XBUTTONDBLCLK:
+        case WM_MOUSEWHEEL: case WM_MOUSEHWHEEL:
+            if (io.WantCaptureMouse)
+            {
+                return 0;
+            }
+            break;
+        case WM_KEYDOWN: case WM_KEYUP:
+        case WM_SYSKEYDOWN: case WM_SYSKEYUP:
+        case WM_CHAR:
+            if (io.WantCaptureKeyboard)
+            {
+                return 0;
+            }
+            break;
+        default:
+            break;
+        }
     }
 
     // Handle discrete input in MsgProc
@@ -809,6 +842,11 @@ bool D3D12App::BeginFrame()
 
 bool D3D12App::EndFrame()
 {
+    // Every exit path from Render() reaches this function exactly once, so the ImGui
+    // frame started after BeginFrame() is guaranteed to be finalized here (paired Render)
+    ImGui::Render();
+    RecordImGuiDrawData();
+
     // Close the Command List to finalize recording, no further commands can be added until the next Reset
     // CPU recording is complete, but the GPU has yet to begin execution; therefore
     // A Fence must be signaled to track GPU progress, ensuring the CPU waits before reusing this memory in the NEXT frame
@@ -835,6 +873,13 @@ void D3D12App::Render()
         // The command infrastructure is unusable this frame (e.g. the device was removed)
         return;
     }
+
+    // Start the ImGui frame before any graph work so panel state can affect this frame.
+    // It is finalized inside EndFrame(), which every exit path below passes through exactly once.
+    ImGui_ImplDX12_NewFrame();
+    ImGui_ImplWin32_NewFrame();
+    ImGui::NewFrame();
+    EditorUI::Draw(m_resourceManager);
 
     if (m_antiAliasingMode == AntiAliasingMode::DLSS)
     {
@@ -1904,15 +1949,6 @@ void D3D12App::Render()
         }
     }
 
-    // Dear ImGui frame. The NewFrame trio and Render() stay glued together here so that
-    // none of the early-out paths above can leave an ImGui frame open. No UI is built yet;
-    // this only keeps the backend pipeline alive and verified end-to-end.
-    ImGui_ImplDX12_NewFrame();
-    ImGui_ImplWin32_NewFrame();
-    ImGui::NewFrame();
-    ImGui::Render();
-    RecordImGuiDrawData();
-
     if (!EndFrame())
     {
         // The command list could not be finalized; skip submission and presentation
@@ -1992,6 +2028,8 @@ bool D3D12App::InitImGui()
     IMGUI_CHECKVERSION();
     ImGui::CreateContext();
     ImGui::StyleColorsDark();
+    EditorUI::Initialize();
+    ErrorLog::Write("Editor: UI initialized (docking enabled).");
 
     if (!ImGui_ImplWin32_Init(hwnd))
     {

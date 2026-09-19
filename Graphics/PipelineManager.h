@@ -478,7 +478,7 @@ private:
         if (FAILED(dc->GetDevice()->CreateGraphicsPipelineState(&zPrepassPsoDesc, IID_PPV_ARGS(&psoZPrepassCutout)))) return false;
 
         // ====================================================================================================
-        // FORWARD PBR PSOs
+        // FORWARD PBR PSOs WITHOUT CUTOUT MATERIAL
         // ====================================================================================================
         D3D12_GRAPHICS_PIPELINE_STATE_DESC psoDesc = {};
         psoDesc.InputLayout = { layout, _countof(layout) };
@@ -744,13 +744,9 @@ private:
         D3D12_STATIC_SAMPLER_DESC sampler = CD3DX12_STATIC_SAMPLER_DESC(0, D3D12_FILTER_MIN_MAG_MIP_LINEAR);
 
         CD3DX12_ROOT_SIGNATURE_DESC rsDesc;
-        rsDesc.Init(
-            1,
-            &rootParam,
-            1,
-            &sampler,
-            D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT | D3D12_ROOT_SIGNATURE_FLAG_CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED
-        );
+        rsDesc.Init(1, &rootParam, 1, &sampler,
+            D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT |
+            D3D12_ROOT_SIGNATURE_FLAG_CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED);
 
         Microsoft::WRL::ComPtr<ID3DBlob> rsBlob;
 
@@ -768,28 +764,16 @@ private:
 
         const std::vector<std::wstring> noSharpenMacros = { L"POST_PROCESS_SHARPEN=0" };
         const std::vector<std::wstring> sharpenMacros = { L"POST_PROCESS_SHARPEN=1" };
-        auto vs = ShaderCompiler::CompileFromFile(
-            L"Shaders/Shaders_For_PostProcess.hlsl",
-            L"VSMain",
-            L"vs_6_6");
-        auto psNoSharpen = ShaderCompiler::CompileFromFile(
-            L"Shaders/Shaders_For_PostProcess.hlsl",
-            L"PSMain",
-            L"ps_6_6",
-            noSharpenMacros);
-        auto psSharpen = ShaderCompiler::CompileFromFile(
-            L"Shaders/Shaders_For_PostProcess.hlsl",
-            L"PSMain",
-            L"ps_6_6",
-            sharpenMacros);
+
+        auto vs = ShaderCompiler::CompileFromFile(L"Shaders/Shaders_For_PostProcess.hlsl", L"VSMain", L"vs_6_6");
+        auto psNoSharpen = ShaderCompiler::CompileFromFile(L"Shaders/Shaders_For_PostProcess.hlsl", L"PSMain", L"ps_6_6", noSharpenMacros);
+        auto psSharpen = ShaderCompiler::CompileFromFile(L"Shaders/Shaders_For_PostProcess.hlsl", L"PSMain", L"ps_6_6", sharpenMacros);
 
         D3D12_GRAPHICS_PIPELINE_STATE_DESC psoDesc = {};
         psoDesc.InputLayout = { nullptr, 0 };
         psoDesc.pRootSignature = postProcessRootSignature.Get();
         psoDesc.VS = CD3DX12_SHADER_BYTECODE(vs->GetBufferPointer(), vs->GetBufferSize());
-        psoDesc.PS = CD3DX12_SHADER_BYTECODE(
-            psNoSharpen->GetBufferPointer(),
-            psNoSharpen->GetBufferSize());
+        psoDesc.PS = CD3DX12_SHADER_BYTECODE(psNoSharpen->GetBufferPointer(), psNoSharpen->GetBufferSize());
 
         psoDesc.RasterizerState = CD3DX12_RASTERIZER_DESC(D3D12_DEFAULT);
         psoDesc.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
@@ -805,9 +789,7 @@ private:
         psoDesc.RTVFormats[0] = DXGI_FORMAT_R8G8B8A8_UNORM;
         psoDesc.SampleDesc.Count = 1;
 
-        if (FAILED(dc->GetDevice()->CreateGraphicsPipelineState(
-            &psoDesc,
-            IID_PPV_ARGS(&postProcessPSO[0]))))
+        if (FAILED(dc->GetDevice()->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(&postProcessPSO[0]))))
         {
             ErrorLog::Write("PipelineManager: post-process PSO creation failed for the non-sharpen path.");
             return false;
@@ -816,9 +798,7 @@ private:
         psoDesc.PS = CD3DX12_SHADER_BYTECODE(
             psSharpen->GetBufferPointer(),
             psSharpen->GetBufferSize());
-        if (FAILED(dc->GetDevice()->CreateGraphicsPipelineState(
-            &psoDesc,
-            IID_PPV_ARGS(&postProcessPSO[1]))))
+        if (FAILED(dc->GetDevice()->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(&postProcessPSO[1]))))
         {
             ErrorLog::Write("PipelineManager: post-process PSO creation failed for the sharpen path.");
             return false;
@@ -951,11 +931,7 @@ private:
         samplers[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
 
         CD3DX12_ROOT_SIGNATURE_DESC rsDesc;
-        rsDesc.Init(
-            2,
-            rootParameters,
-            2,
-            samplers,
+        rsDesc.Init(2, rootParameters, 2, samplers,
             D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT |
             D3D12_ROOT_SIGNATURE_FLAG_CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED
         );
@@ -1053,7 +1029,6 @@ private:
         if (!vs || !ps)
         {
             ErrorLog::Write("PipelineManager: TAA shader compilation returned an empty blob.");
-            MessageBox(NULL, L"TAA shader compilation failed.", L"Engine Error", MB_OK);
             return false;
         }
 
@@ -1073,13 +1048,10 @@ private:
         psoDesc.RTVFormats[0] = DXGI_FORMAT_R16G16B16A16_FLOAT;
         psoDesc.SampleDesc.Count = 1;
 
-        hr = dc->GetDevice()->CreateGraphicsPipelineState(
-            &psoDesc,
-            IID_PPV_ARGS(&psoTAA));
+        hr = dc->GetDevice()->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(&psoTAA));
         if (FAILED(hr))
         {
             ErrorLog::HRESULT("PipelineManager: TAA PSO creation failed.", hr);
-            MessageBox(NULL, L"Failed to create TAA PSO!", L"Engine Error", MB_OK);
             return false;
         }
 
@@ -1103,11 +1075,7 @@ private:
         samplers[1].AddressW = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
         samplers[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
 
-        CD3DX12_ROOT_SIGNATURE_DESC rootSigDesc(
-            1,
-            rootParameters,
-            2,
-            samplers,
+        CD3DX12_ROOT_SIGNATURE_DESC rootSigDesc(1, rootParameters, 2, samplers,
             D3D12_ROOT_SIGNATURE_FLAG_CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED);
 
         ComPtr<ID3DBlob> serializedRootSig = nullptr;
@@ -1134,18 +1102,11 @@ private:
             return false;
         }
 
-        auto vs = ShaderCompiler::CompileFromFile(
-            L"Shaders/Shaders_For_TSR.hlsl",
-            L"VSMain",
-            L"vs_6_6");
-        auto ps = ShaderCompiler::CompileFromFile(
-            L"Shaders/Shaders_For_TSR.hlsl",
-            L"PSMain",
-            L"ps_6_6");
+        auto vs = ShaderCompiler::CompileFromFile(L"Shaders/Shaders_For_TSR.hlsl", L"VSMain", L"vs_6_6");
+        auto ps = ShaderCompiler::CompileFromFile(L"Shaders/Shaders_For_TSR.hlsl", L"PSMain", L"ps_6_6");
         if (!vs || !ps)
         {
             ErrorLog::Write("PipelineManager: TSR shader compilation returned an empty blob.");
-            MessageBox(NULL, L"TSR shader compilation failed.", L"Engine Error", MB_OK);
             return false;
         }
 
@@ -1165,13 +1126,10 @@ private:
         psoDesc.RTVFormats[0] = DXGI_FORMAT_R16G16B16A16_FLOAT;
         psoDesc.SampleDesc.Count = 1;
 
-        hr = dc->GetDevice()->CreateGraphicsPipelineState(
-            &psoDesc,
-            IID_PPV_ARGS(&psoTSR));
+        hr = dc->GetDevice()->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(&psoTSR));
         if (FAILED(hr))
         {
             ErrorLog::HRESULT("PipelineManager: TSR PSO creation failed.", hr);
-            MessageBox(NULL, L"Failed to create TSR PSO!", L"Engine Error", MB_OK);
             return false;
         }
 
@@ -1231,14 +1189,8 @@ private:
             return false;
         }
 
-        auto vs = ShaderCompiler::CompileFromFile(
-            L"Shaders/Shaders_For_ScalarTemporal.hlsl",
-            L"VSMain",
-            L"vs_6_6");
-        auto ps = ShaderCompiler::CompileFromFile(
-            L"Shaders/Shaders_For_ScalarTemporal.hlsl",
-            L"PSMain",
-            L"ps_6_6");
+        auto vs = ShaderCompiler::CompileFromFile(L"Shaders/Shaders_For_ScalarTemporal.hlsl", L"VSMain", L"vs_6_6");
+        auto ps = ShaderCompiler::CompileFromFile(L"Shaders/Shaders_For_ScalarTemporal.hlsl", L"PSMain", L"ps_6_6");
         if (!vs || !ps)
         {
             ErrorLog::Write("PipelineManager: scalar-temporal shader compilation returned an empty blob.");
@@ -1265,9 +1217,7 @@ private:
         psoDesc.RTVFormats[0] = DXGI_FORMAT_R16_FLOAT;
         psoDesc.SampleDesc.Count = 1;
 
-        hr = dc->GetDevice()->CreateGraphicsPipelineState(
-            &psoDesc,
-            IID_PPV_ARGS(&scalarTemporalPSO));
+        hr = dc->GetDevice()->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(&scalarTemporalPSO));
         if (FAILED(hr))
         {
             ErrorLog::HRESULT("PipelineManager: scalar-temporal PSO creation failed.", hr);
@@ -1324,7 +1274,6 @@ private:
         if (!vs || !ps)
         {
             ErrorLog::Write("PipelineManager: motion-vector shader compilation returned an empty blob.");
-            MessageBox(NULL, L"Motion vector shader compilation failed! Please check if Shaders_For_MotionVector.hlsl exists in the Shaders directory.", L"Engine Error", MB_OK);
             return false;
         }
 
@@ -1344,9 +1293,7 @@ private:
         psoDesc.RTVFormats[0] = DXGI_FORMAT_R16G16_FLOAT;
         psoDesc.SampleDesc.Count = 1;
 
-        hr = dc->GetDevice()->CreateGraphicsPipelineState(
-            &psoDesc,
-            IID_PPV_ARGS(&motionVectorPSO));
+        hr = dc->GetDevice()->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(&motionVectorPSO));
         if (FAILED(hr))
         {
             ErrorLog::HRESULT("PipelineManager: motion-vector PSO creation failed.", hr);

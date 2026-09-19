@@ -78,7 +78,7 @@
       <PreprocessorDefinitions>WIN32;_DEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
       <LanguageStandard>stdcpp20</LanguageStandard>
-      <AdditionalIncludeDirectories>Core;Graphics;Resources;Logic;ThirdParty;ThirdParty\imgui;Passes;RDG;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>Core;Graphics;Resources;Logic;ThirdParty;ThirdParty\imgui;Passes;RDG;Editor;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ClCompile>
     <Link>
       <SubSystem>Windows</SubSystem>
@@ -96,7 +96,7 @@
       <PreprocessorDefinitions>WIN32;NDEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
       <LanguageStandard>stdcpp20</LanguageStandard>
-      <AdditionalIncludeDirectories>Core;Graphics;Resources;Logic;ThirdParty;ThirdParty\imgui;Passes;RDG;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>Core;Graphics;Resources;Logic;ThirdParty;ThirdParty\imgui;Passes;RDG;Editor;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ClCompile>
     <Link>
       <SubSystem>Windows</SubSystem>
@@ -112,7 +112,7 @@
       <PreprocessorDefinitions>_DEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
       <LanguageStandard>stdcpp20</LanguageStandard>
-      <AdditionalIncludeDirectories>Core;Graphics;Resources;Logic;ThirdParty;ThirdParty\imgui;Passes;RDG;$(ProjectDir)ThirdParty\NVIDIA\DLSS\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>Core;Graphics;Resources;Logic;ThirdParty;ThirdParty\imgui;Passes;RDG;Editor;$(ProjectDir)ThirdParty\NVIDIA\DLSS\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ClCompile>
     <Link>
       <SubSystem>Windows</SubSystem>
@@ -130,7 +130,7 @@
       <PreprocessorDefinitions>NDEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
       <LanguageStandard>stdcpp20</LanguageStandard>
-      <AdditionalIncludeDirectories>Core;Graphics;Resources;Logic;ThirdParty;ThirdParty\imgui;Passes;RDG;$(ProjectDir)ThirdParty\NVIDIA\DLSS\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>Core;Graphics;Resources;Logic;ThirdParty;ThirdParty\imgui;Passes;RDG;Editor;$(ProjectDir)ThirdParty\NVIDIA\DLSS\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ClCompile>
     <Link>
       <SubSystem>Windows</SubSystem>
@@ -192,6 +192,7 @@
     <ClInclude Include="Passes\TSRPass.h" />
     <ClInclude Include="ThirdParty\tiny_gltf.h" />
     <ClInclude Include="Core\Window.h" />
+    <ClInclude Include="Editor\EditorUI.h" />
     <ClInclude Include="ThirdParty\imgui\imconfig.h" />
     <ClInclude Include="ThirdParty\imgui\imgui.h" />
     <ClInclude Include="ThirdParty\imgui\imgui_internal.h" />

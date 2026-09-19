@@ -2,6 +2,7 @@
 
 #include <windows.h>
 
+#include <deque>
 #include <iomanip>
 #include <sstream>
 #include <string>
@@ -9,6 +10,24 @@
 
 namespace ErrorLog
 {
+    // Bounded in-memory copy of every logged line; consumed by the editor's Console panel.
+    inline std::deque<std::string>& RecentEntries()
+    {
+        static std::deque<std::string> entries;
+        return entries;
+    }
+
+    inline void PushRecentEntry(const std::string& line)
+    {
+        constexpr size_t maxRecentEntries = 256;
+        std::deque<std::string>& entries = RecentEntries();
+        entries.push_back(line);
+        while (entries.size() > maxRecentEntries)
+        {
+            entries.pop_front();
+        }
+    }
+
     inline std::string FormatSystemError(DWORD errorCode)
     {
         char* messageBuffer = nullptr;
@@ -77,6 +96,7 @@ namespace ErrorLog
         try
         {
             std::string line(message);
+            PushRecentEntry(line);
             line.push_back('\n');
             OutputDebugStringA(line.c_str());
         }
