@@ -2,6 +2,7 @@
 #define EDITOR_UI_H
 
 #include "imgui.h"
+#include "imgui_internal.h" // Access the multiline widget's own scroll window for log following.
 #include "ResourceManager.h"
 #include "ErrorLog.h"
 #include "EditorSelection.h"
@@ -539,18 +540,46 @@ private:
 
     static void DrawConsoleBody()
     {
-        ImGui::BeginChild("##log", ImVec2(0.0f, 0.0f), ImGuiChildFlags_None, ImGuiWindowFlags_HorizontalScrollbar);
-        for (const std::string& entry : ErrorLog::RecentEntries())
+        const ImGuiID inputId = ImGui::GetID("##log");
+        ImGuiWindow* previousWindow = ImGui::FindWindowByID(s_consoleTextWindowId);
+        const bool wasAtBottom = previousWindow == nullptr ||
+            previousWindow->Scroll.y >= previousWindow->ScrollMax.y - 1.0f;
+
+        // Keep a stable snapshot while selecting/copying. The bounded log may evict old
+        // lines, which would otherwise shift the selection under the user's mouse.
+        bool changed = false;
+        if (ImGui::GetActiveID() != inputId)
         {
-            ImGui::TextUnformatted(entry.c_str());
+            std::string text;
+            for (const std::string& entry : ErrorLog::RecentEntries())
+            {
+                text += entry;
+                if (text.empty() || text.back() != '\n')
+                    text += '\n';
+            }
+            changed = text != s_consoleText;
+            if (changed)
+                s_consoleText = std::move(text);
         }
-        // Stick to the newest line when the user is already at the bottom
-        if (ImGui::GetScrollY() >= ImGui::GetScrollMaxY() - 1.0f)
+
+        ImGuiWindow* parent = ImGui::GetCurrentWindow();
+        const int childCount = parent->DC.ChildWindows.Size;
+        ImGui::InputTextMultiline("##log", s_consoleText.data(), s_consoleText.size() + 1,
+            ImGui::GetContentRegionAvail(), ImGuiInputTextFlags_ReadOnly);
+
+        // InputTextMultiline owns its scroll window. Scrolling the surrounding panel
+        // would not move the text. A clipped widget may not submit a child at all.
+        if (parent->DC.ChildWindows.Size > childCount)
         {
-            ImGui::SetScrollHereY(1.0f);
+            ImGuiWindow* textWindow = parent->DC.ChildWindows.back();
+            s_consoleTextWindowId = textWindow->ID;
+            if (changed && wasAtBottom && !ImGui::IsItemActive())
+                ImGui::SetScrollY(textWindow, textWindow->DC.CursorMaxPos.y - textWindow->DC.CursorStartPos.y);
         }
-        ImGui::EndChild();
     }
+
+    inline static std::string s_consoleText;
+    inline static ImGuiID s_consoleTextWindowId = 0;
 
     // Layout state in pixels, mutated by the seams. The starting sizes below are placeholders:
     // InitializeLayoutDefaults() derives them from s_uiScale at startup.

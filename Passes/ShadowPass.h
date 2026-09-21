@@ -66,10 +66,7 @@ public:
             lightUp = XMVectorSet(0.0f, 0.0f, 1.0f, 0.0f);
         }
 
-        XMMATRIX lightView = XMMatrixLookAtLH(
-            lightPosition,
-            XMVectorAdd(lightPosition, lightDir),
-            lightUp);
+        XMMATRIX lightView = XMMatrixLookAtLH(lightPosition, XMVectorAdd(lightPosition, lightDir), lightUp);
         XMStoreFloat4x4(&frameData.lightView, lightView);
 
         constexpr float nearClip = 0.1f;
