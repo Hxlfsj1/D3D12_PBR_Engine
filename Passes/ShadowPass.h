@@ -200,8 +200,8 @@ public:
             cmdList->SetDescriptorHeaps(1, heaps);
 
             D3D12_GPU_VIRTUAL_ADDRESS baseGpuAddress = resourceManager->GetCBVGPUAddress(frameIndex);
-            cmdList->SetGraphicsRootConstantBufferView(0, baseGpuAddress);
-            cmdList->SetGraphicsRootShaderResourceView(3, resourceManager->GetMaterialBufferGPUAddress());
+            cmdList->SetGraphicsRootConstantBufferView(PipelineManager::MeshBinding::FrameConstants, baseGpuAddress);
+            cmdList->SetGraphicsRootShaderResourceView(PipelineManager::MeshBinding::Materials, resourceManager->GetMaterialBufferGPUAddress());
 
             cmdList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
 
@@ -221,12 +221,12 @@ public:
                 if ((isEnd || thisModel != currentModel || thisLod != currentLod || thisIsCutout != currentIsCutout) && currentInstanceCount > 0 && currentModel != nullptr)
                 {
                     D3D12_GPU_VIRTUAL_ADDRESS srvAddress = baseGpuAddress + kPassConstantsAlignedSize + ((visibleInstancesSize + cascadeInstanceOffset + instanceStartOffset) * sizeof(InstanceData));
-                    cmdList->SetGraphicsRootShaderResourceView(1, srvAddress);
+                    cmdList->SetGraphicsRootShaderResourceView(PipelineManager::MeshBinding::Instances, srvAddress);
 
                     for (auto& mesh : currentModel->meshes)
                     {
-                        UINT constants[2] = { mesh.materialID, cascadeIdx };
-                        cmdList->SetGraphicsRoot32BitConstants(4, 2, constants, 0);
+                        UINT constants[PipelineManager::MeshBinding::ShadowConstantCount] = { mesh.materialID, cascadeIdx };
+                        cmdList->SetGraphicsRoot32BitConstants(PipelineManager::MeshBinding::DrawConstants, PipelineManager::MeshBinding::ShadowConstantCount, constants, 0);
                         mesh.Draw(cmdList, currentInstanceCount, currentLod);
                     }
                 }
@@ -275,7 +275,7 @@ public:
         graph.MarkTextureAsOutput(shadowMap);
 
         D3D12_DEPTH_STENCIL_VIEW_DESC shadowDsvDesc = {};
-        shadowDsvDesc.Format = DXGI_FORMAT_D32_FLOAT;
+        shadowDsvDesc.Format = PipelineManager::Formats::DepthDSV;
         shadowDsvDesc.ViewDimension = D3D12_DSV_DIMENSION_TEXTURE2DARRAY;
         shadowDsvDesc.Flags = D3D12_DSV_FLAG_NONE;
         shadowDsvDesc.Texture2DArray.MipSlice = 0;
@@ -297,7 +297,7 @@ public:
         }
 
         D3D12_SHADER_RESOURCE_VIEW_DESC shadowSrvDesc = {};
-        shadowSrvDesc.Format = DXGI_FORMAT_R32_FLOAT;
+        shadowSrvDesc.Format = PipelineManager::Formats::DepthSRV;
         shadowSrvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2DARRAY;
         shadowSrvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
         shadowSrvDesc.Texture2DArray.MipLevels = 1;

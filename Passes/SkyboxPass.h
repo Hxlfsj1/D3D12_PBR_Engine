@@ -52,11 +52,11 @@ public:
         XMMATRIX skyVPMat = XMMatrixTranspose(view * proj);
 
         // Pass the Skybox MVP matrix via registers (Root Constants)
-        cmdList->SetGraphicsRoot32BitConstants(4, 16, &skyVPMat, 0);
+        cmdList->SetGraphicsRoot32BitConstants(PipelineManager::MeshBinding::DrawConstants, PipelineManager::MeshBinding::SkyboxMatrixConstantCount, &skyVPMat, 0);
 
         // Bind the skybox texture (Cubemap)
         UINT skyboxTexIdx = resourceManager->GetIblEnvCubeIdx();
-        cmdList->SetGraphicsRoot32BitConstants(4, 1, &skyboxTexIdx, 16);
+        cmdList->SetGraphicsRoot32BitConstants(PipelineManager::MeshBinding::DrawConstants, 1, &skyboxTexIdx, PipelineManager::MeshBinding::SkyboxTextureOffset);
 
         cmdList->DrawInstanced(36, 1, 0, 0);
     }

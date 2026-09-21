@@ -83,9 +83,9 @@ public:
         ID3D12DescriptorHeap* heaps[] = { resourceManager->GetMainDescriptorHeap() };
         cmdList->SetDescriptorHeaps(1, heaps);
 
-        cmdList->SetGraphicsRootConstantBufferView(0, resourceManager->GetCBVGPUAddress(frameIndex));
-        cmdList->SetGraphicsRootConstantBufferView(1, cbvGpuAddress);
-        cmdList->SetGraphicsRootConstantBufferView(2, resourceManager->GetSHBufferGPUAddress());
+        cmdList->SetGraphicsRootConstantBufferView(PipelineManager::DeferredBinding::FrameConstants, resourceManager->GetCBVGPUAddress(frameIndex));
+        cmdList->SetGraphicsRootConstantBufferView(PipelineManager::DeferredBinding::LightingConstants, cbvGpuAddress);
+        cmdList->SetGraphicsRootConstantBufferView(PipelineManager::DeferredBinding::SphericalHarmonics, resourceManager->GetSHBufferGPUAddress());
 
         cmdList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
         cmdList->DrawInstanced(3, 1, 0, 0);
@@ -129,7 +129,7 @@ public:
         graph.MarkTextureAsOutput(sceneColor);
 
         D3D12_SHADER_RESOURCE_VIEW_DESC depthSrvDesc = {};
-        depthSrvDesc.Format = DXGI_FORMAT_R32_FLOAT;
+        depthSrvDesc.Format = PipelineManager::Formats::DepthSRV;
         depthSrvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
         depthSrvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
         depthSrvDesc.Texture2D.MipLevels = 1;

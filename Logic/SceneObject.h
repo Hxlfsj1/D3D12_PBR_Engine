@@ -9,6 +9,7 @@ struct Model;
 
 struct ModelInstance
 {
+    UINT editorId = 0; // Stable across render sorting; zero is reserved for background.
     std::string name;
     // Pointer to the model data
     Model* pModel;

@@ -77,8 +77,8 @@ public:
         cmdList->SetDescriptorHeaps(1, heaps);
 
         D3D12_GPU_VIRTUAL_ADDRESS baseGpuAddress = resourceManager->GetCBVGPUAddress(frameIndex);
-        cmdList->SetGraphicsRootConstantBufferView(0, baseGpuAddress);
-        cmdList->SetGraphicsRootShaderResourceView(3, resourceManager->GetMaterialBufferGPUAddress());
+        cmdList->SetGraphicsRootConstantBufferView(PipelineManager::MeshBinding::FrameConstants, baseGpuAddress);
+        cmdList->SetGraphicsRootShaderResourceView(PipelineManager::MeshBinding::Materials, resourceManager->GetMaterialBufferGPUAddress());
         cmdList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
 
         size_t transparentStartIndex = visibleInstances.size();
@@ -110,11 +110,11 @@ public:
                 if ((isEnd || thisModel != currentModel || thisLod != currentLod || thisIsCutout != currentIsCutout) && currentInstanceCount > 0 && currentModel != nullptr)
                 {
                     D3D12_GPU_VIRTUAL_ADDRESS srvAddress = baseGpuAddress + kPassConstantsAlignedSize + (instanceStartOffset * sizeof(InstanceData));
-                    cmdList->SetGraphicsRootShaderResourceView(1, srvAddress);
+                    cmdList->SetGraphicsRootShaderResourceView(PipelineManager::MeshBinding::Instances, srvAddress);
 
                     for (auto& mesh : currentModel->meshes)
                     {
-                        cmdList->SetGraphicsRoot32BitConstants(4, 1, &mesh.materialID, 0);
+                        cmdList->SetGraphicsRoot32BitConstants(PipelineManager::MeshBinding::DrawConstants, PipelineManager::MeshBinding::MaterialConstantCount, &mesh.materialID, 0);
                         mesh.Draw(cmdList, currentInstanceCount, currentLod);
                     }
                 }
@@ -192,10 +192,10 @@ public:
                 RDGTextureDesc depthTextureDesc;
                 depthTextureDesc.width = sceneWidth;
                 depthTextureDesc.height = sceneHeight;
-                depthTextureDesc.format = DXGI_FORMAT_R32_TYPELESS;
+                depthTextureDesc.format = PipelineManager::Formats::DepthResource;
                 depthTextureDesc.flags = D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL;
                 depthTextureDesc.hasClearValue = true;
-                depthTextureDesc.clearValue.Format = DXGI_FORMAT_D32_FLOAT;
+                depthTextureDesc.clearValue.Format = PipelineManager::Formats::DepthDSV;
                 depthTextureDesc.clearValue.DepthStencil.Depth = 1.0f;
                 depthTextureDesc.clearValue.DepthStencil.Stencil = 0;
 
@@ -235,19 +235,19 @@ public:
             };
 
         RDGTextureHandle gbufferAlbedo = createGBufferTexture(
-            DXGI_FORMAT_R8G8B8A8_UNORM,
+            PipelineManager::Formats::GBufferAlbedo,
             "GBufferAlbedo");
 
         RDGTextureHandle gbufferNormal = createGBufferTexture(
-            DXGI_FORMAT_R16G16B16A16_FLOAT,
+            PipelineManager::Formats::GBufferNormal,
             "GBufferNormal");
 
         RDGTextureHandle gbufferORM = createGBufferTexture(
-            DXGI_FORMAT_R8G8B8A8_UNORM,
+            PipelineManager::Formats::GBufferORM,
             "GBufferORM");
 
         RDGTextureHandle gbufferEmissive = createGBufferTexture(
-            DXGI_FORMAT_R8G8B8A8_UNORM,
+            PipelineManager::Formats::GBufferEmissive,
             "GBufferEmissive");
 
         if (!gbufferAlbedo.IsValid() ||

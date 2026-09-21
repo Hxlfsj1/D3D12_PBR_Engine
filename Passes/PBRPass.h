@@ -89,7 +89,7 @@ public:
                 "ShadowMap");
 
             D3D12_SHADER_RESOURCE_VIEW_DESC shadowSrvDesc = {};
-            shadowSrvDesc.Format = DXGI_FORMAT_R32_FLOAT;
+            shadowSrvDesc.Format = PipelineManager::Formats::DepthSRV;
             shadowSrvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2DARRAY;
             shadowSrvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
             shadowSrvDesc.Texture2DArray.MipLevels = 1;
@@ -249,9 +249,9 @@ public:
         cmdList->SetDescriptorHeaps(1, heaps);
 
         D3D12_GPU_VIRTUAL_ADDRESS baseGpuAddress = resourceManager->GetCBVGPUAddress(frameIndex);
-        cmdList->SetGraphicsRootConstantBufferView(0, baseGpuAddress);
-        cmdList->SetGraphicsRootConstantBufferView(2, resourceManager->GetSHBufferGPUAddress());
-        cmdList->SetGraphicsRootShaderResourceView(3, resourceManager->GetMaterialBufferGPUAddress());
+        cmdList->SetGraphicsRootConstantBufferView(PipelineManager::MeshBinding::FrameConstants, baseGpuAddress);
+        cmdList->SetGraphicsRootConstantBufferView(PipelineManager::MeshBinding::SphericalHarmonics, resourceManager->GetSHBufferGPUAddress());
+        cmdList->SetGraphicsRootShaderResourceView(PipelineManager::MeshBinding::Materials, resourceManager->GetMaterialBufferGPUAddress());
         cmdList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
 
         UINT refractionEnabled = enableRefraction ? 1u : 0u;
@@ -267,11 +267,11 @@ public:
             D3D12_GPU_VIRTUAL_ADDRESS srvAddress = baseGpuAddress + kPassConstantsAlignedSize + (i * sizeof(InstanceData));
 
             cmdList->SetPipelineState(pipelineManager->GetTransparentPSO(instance->currentLodLevel));
-            cmdList->SetGraphicsRootShaderResourceView(1, srvAddress);
+            cmdList->SetGraphicsRootShaderResourceView(PipelineManager::MeshBinding::Instances, srvAddress);
 
             for (auto& mesh : instance->pModel->meshes)
             {
-                UINT transparentConstants[] =
+                UINT transparentConstants[PipelineManager::MeshBinding::TransparentConstantCount] =
                 {
                     mesh.materialID,
                     sceneColorCopySrvIdx,
@@ -279,7 +279,7 @@ public:
                     refractionEnabled
                 };
 
-                cmdList->SetGraphicsRoot32BitConstants(4, _countof(transparentConstants), transparentConstants, 0);
+                cmdList->SetGraphicsRoot32BitConstants(PipelineManager::MeshBinding::DrawConstants, _countof(transparentConstants), transparentConstants, 0);
                 mesh.Draw(cmdList, 1, instance->currentLodLevel);
             }
         }
@@ -334,7 +334,7 @@ public:
                 "ShadowMap");
 
             D3D12_SHADER_RESOURCE_VIEW_DESC shadowSrvDesc = {};
-            shadowSrvDesc.Format = DXGI_FORMAT_R32_FLOAT;
+            shadowSrvDesc.Format = PipelineManager::Formats::DepthSRV;
             shadowSrvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2DARRAY;
             shadowSrvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
             shadowSrvDesc.Texture2DArray.MipLevels = 1;
@@ -346,7 +346,7 @@ public:
         ID3D12Resource* sceneColorCopyResource = graph.GetTextureResource(sceneColorCopy);
 
         D3D12_SHADER_RESOURCE_VIEW_DESC depthSrvDesc = {};
-        depthSrvDesc.Format = DXGI_FORMAT_R32_FLOAT;
+        depthSrvDesc.Format = PipelineManager::Formats::DepthSRV;
         depthSrvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
         depthSrvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
         depthSrvDesc.Texture2D.MipLevels = 1;
@@ -476,10 +476,10 @@ private:
         RDGTextureDesc depthTextureDesc = {};
         depthTextureDesc.width = sceneWidth;
         depthTextureDesc.height = sceneHeight;
-        depthTextureDesc.format = DXGI_FORMAT_R32_TYPELESS;
+        depthTextureDesc.format = PipelineManager::Formats::DepthResource;
         depthTextureDesc.flags = D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL;
         depthTextureDesc.hasClearValue = true;
-        depthTextureDesc.clearValue.Format = DXGI_FORMAT_D32_FLOAT;
+        depthTextureDesc.clearValue.Format = PipelineManager::Formats::DepthDSV;
         depthTextureDesc.clearValue.DepthStencil.Depth = 1.0f;
         depthTextureDesc.clearValue.DepthStencil.Stencil = 0;
 
@@ -563,9 +563,9 @@ private:
         cmdList->SetDescriptorHeaps(1, heaps);
 
         D3D12_GPU_VIRTUAL_ADDRESS baseGpuAddress = resourceManager->GetCBVGPUAddress(frameIndex);
-        cmdList->SetGraphicsRootConstantBufferView(0, baseGpuAddress);
-        cmdList->SetGraphicsRootConstantBufferView(2, resourceManager->GetSHBufferGPUAddress());
-        cmdList->SetGraphicsRootShaderResourceView(3, resourceManager->GetMaterialBufferGPUAddress());
+        cmdList->SetGraphicsRootConstantBufferView(PipelineManager::MeshBinding::FrameConstants, baseGpuAddress);
+        cmdList->SetGraphicsRootConstantBufferView(PipelineManager::MeshBinding::SphericalHarmonics, resourceManager->GetSHBufferGPUAddress());
+        cmdList->SetGraphicsRootShaderResourceView(PipelineManager::MeshBinding::Materials, resourceManager->GetMaterialBufferGPUAddress());
 
         cmdList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
 
@@ -620,13 +620,13 @@ private:
             if ((isEnd || thisModel != currentModel || thisLod != currentLod || thisIsCutout != currentIsCutout) && currentInstanceCount > 0 && currentModel != nullptr)
             {
                 D3D12_GPU_VIRTUAL_ADDRESS srvAddress = baseGpuAddress + kPassConstantsAlignedSize + (instanceStartOffset * sizeof(InstanceData));
-                cmdList->SetGraphicsRootShaderResourceView(1, srvAddress);
+                cmdList->SetGraphicsRootShaderResourceView(PipelineManager::MeshBinding::Instances, srvAddress);
 
                 for (auto& mesh : currentModel->meshes)
                 {
                     if (mode != OpaqueDrawMode::ZPrepass || currentIsCutout)
                     {
-                        cmdList->SetGraphicsRoot32BitConstants(4, 1, &mesh.materialID, 0);
+                        cmdList->SetGraphicsRoot32BitConstants(PipelineManager::MeshBinding::DrawConstants, PipelineManager::MeshBinding::MaterialConstantCount, &mesh.materialID, 0);
                     }
 
                     mesh.Draw(cmdList, currentInstanceCount, currentLod);

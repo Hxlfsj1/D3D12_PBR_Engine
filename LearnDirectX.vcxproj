@@ -193,6 +193,8 @@
     <ClInclude Include="ThirdParty\tiny_gltf.h" />
     <ClInclude Include="Core\Window.h" />
     <ClInclude Include="Editor\EditorUI.h" />
+    <ClInclude Include="Editor\EditorSelection.h" />
+    <ClInclude Include="Editor\EditorSelectionRenderer.h" />
     <ClInclude Include="ThirdParty\imgui\imconfig.h" />
     <ClInclude Include="ThirdParty\imgui\imgui.h" />
     <ClInclude Include="ThirdParty\imgui\imgui_internal.h" />
@@ -204,6 +206,7 @@
   </ItemGroup>
   <ItemGroup>
     <None Include="Settings\Lighting.json" />
+    <None Include="Shaders\EditorSelection.hlsl" />
     <None Include="Settings\Pipeline.json" />
     <None Include="Settings\Scene.json" />
     <None Include="Settings\Window.json" />

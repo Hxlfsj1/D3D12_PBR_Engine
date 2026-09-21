@@ -42,12 +42,12 @@ public:
         ID3D12DescriptorHeap* heaps[] = { resourceManager->GetMainDescriptorHeap() };
         cmdList->SetDescriptorHeaps(1, heaps);
 
-        UINT postProcessConstants[2] =
+        UINT postProcessConstants[PipelineManager::PostProcessBinding::ConstantCount] =
         {
             inputSrvIdx,
             visualizeScalar ? 1u : 0u
         };
-        cmdList->SetGraphicsRoot32BitConstants(0, 2, postProcessConstants, 0);
+        cmdList->SetGraphicsRoot32BitConstants(PipelineManager::PostProcessBinding::Constants, PipelineManager::PostProcessBinding::ConstantCount, postProcessConstants, 0);
 
         cmdList->DrawInstanced(3, 1, 0, 0);
     }
@@ -78,7 +78,7 @@ public:
         RDGTextureDesc outputDesc = {};
         outputDesc.width = static_cast<uint32_t>(width);
         outputDesc.height = static_cast<uint32_t>(height);
-        outputDesc.format = DXGI_FORMAT_R8G8B8A8_UNORM;
+        outputDesc.format = PipelineManager::Formats::PostProcess;
         outputDesc.flags = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
         outputDesc.hasClearValue = true;
         outputDesc.clearValue.Format = outputDesc.format;

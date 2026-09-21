@@ -49,10 +49,10 @@ public:
         RDGTextureDesc motionDesc = {};
         motionDesc.width = static_cast<uint32_t>(width);
         motionDesc.height = static_cast<uint32_t>(height);
-        motionDesc.format = DXGI_FORMAT_R16G16_FLOAT;
+        motionDesc.format = PipelineManager::Formats::MotionVector;
         motionDesc.flags = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
         motionDesc.hasClearValue = true;
-        motionDesc.clearValue.Format = DXGI_FORMAT_R16G16_FLOAT;
+        motionDesc.clearValue.Format = PipelineManager::Formats::MotionVector;
         motionDesc.clearValue.Color[0] = 0.0f;
         motionDesc.clearValue.Color[1] = 0.0f;
 
@@ -69,7 +69,7 @@ public:
         }
 
         D3D12_SHADER_RESOURCE_VIEW_DESC depthSrvDesc = {};
-        depthSrvDesc.Format = DXGI_FORMAT_R32_FLOAT;
+        depthSrvDesc.Format = PipelineManager::Formats::DepthSRV;
         depthSrvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
         depthSrvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
         depthSrvDesc.Texture2D.MipLevels = 1;
@@ -149,7 +149,7 @@ private:
         motionCb.depthTextureIdx = depthSrvIdx;
 
         memcpy(cbvCpuAddress, &motionCb, sizeof(MotionVectorConstants));
-        cmdList->SetGraphicsRootConstantBufferView(0, cbvGpuAddress);
+        cmdList->SetGraphicsRootConstantBufferView(PipelineManager::ConstantBufferBinding::Constants, cbvGpuAddress);
 
         cmdList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
         cmdList->DrawInstanced(3, 1, 0, 0);

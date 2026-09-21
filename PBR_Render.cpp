@@ -151,6 +151,12 @@ bool D3D12App::Initialize(int nShowCmd)
         return false;
     }
 
+    if (!m_editorSelectionRenderer.Initialize(m_deviceContext, frameBufferCount))
+    {
+        ErrorLog::Write("Application: editor selection initialization failed.");
+        return false;
+    }
+
     return true;
 }
 
@@ -878,8 +884,26 @@ void D3D12App::Render()
     // It is finalized inside EndFrame(), which every exit path below passes through exactly once.
     ImGui_ImplDX12_NewFrame();
     ImGui_ImplWin32_NewFrame();
+    // Win32 reports client-area coordinates, while our swap chain keeps its original
+    // buffer size (even after a window resize). Scale UI rendering to that buffer so
+    // presentation back to the client area preserves the mouse/layout coordinates.
+    // Without this, the visual/input offset grows toward the right and bottom edges.
+    ImGuiIO& io = ImGui::GetIO();
+    const D3D12_RESOURCE_DESC uiTargetDesc = m_deviceContext.GetRenderTarget(frameIndex)->GetDesc();
+    io.DisplayFramebufferScale = ImVec2(1.0f, 1.0f);
+    if (io.DisplaySize.x > 0.0f && io.DisplaySize.y > 0.0f)
+    {
+        io.DisplayFramebufferScale = ImVec2(
+            static_cast<float>(uiTargetDesc.Width) / io.DisplaySize.x,
+            static_cast<float>(uiTargetDesc.Height) / io.DisplaySize.y);
+    }
+    // Re-derive the editor UI scale from this frame's viewport width before the frame is
+    // opened; the font atlas and style are only rebuilt when the width actually changed.
+    EditorUI::UpdateScaleForViewport(io.DisplaySize.x);
+
     ImGui::NewFrame();
-    EditorUI::Draw(m_resourceManager);
+    m_editorSelectionRenderer.Poll(m_deviceContext, m_resourceManager, m_editorSelection);
+    EditorUI::Draw(m_resourceManager, m_editorSelection);
 
     if (m_antiAliasingMode == AntiAliasingMode::DLSS)
     {
@@ -1949,6 +1973,9 @@ void D3D12App::Render()
         }
     }
 
+    m_editorSelectionRenderer.Record(m_deviceContext, m_resourceManager, m_editorSelection,
+        frameIndex, m_currUnjitteredViewProjGpu, m_imguiRtvHandles[frameIndex], io.DisplaySize.x, io.DisplaySize.y);
+
     if (!EndFrame())
     {
         // The command list could not be finalized; skip submission and presentation
@@ -1965,6 +1992,10 @@ void D3D12App::Render()
     if (FAILED(hr))
     {
         ReportFrameError("Application: failed to signal the frame fence.", hr);
+    }
+    else
+    {
+        m_editorSelectionRenderer.OnSubmitted(frameIndex, m_deviceContext.GetFenceValue(frameIndex));
     }
 
     // Flip the back buffer to the front screen
@@ -2028,8 +2059,13 @@ bool D3D12App::InitImGui()
     IMGUI_CHECKVERSION();
     ImGui::CreateContext();
     ImGui::StyleColorsDark();
-    EditorUI::Initialize();
-    ErrorLog::Write("Editor: UI initialized (docking enabled).");
+
+    // The editor UI is sized from the viewport width (reference: 2560px wide => 24px font),
+    // so the initial client size must be read here, before the first ImGui frame opens.
+    RECT clientRect = {};
+    GetClientRect(hwnd, &clientRect);
+    EditorUI::Initialize(static_cast<float>(clientRect.right - clientRect.left));
+    ErrorLog::Write("Editor: UI initialized (fixed three-pane layout).");
 
     if (!ImGui_ImplWin32_Init(hwnd))
     {

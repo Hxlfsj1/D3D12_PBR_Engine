@@ -102,7 +102,7 @@ public:
 
         memcpy(cbvCpuAddress, &constants, sizeof(TSRConstants));
         commandList->SetGraphicsRootConstantBufferView(
-            0,
+            PipelineManager::ConstantBufferBinding::Constants,
             resourceManager->GetCBVGPUAddress(frameIndex) + tsrConstantsOffset);
         commandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
         commandList->DrawInstanced(3, 1, 0, 0);
@@ -154,7 +154,7 @@ public:
             "TSRPreviousHistory");
 
         D3D12_SHADER_RESOURCE_VIEW_DESC depthSrvDesc = {};
-        depthSrvDesc.Format = DXGI_FORMAT_R32_FLOAT;
+        depthSrvDesc.Format = PipelineManager::Formats::DepthSRV;
         depthSrvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
         depthSrvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
         depthSrvDesc.Texture2D.MipLevels = 1;

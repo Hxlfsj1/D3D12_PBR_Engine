@@ -135,6 +135,7 @@ public:
             }
 
             ModelInstance instance;
+            instance.editorId = m_nextEditorId++;
             instance.name = desc.name;
             instance.pModel = myModels[desc.modelPath].get();
             instance.translation = desc.pos;
@@ -1421,6 +1422,7 @@ private:
     // A map for storing model data
     std::unordered_map<std::string, std::unique_ptr<Model>> myModels;
     std::vector<ModelInstance> m_sceneInstances;
+    UINT m_nextEditorId = 1;
     std::map<ID3D12Resource*, UINT> textureSrvIndices;
 
     UINT iblPrefilterIdx;

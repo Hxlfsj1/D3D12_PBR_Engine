@@ -72,10 +72,10 @@ public:
 
         memcpy(cbvCpuAddress, &hbaoCb, sizeof(HBAOConstants));
 
-        cmdList->SetGraphicsRootConstantBufferView(0, cbvGpuAddress);
+        cmdList->SetGraphicsRootConstantBufferView(PipelineManager::HBAOBinding::Constants, cbvGpuAddress);
 
-        UINT bindlessIndices1[4] = { depthSrvIdx, gbufferNormalSrvIdx, 0, 0 };
-        cmdList->SetGraphicsRoot32BitConstants(1, 4, bindlessIndices1, 0);
+        UINT bindlessIndices1[PipelineManager::HBAOBinding::TextureIndexCount] = { depthSrvIdx, gbufferNormalSrvIdx, 0, 0 };
+        cmdList->SetGraphicsRoot32BitConstants(PipelineManager::HBAOBinding::TextureIndices, PipelineManager::HBAOBinding::TextureIndexCount, bindlessIndices1, 0);
 
         cmdList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
         cmdList->DrawInstanced(3, 1, 0, 0);
@@ -109,10 +109,10 @@ public:
         cmdList->SetDescriptorHeaps(1, heaps);
 
         const UINT64 hbaoConstantsOffset = 1024 * 1024 * 9;
-        cmdList->SetGraphicsRootConstantBufferView(0, resourceManager->GetCBVGPUAddress(frameIndex) + hbaoConstantsOffset);
+        cmdList->SetGraphicsRootConstantBufferView(PipelineManager::HBAOBinding::Constants, resourceManager->GetCBVGPUAddress(frameIndex) + hbaoConstantsOffset);
 
-        UINT bindlessIndices2[4] = { hbaoRawSrvIdx, depthSrvIdx, gbufferNormalSrvIdx, 0 };
-        cmdList->SetGraphicsRoot32BitConstants(1, 4, bindlessIndices2, 0);
+        UINT bindlessIndices2[PipelineManager::HBAOBinding::TextureIndexCount] = { hbaoRawSrvIdx, depthSrvIdx, gbufferNormalSrvIdx, 0 };
+        cmdList->SetGraphicsRoot32BitConstants(PipelineManager::HBAOBinding::TextureIndices, PipelineManager::HBAOBinding::TextureIndexCount, bindlessIndices2, 0);
 
         cmdList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
         cmdList->DrawInstanced(3, 1, 0, 0);
@@ -143,10 +143,10 @@ public:
         RDGTextureDesc hbaoDesc;
         hbaoDesc.width = static_cast<uint32_t>(width);
         hbaoDesc.height = static_cast<uint32_t>(height);
-        hbaoDesc.format = DXGI_FORMAT_R16_FLOAT;
+        hbaoDesc.format = PipelineManager::Formats::ScalarSignal;
         hbaoDesc.flags = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
         hbaoDesc.hasClearValue = true;
-        hbaoDesc.clearValue.Format = DXGI_FORMAT_R16_FLOAT;
+        hbaoDesc.clearValue.Format = PipelineManager::Formats::ScalarSignal;
         hbaoDesc.clearValue.Color[0] = 1.0f;
 
         RDGTextureHandle hbaoRaw = graph.CreateTexture(
@@ -168,7 +168,7 @@ public:
         }
 
         D3D12_SHADER_RESOURCE_VIEW_DESC depthSrvDesc = {};
-        depthSrvDesc.Format = DXGI_FORMAT_R32_FLOAT;
+        depthSrvDesc.Format = PipelineManager::Formats::DepthSRV;
         depthSrvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
         depthSrvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
         depthSrvDesc.Texture2D.MipLevels = 1;

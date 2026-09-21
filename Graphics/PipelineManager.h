@@ -18,6 +18,63 @@ using Microsoft::WRL::ComPtr;
 class PipelineManager
 {
 public:
+    struct MeshBinding
+    {
+        enum Slot : UINT { FrameConstants, Instances, SphericalHarmonics, Materials, DrawConstants, Count };
+        static constexpr UINT MaterialConstantCount = 1;
+        static constexpr UINT ShadowConstantCount = 2;
+        static constexpr UINT TransparentConstantCount = 4;
+        static constexpr UINT SkyboxMatrixConstantCount = 16;
+        static constexpr UINT SkyboxTextureOffset = SkyboxMatrixConstantCount;
+        static constexpr UINT DrawConstantCount = SkyboxTextureOffset + 1;
+    };
+
+    struct DeferredBinding
+    {
+        enum Slot : UINT { FrameConstants, LightingConstants, SphericalHarmonics, Count };
+    };
+
+    struct HBAOBinding
+    {
+        enum Slot : UINT { Constants, TextureIndices, Count };
+        static constexpr UINT TextureIndexCount = 4;
+    };
+
+    struct PostProcessBinding
+    {
+        enum Slot : UINT { Constants, Count };
+        static constexpr UINT ConstantCount = 2;
+    };
+
+    struct SMAABinding
+    {
+        enum Slot : UINT { Constants, Count };
+        static constexpr UINT ConstantCount = 12;
+    };
+
+    struct ConstantBufferBinding
+    {
+        enum Slot : UINT { Constants, Count };
+    };
+
+    struct Formats
+    {
+        static constexpr DXGI_FORMAT SceneColor = DXGI_FORMAT_R16G16B16A16_FLOAT;
+        static constexpr DXGI_FORMAT DepthResource = DXGI_FORMAT_R32_TYPELESS;
+        static constexpr DXGI_FORMAT DepthDSV = DXGI_FORMAT_D32_FLOAT;
+        static constexpr DXGI_FORMAT DepthSRV = DXGI_FORMAT_R32_FLOAT;
+        static constexpr DXGI_FORMAT GBufferAlbedo = DXGI_FORMAT_R8G8B8A8_UNORM;
+        static constexpr DXGI_FORMAT GBufferNormal = DXGI_FORMAT_R16G16B16A16_FLOAT;
+        static constexpr DXGI_FORMAT GBufferORM = DXGI_FORMAT_R8G8B8A8_UNORM;
+        static constexpr DXGI_FORMAT GBufferEmissive = DXGI_FORMAT_R8G8B8A8_UNORM;
+        static constexpr DXGI_FORMAT ScalarSignal = DXGI_FORMAT_R16_FLOAT;
+        static constexpr DXGI_FORMAT MotionVector = DXGI_FORMAT_R16G16_FLOAT;
+        static constexpr DXGI_FORMAT PostProcess = DXGI_FORMAT_R8G8B8A8_UNORM;
+        static constexpr DXGI_FORMAT SMAAEdges = DXGI_FORMAT_R8G8_UNORM;
+        static constexpr DXGI_FORMAT SMAAWeights = DXGI_FORMAT_R8G8B8A8_UNORM;
+        static constexpr DXGI_FORMAT SMAAOutput = PostProcess;
+    };
+
     PipelineManager()
     {}
 
@@ -31,9 +88,24 @@ public:
             ErrorLog::Write("PipelineManager: main root-signature construction failed.");
             return false;
         }
-        if (!BuildPipelineStates(dc))
+        if (!BuildZPrepassPipeline(dc))
         {
-            ErrorLog::Write("PipelineManager: main PBR pipeline-state construction failed.");
+            ErrorLog::Write("PipelineManager: Z-prepass pipeline construction failed.");
+            return false;
+        }
+        if (!BuildForwardPipelines(dc))
+        {
+            ErrorLog::Write("PipelineManager: forward PBR pipeline construction failed.");
+            return false;
+        }
+        if (!BuildGBufferPipelines(dc))
+        {
+            ErrorLog::Write("PipelineManager: G-buffer pipeline construction failed.");
+            return false;
+        }
+        if (!BuildSkyboxPipeline(dc))
+        {
+            ErrorLog::Write("PipelineManager: skybox pipeline construction failed.");
             return false;
         }
         if (!BuildShadowPipeline(dc))
@@ -46,9 +118,9 @@ public:
             ErrorLog::Write("PipelineManager: post-process pipeline construction failed.");
             return false;
         }
-        if (!BuildDeferredPipeline(dc))
+        if (!BuildDeferredLightingPipeline(dc))
         {
-            ErrorLog::Write("PipelineManager: deferred pipeline construction failed.");
+            ErrorLog::Write("PipelineManager: deferred-lighting pipeline construction failed.");
             return false;
         }
         if (!BuildHBAOPipeline(dc))
@@ -177,11 +249,6 @@ public:
         return psoSkybox.Get();
     }
 
-    ID3D12RootSignature* GetShadowRootSignature()
-    {
-        return shadowRootSignature.Get();
-    }
-
     ID3D12PipelineState* GetShadowPSO()
     {
         return shadowPSO.Get();
@@ -298,38 +365,38 @@ private:
 
     bool BuildRootSignature(RenderDevice* dc)
     {
-        D3D12_ROOT_PARAMETER rootParameters[5];
+        D3D12_ROOT_PARAMETER rootParameters[MeshBinding::Count];
 
         // Pass the GPU virtual address of the CBV
-        rootParameters[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
-        rootParameters[0].Descriptor.ShaderRegister = 0;
-        rootParameters[0].Descriptor.RegisterSpace = 0;
-        rootParameters[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+        rootParameters[MeshBinding::FrameConstants].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
+        rootParameters[MeshBinding::FrameConstants].Descriptor.ShaderRegister = 0;
+        rootParameters[MeshBinding::FrameConstants].Descriptor.RegisterSpace = 0;
+        rootParameters[MeshBinding::FrameConstants].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
 
         // Pass the starting address of the instance world matrices
-        rootParameters[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_SRV;
-        rootParameters[1].Descriptor.ShaderRegister = 6;
-        rootParameters[1].Descriptor.RegisterSpace = 0;
-        rootParameters[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+        rootParameters[MeshBinding::Instances].ParameterType = D3D12_ROOT_PARAMETER_TYPE_SRV;
+        rootParameters[MeshBinding::Instances].Descriptor.ShaderRegister = 6;
+        rootParameters[MeshBinding::Instances].Descriptor.RegisterSpace = 0;
+        rootParameters[MeshBinding::Instances].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
 
         // Pass the Spherical Harmonic (SH) lighting coefficients
-        rootParameters[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
-        rootParameters[2].Descriptor.ShaderRegister = 2;
-        rootParameters[2].Descriptor.RegisterSpace = 0;
-        rootParameters[2].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+        rootParameters[MeshBinding::SphericalHarmonics].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
+        rootParameters[MeshBinding::SphericalHarmonics].Descriptor.ShaderRegister = 2;
+        rootParameters[MeshBinding::SphericalHarmonics].Descriptor.RegisterSpace = 0;
+        rootParameters[MeshBinding::SphericalHarmonics].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
 
         // Pass indices for bindless textures (PBR), or MVP matrix + texture index (Skybox)
-        rootParameters[3].ParameterType = D3D12_ROOT_PARAMETER_TYPE_SRV;
-        rootParameters[3].Descriptor.ShaderRegister = 7;
-        rootParameters[3].Descriptor.RegisterSpace = 0;
-        rootParameters[3].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+        rootParameters[MeshBinding::Materials].ParameterType = D3D12_ROOT_PARAMETER_TYPE_SRV;
+        rootParameters[MeshBinding::Materials].Descriptor.ShaderRegister = 7;
+        rootParameters[MeshBinding::Materials].Descriptor.RegisterSpace = 0;
+        rootParameters[MeshBinding::Materials].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
 
         // Pass 17 Parameters to Root Constants
-        rootParameters[4].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
-        rootParameters[4].Constants.ShaderRegister = 1;
-        rootParameters[4].Constants.Num32BitValues = 17;
-        rootParameters[4].Constants.RegisterSpace = 0;
-        rootParameters[4].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+        rootParameters[MeshBinding::DrawConstants].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
+        rootParameters[MeshBinding::DrawConstants].Constants.ShaderRegister = 1;
+        rootParameters[MeshBinding::DrawConstants].Constants.Num32BitValues = MeshBinding::DrawConstantCount;
+        rootParameters[MeshBinding::DrawConstants].Constants.RegisterSpace = 0;
+        rootParameters[MeshBinding::DrawConstants].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
 
         // Material, comparison-shadow, and point-shadow samplers.
         D3D12_STATIC_SAMPLER_DESC samplers[3];
@@ -354,7 +421,7 @@ private:
 
         // Enable instancing and bindless resources
         CD3DX12_ROOT_SIGNATURE_DESC rsDesc;
-        rsDesc.Init(5, rootParameters, 3, samplers,
+        rsDesc.Init(MeshBinding::Count, rootParameters, 3, samplers,
             D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT |
             D3D12_ROOT_SIGNATURE_FLAG_CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED);
 
@@ -376,26 +443,9 @@ private:
         return true;
     }
 
-    bool BuildPipelineStates(RenderDevice* dc)
+    static D3D12_INPUT_LAYOUT_DESC GetMeshInputLayout()
     {
-        // ====================================================================================================
-        // MACROS & INPUT LAYOUTS
-        // ====================================================================================================
-        std::vector<std::wstring> lod0Macros = { L"LOD_LEVEL=0" };
-        std::vector<std::wstring> lod1Macros = { L"LOD_LEVEL=1" };
-        std::vector<std::wstring> lod2Macros = { L"LOD_LEVEL=2" };
-
-        std::vector<std::wstring> lod0Cutout = { L"LOD_LEVEL=0", L"ALPHA_TEST=1" };
-        std::vector<std::wstring> lod1Cutout = { L"LOD_LEVEL=1", L"ALPHA_TEST=1" };
-        std::vector<std::wstring> lod2Cutout = { L"LOD_LEVEL=2", L"ALPHA_TEST=1" };
-
-        std::vector<std::wstring> lod0Transparent = { L"LOD_LEVEL=0", L"TRANSPARENT_PASS=1" };
-        std::vector<std::wstring> lod1Transparent = { L"LOD_LEVEL=1", L"TRANSPARENT_PASS=1" };
-        std::vector<std::wstring> lod2Transparent = { L"LOD_LEVEL=2", L"TRANSPARENT_PASS=1" };
-
-        std::vector<std::wstring> cutoutMacros = { L"ALPHA_TEST=1" };
-
-        D3D12_INPUT_ELEMENT_DESC layout[] =
+        static const D3D12_INPUT_ELEMENT_DESC layout[] =
         {
             { "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 0, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
             { "NORMAL", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 12, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
@@ -406,50 +456,19 @@ private:
             { "BLENDWEIGHT", 0, DXGI_FORMAT_R32G32B32A32_FLOAT, 0, 72, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 }
         };
 
-        D3D12_INPUT_ELEMENT_DESC layoutSky[] = { { "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 0, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 } };
+        return { layout, _countof(layout) };
+    }
 
-        // ====================================================================================================
-        // SHADER COMPILATION
-        // ====================================================================================================
+    bool BuildZPrepassPipeline(RenderDevice* dc)
+    {
+        std::vector<std::wstring> cutoutMacros = { L"ALPHA_TEST=1" };
+
         auto vsZPrepass = ShaderCompiler::CompileFromFile(L"Shaders/Shaders_For_ZPrepass.hlsl", L"VSMain", L"vs_6_6");
         auto psZPrepassCutout = ShaderCompiler::CompileFromFile(L"Shaders/Shaders_For_ZPrepass.hlsl", L"PSMain", L"ps_6_6", cutoutMacros);
 
-        auto vs0 = ShaderCompiler::CompileFromFile(L"Shaders/Shaders_For_PBR.hlsl", L"VSMain", L"vs_6_6", lod0Macros);
-        auto vs1 = ShaderCompiler::CompileFromFile(L"Shaders/Shaders_For_PBR.hlsl", L"VSMain", L"vs_6_6", lod1Macros);
-        auto vs2 = ShaderCompiler::CompileFromFile(L"Shaders/Shaders_For_PBR.hlsl", L"VSMain", L"vs_6_6", lod2Macros);
-
-        auto ps0 = ShaderCompiler::CompileFromFile(L"Shaders/Shaders_For_PBR.hlsl", L"PSMain", L"ps_6_6", lod0Macros);
-        auto ps1 = ShaderCompiler::CompileFromFile(L"Shaders/Shaders_For_PBR.hlsl", L"PSMain", L"ps_6_6", lod1Macros);
-        auto ps2 = ShaderCompiler::CompileFromFile(L"Shaders/Shaders_For_PBR.hlsl", L"PSMain", L"ps_6_6", lod2Macros);
-
-        auto psPBRCutout0 = ShaderCompiler::CompileFromFile(L"Shaders/Shaders_For_PBR.hlsl", L"PSMain", L"ps_6_6", lod0Cutout);
-        auto psPBRCutout1 = ShaderCompiler::CompileFromFile(L"Shaders/Shaders_For_PBR.hlsl", L"PSMain", L"ps_6_6", lod1Cutout);
-        auto psPBRCutout2 = ShaderCompiler::CompileFromFile(L"Shaders/Shaders_For_PBR.hlsl", L"PSMain", L"ps_6_6", lod2Cutout);
-
-        auto psTransparent0 = ShaderCompiler::CompileFromFile(L"Shaders/Shaders_For_PBR.hlsl", L"PSMain", L"ps_6_6", lod0Transparent);
-        auto psTransparent1 = ShaderCompiler::CompileFromFile(L"Shaders/Shaders_For_PBR.hlsl", L"PSMain", L"ps_6_6", lod1Transparent);
-        auto psTransparent2 = ShaderCompiler::CompileFromFile(L"Shaders/Shaders_For_PBR.hlsl", L"PSMain", L"ps_6_6", lod2Transparent);
-
-        auto vsGBuffer0 = ShaderCompiler::CompileFromFile(L"Shaders/Shaders_For_GBuffer.hlsl", L"VSMain", L"vs_6_6", lod0Macros);
-        auto vsGBuffer1 = ShaderCompiler::CompileFromFile(L"Shaders/Shaders_For_GBuffer.hlsl", L"VSMain", L"vs_6_6", lod1Macros);
-        auto vsGBuffer2 = ShaderCompiler::CompileFromFile(L"Shaders/Shaders_For_GBuffer.hlsl", L"VSMain", L"vs_6_6", lod2Macros);
-
-        auto psGBuffer0 = ShaderCompiler::CompileFromFile(L"Shaders/Shaders_For_GBuffer.hlsl", L"PSMain", L"ps_6_6", lod0Macros);
-        auto psGBuffer1 = ShaderCompiler::CompileFromFile(L"Shaders/Shaders_For_GBuffer.hlsl", L"PSMain", L"ps_6_6", lod1Macros);
-        auto psGBuffer2 = ShaderCompiler::CompileFromFile(L"Shaders/Shaders_For_GBuffer.hlsl", L"PSMain", L"ps_6_6", lod2Macros);
-
-        auto psGBufferCutout0 = ShaderCompiler::CompileFromFile(L"Shaders/Shaders_For_GBuffer.hlsl", L"PSMain", L"ps_6_6", lod0Cutout);
-        auto psGBufferCutout1 = ShaderCompiler::CompileFromFile(L"Shaders/Shaders_For_GBuffer.hlsl", L"PSMain", L"ps_6_6", lod1Cutout);
-        auto psGBufferCutout2 = ShaderCompiler::CompileFromFile(L"Shaders/Shaders_For_GBuffer.hlsl", L"PSMain", L"ps_6_6", lod2Cutout);
-
-        auto vsSky = ShaderCompiler::CompileFromFile(L"Shaders/Shaders_For_Sky_Box.hlsl", L"VSMain", L"vs_6_6");
-        auto psSky = ShaderCompiler::CompileFromFile(L"Shaders/Shaders_For_Sky_Box.hlsl", L"PSMain", L"ps_6_6");
-
-        // ====================================================================================================
-        // Z-PREPASS PSO
-        // ====================================================================================================
+        // Create the opaque depth-prepass PSO.
         D3D12_GRAPHICS_PIPELINE_STATE_DESC zPrepassPsoDesc = {};
-        zPrepassPsoDesc.InputLayout = { layout, _countof(layout) };
+        zPrepassPsoDesc.InputLayout = GetMeshInputLayout();
         zPrepassPsoDesc.pRootSignature = rootSignature.Get();
         zPrepassPsoDesc.VS = CD3DX12_SHADER_BYTECODE(vsZPrepass->GetBufferPointer(), vsZPrepass->GetBufferSize());
         zPrepassPsoDesc.PS = { nullptr, 0 };
@@ -464,24 +483,48 @@ private:
         zPrepassPsoDesc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
         zPrepassPsoDesc.NumRenderTargets = 0;
         zPrepassPsoDesc.RTVFormats[0] = DXGI_FORMAT_UNKNOWN;
-        zPrepassPsoDesc.DSVFormat = DXGI_FORMAT_D32_FLOAT;
+        zPrepassPsoDesc.DSVFormat = Formats::DepthDSV;
         zPrepassPsoDesc.SampleDesc.Count = 1;
 
         if (FAILED(dc->GetDevice()->CreateGraphicsPipelineState(&zPrepassPsoDesc, IID_PPV_ARGS(&psoZPrepass)))) return false;
 
-        // ====================================================================================================
-        // Z-PREPASS CUTOUT PSO
-        // ====================================================================================================
+        // Create the alpha-tested depth-prepass PSO.
         zPrepassPsoDesc.PS = CD3DX12_SHADER_BYTECODE(psZPrepassCutout->GetBufferPointer(), psZPrepassCutout->GetBufferSize());
         zPrepassPsoDesc.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
 
         if (FAILED(dc->GetDevice()->CreateGraphicsPipelineState(&zPrepassPsoDesc, IID_PPV_ARGS(&psoZPrepassCutout)))) return false;
 
-        // ====================================================================================================
-        // FORWARD PBR PSOs WITHOUT CUTOUT MATERIAL
-        // ====================================================================================================
+        return true;
+    }
+
+    bool BuildForwardPipelines(RenderDevice* dc)
+    {
+        std::vector<std::wstring> lod0Macros = { L"LOD_LEVEL=0" };
+        std::vector<std::wstring> lod1Macros = { L"LOD_LEVEL=1" };
+        std::vector<std::wstring> lod2Macros = { L"LOD_LEVEL=2" };
+        std::vector<std::wstring> lod0Cutout = { L"LOD_LEVEL=0", L"ALPHA_TEST=1" };
+        std::vector<std::wstring> lod1Cutout = { L"LOD_LEVEL=1", L"ALPHA_TEST=1" };
+        std::vector<std::wstring> lod2Cutout = { L"LOD_LEVEL=2", L"ALPHA_TEST=1" };
+        std::vector<std::wstring> lod0Transparent = { L"LOD_LEVEL=0", L"TRANSPARENT_PASS=1" };
+        std::vector<std::wstring> lod1Transparent = { L"LOD_LEVEL=1", L"TRANSPARENT_PASS=1" };
+        std::vector<std::wstring> lod2Transparent = { L"LOD_LEVEL=2", L"TRANSPARENT_PASS=1" };
+
+        auto vs0 = ShaderCompiler::CompileFromFile(L"Shaders/Shaders_For_PBR.hlsl", L"VSMain", L"vs_6_6", lod0Macros);
+        auto vs1 = ShaderCompiler::CompileFromFile(L"Shaders/Shaders_For_PBR.hlsl", L"VSMain", L"vs_6_6", lod1Macros);
+        auto vs2 = ShaderCompiler::CompileFromFile(L"Shaders/Shaders_For_PBR.hlsl", L"VSMain", L"vs_6_6", lod2Macros);
+        auto ps0 = ShaderCompiler::CompileFromFile(L"Shaders/Shaders_For_PBR.hlsl", L"PSMain", L"ps_6_6", lod0Macros);
+        auto ps1 = ShaderCompiler::CompileFromFile(L"Shaders/Shaders_For_PBR.hlsl", L"PSMain", L"ps_6_6", lod1Macros);
+        auto ps2 = ShaderCompiler::CompileFromFile(L"Shaders/Shaders_For_PBR.hlsl", L"PSMain", L"ps_6_6", lod2Macros);
+        auto psPBRCutout0 = ShaderCompiler::CompileFromFile(L"Shaders/Shaders_For_PBR.hlsl", L"PSMain", L"ps_6_6", lod0Cutout);
+        auto psPBRCutout1 = ShaderCompiler::CompileFromFile(L"Shaders/Shaders_For_PBR.hlsl", L"PSMain", L"ps_6_6", lod1Cutout);
+        auto psPBRCutout2 = ShaderCompiler::CompileFromFile(L"Shaders/Shaders_For_PBR.hlsl", L"PSMain", L"ps_6_6", lod2Cutout);
+        auto psTransparent0 = ShaderCompiler::CompileFromFile(L"Shaders/Shaders_For_PBR.hlsl", L"PSMain", L"ps_6_6", lod0Transparent);
+        auto psTransparent1 = ShaderCompiler::CompileFromFile(L"Shaders/Shaders_For_PBR.hlsl", L"PSMain", L"ps_6_6", lod1Transparent);
+        auto psTransparent2 = ShaderCompiler::CompileFromFile(L"Shaders/Shaders_For_PBR.hlsl", L"PSMain", L"ps_6_6", lod2Transparent);
+
+        // Create opaque forward PBR PSOs for rendering after the depth prepass.
         D3D12_GRAPHICS_PIPELINE_STATE_DESC psoDesc = {};
-        psoDesc.InputLayout = { layout, _countof(layout) };
+        psoDesc.InputLayout = GetMeshInputLayout();
         psoDesc.pRootSignature = rootSignature.Get();
         psoDesc.RasterizerState = CD3DX12_RASTERIZER_DESC(D3D12_DEFAULT);
         psoDesc.RasterizerState.CullMode = D3D12_CULL_MODE_BACK;
@@ -492,9 +535,9 @@ private:
         psoDesc.SampleMask = UINT_MAX;
         psoDesc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
         psoDesc.NumRenderTargets = 1;
-        psoDesc.RTVFormats[0] = DXGI_FORMAT_R16G16B16A16_FLOAT;
+        psoDesc.RTVFormats[0] = Formats::SceneColor;
         psoDesc.SampleDesc.Count = 1;
-        psoDesc.DSVFormat = DXGI_FORMAT_D32_FLOAT;
+        psoDesc.DSVFormat = Formats::DepthDSV;
 
         psoDesc.VS = CD3DX12_SHADER_BYTECODE(vs0->GetBufferPointer(), vs0->GetBufferSize());
         psoDesc.PS = CD3DX12_SHADER_BYTECODE(ps0->GetBufferPointer(), ps0->GetBufferSize());
@@ -508,9 +551,7 @@ private:
         psoDesc.PS = CD3DX12_SHADER_BYTECODE(ps2->GetBufferPointer(), ps2->GetBufferSize());
         if (FAILED(dc->GetDevice()->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(&psoPBR[2])))) return false;
 
-        // ====================================================================================================
-        // FORWARD PBR CUTOUT PSOs
-        // ====================================================================================================
+        // Create alpha-tested forward PBR PSOs for rendering after the depth prepass.
         D3D12_GRAPHICS_PIPELINE_STATE_DESC pbrCutoutDesc = psoDesc;
         pbrCutoutDesc.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
 
@@ -526,9 +567,7 @@ private:
         pbrCutoutDesc.PS = CD3DX12_SHADER_BYTECODE(psPBRCutout2->GetBufferPointer(), psPBRCutout2->GetBufferSize());
         if (FAILED(dc->GetDevice()->CreateGraphicsPipelineState(&pbrCutoutDesc, IID_PPV_ARGS(&psoPBRCutout[2])))) return false;
 
-        // ====================================================================================================
-        // FORWARD PBR PSOs WITHOUT Z-PREPASS
-        // ====================================================================================================
+        // Create opaque forward PBR PSOs without a depth prepass.
         D3D12_GRAPHICS_PIPELINE_STATE_DESC pbrBuildDepthDesc = psoDesc;
         pbrBuildDepthDesc.DepthStencilState.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ALL;
         pbrBuildDepthDesc.DepthStencilState.DepthFunc = D3D12_COMPARISON_FUNC_LESS;
@@ -545,6 +584,7 @@ private:
         pbrBuildDepthDesc.PS = CD3DX12_SHADER_BYTECODE(ps2->GetBufferPointer(), ps2->GetBufferSize());
         if (FAILED(dc->GetDevice()->CreateGraphicsPipelineState(&pbrBuildDepthDesc, IID_PPV_ARGS(&psoPBRBuildDepth[2])))) return false;
 
+        // Create alpha-tested forward PBR PSOs without a depth prepass.
         D3D12_GRAPHICS_PIPELINE_STATE_DESC pbrCutoutBuildDepthDesc = pbrBuildDepthDesc;
         pbrCutoutBuildDepthDesc.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
 
@@ -560,86 +600,7 @@ private:
         pbrCutoutBuildDepthDesc.PS = CD3DX12_SHADER_BYTECODE(psPBRCutout2->GetBufferPointer(), psPBRCutout2->GetBufferSize());
         if (FAILED(dc->GetDevice()->CreateGraphicsPipelineState(&pbrCutoutBuildDepthDesc, IID_PPV_ARGS(&psoPBRCutoutBuildDepth[2])))) return false;
 
-        // ====================================================================================================
-        // G-BUFFER PSOs
-        // ====================================================================================================
-        D3D12_GRAPHICS_PIPELINE_STATE_DESC gbufferPsoDesc = psoDesc;
-        gbufferPsoDesc.NumRenderTargets = 4;
-        gbufferPsoDesc.RTVFormats[0] = DXGI_FORMAT_R8G8B8A8_UNORM;
-        gbufferPsoDesc.RTVFormats[1] = DXGI_FORMAT_R16G16B16A16_FLOAT;
-        gbufferPsoDesc.RTVFormats[2] = DXGI_FORMAT_R8G8B8A8_UNORM;
-        gbufferPsoDesc.RTVFormats[3] = DXGI_FORMAT_R8G8B8A8_UNORM;
-        gbufferPsoDesc.DepthStencilState = CD3DX12_DEPTH_STENCIL_DESC(D3D12_DEFAULT);
-        gbufferPsoDesc.DepthStencilState.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ALL;
-        gbufferPsoDesc.DepthStencilState.DepthFunc = D3D12_COMPARISON_FUNC_LESS;
-
-        gbufferPsoDesc.VS = CD3DX12_SHADER_BYTECODE(vsGBuffer0->GetBufferPointer(), vsGBuffer0->GetBufferSize());
-        gbufferPsoDesc.PS = CD3DX12_SHADER_BYTECODE(psGBuffer0->GetBufferPointer(), psGBuffer0->GetBufferSize());
-        if (FAILED(dc->GetDevice()->CreateGraphicsPipelineState(&gbufferPsoDesc, IID_PPV_ARGS(&psoGBuffer[0])))) return false;
-
-        gbufferPsoDesc.VS = CD3DX12_SHADER_BYTECODE(vsGBuffer1->GetBufferPointer(), vsGBuffer1->GetBufferSize());
-        gbufferPsoDesc.PS = CD3DX12_SHADER_BYTECODE(psGBuffer1->GetBufferPointer(), psGBuffer1->GetBufferSize());
-        if (FAILED(dc->GetDevice()->CreateGraphicsPipelineState(&gbufferPsoDesc, IID_PPV_ARGS(&psoGBuffer[1])))) return false;
-
-        gbufferPsoDesc.VS = CD3DX12_SHADER_BYTECODE(vsGBuffer2->GetBufferPointer(), vsGBuffer2->GetBufferSize());
-        gbufferPsoDesc.PS = CD3DX12_SHADER_BYTECODE(psGBuffer2->GetBufferPointer(), psGBuffer2->GetBufferSize());
-        if (FAILED(dc->GetDevice()->CreateGraphicsPipelineState(&gbufferPsoDesc, IID_PPV_ARGS(&psoGBuffer[2])))) return false;
-
-        // ====================================================================================================
-        // G-BUFFER CUTOUT PSOs
-        // ====================================================================================================
-        D3D12_GRAPHICS_PIPELINE_STATE_DESC gbufferCutoutPsoDesc = gbufferPsoDesc;
-        gbufferCutoutPsoDesc.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
-
-        gbufferCutoutPsoDesc.VS = CD3DX12_SHADER_BYTECODE(vsGBuffer0->GetBufferPointer(), vsGBuffer0->GetBufferSize());
-        gbufferCutoutPsoDesc.PS = CD3DX12_SHADER_BYTECODE(psGBufferCutout0->GetBufferPointer(), psGBufferCutout0->GetBufferSize());
-        if (FAILED(dc->GetDevice()->CreateGraphicsPipelineState(&gbufferCutoutPsoDesc, IID_PPV_ARGS(&psoGBufferCutout[0])))) return false;
-
-        gbufferCutoutPsoDesc.VS = CD3DX12_SHADER_BYTECODE(vsGBuffer1->GetBufferPointer(), vsGBuffer1->GetBufferSize());
-        gbufferCutoutPsoDesc.PS = CD3DX12_SHADER_BYTECODE(psGBufferCutout1->GetBufferPointer(), psGBufferCutout1->GetBufferSize());
-        if (FAILED(dc->GetDevice()->CreateGraphicsPipelineState(&gbufferCutoutPsoDesc, IID_PPV_ARGS(&psoGBufferCutout[1])))) return false;
-
-        gbufferCutoutPsoDesc.VS = CD3DX12_SHADER_BYTECODE(vsGBuffer2->GetBufferPointer(), vsGBuffer2->GetBufferSize());
-        gbufferCutoutPsoDesc.PS = CD3DX12_SHADER_BYTECODE(psGBufferCutout2->GetBufferPointer(), psGBufferCutout2->GetBufferSize());
-        if (FAILED(dc->GetDevice()->CreateGraphicsPipelineState(&gbufferCutoutPsoDesc, IID_PPV_ARGS(&psoGBufferCutout[2])))) return false;
-
-        // ====================================================================================================
-        // G-BUFFER PSOs AFTER Z-PREPASS
-        // ====================================================================================================
-        D3D12_GRAPHICS_PIPELINE_STATE_DESC gbufferAfterZPrepassDesc = gbufferPsoDesc;
-        gbufferAfterZPrepassDesc.DepthStencilState.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ZERO;
-        gbufferAfterZPrepassDesc.DepthStencilState.DepthFunc = D3D12_COMPARISON_FUNC_EQUAL;
-
-        gbufferAfterZPrepassDesc.VS = CD3DX12_SHADER_BYTECODE(vsGBuffer0->GetBufferPointer(), vsGBuffer0->GetBufferSize());
-        gbufferAfterZPrepassDesc.PS = CD3DX12_SHADER_BYTECODE(psGBuffer0->GetBufferPointer(), psGBuffer0->GetBufferSize());
-        if (FAILED(dc->GetDevice()->CreateGraphicsPipelineState(&gbufferAfterZPrepassDesc, IID_PPV_ARGS(&psoGBufferAfterZPrepass[0])))) return false;
-
-        gbufferAfterZPrepassDesc.VS = CD3DX12_SHADER_BYTECODE(vsGBuffer1->GetBufferPointer(), vsGBuffer1->GetBufferSize());
-        gbufferAfterZPrepassDesc.PS = CD3DX12_SHADER_BYTECODE(psGBuffer1->GetBufferPointer(), psGBuffer1->GetBufferSize());
-        if (FAILED(dc->GetDevice()->CreateGraphicsPipelineState(&gbufferAfterZPrepassDesc, IID_PPV_ARGS(&psoGBufferAfterZPrepass[1])))) return false;
-
-        gbufferAfterZPrepassDesc.VS = CD3DX12_SHADER_BYTECODE(vsGBuffer2->GetBufferPointer(), vsGBuffer2->GetBufferSize());
-        gbufferAfterZPrepassDesc.PS = CD3DX12_SHADER_BYTECODE(psGBuffer2->GetBufferPointer(), psGBuffer2->GetBufferSize());
-        if (FAILED(dc->GetDevice()->CreateGraphicsPipelineState(&gbufferAfterZPrepassDesc, IID_PPV_ARGS(&psoGBufferAfterZPrepass[2])))) return false;
-
-        D3D12_GRAPHICS_PIPELINE_STATE_DESC gbufferCutoutAfterZPrepassDesc = gbufferAfterZPrepassDesc;
-        gbufferCutoutAfterZPrepassDesc.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
-
-        gbufferCutoutAfterZPrepassDesc.VS = CD3DX12_SHADER_BYTECODE(vsGBuffer0->GetBufferPointer(), vsGBuffer0->GetBufferSize());
-        gbufferCutoutAfterZPrepassDesc.PS = CD3DX12_SHADER_BYTECODE(psGBufferCutout0->GetBufferPointer(), psGBufferCutout0->GetBufferSize());
-        if (FAILED(dc->GetDevice()->CreateGraphicsPipelineState(&gbufferCutoutAfterZPrepassDesc, IID_PPV_ARGS(&psoGBufferCutoutAfterZPrepass[0])))) return false;
-
-        gbufferCutoutAfterZPrepassDesc.VS = CD3DX12_SHADER_BYTECODE(vsGBuffer1->GetBufferPointer(), vsGBuffer1->GetBufferSize());
-        gbufferCutoutAfterZPrepassDesc.PS = CD3DX12_SHADER_BYTECODE(psGBufferCutout1->GetBufferPointer(), psGBufferCutout1->GetBufferSize());
-        if (FAILED(dc->GetDevice()->CreateGraphicsPipelineState(&gbufferCutoutAfterZPrepassDesc, IID_PPV_ARGS(&psoGBufferCutoutAfterZPrepass[1])))) return false;
-
-        gbufferCutoutAfterZPrepassDesc.VS = CD3DX12_SHADER_BYTECODE(vsGBuffer2->GetBufferPointer(), vsGBuffer2->GetBufferSize());
-        gbufferCutoutAfterZPrepassDesc.PS = CD3DX12_SHADER_BYTECODE(psGBufferCutout2->GetBufferPointer(), psGBufferCutout2->GetBufferSize());
-        if (FAILED(dc->GetDevice()->CreateGraphicsPipelineState(&gbufferCutoutAfterZPrepassDesc, IID_PPV_ARGS(&psoGBufferCutoutAfterZPrepass[2])))) return false;
-
-        // ====================================================================================================
-        // TRANSPARENT PSOs
-        // ====================================================================================================
+        // Create transparent forward PBR PSOs.
         D3D12_GRAPHICS_PIPELINE_STATE_DESC transparentDesc = psoDesc;
         D3D12_RENDER_TARGET_BLEND_DESC transparencyBlendDesc = {};
         transparencyBlendDesc.BlendEnable = TRUE;
@@ -672,10 +633,134 @@ private:
         transparentDesc.PS = CD3DX12_SHADER_BYTECODE(psTransparent2->GetBufferPointer(), psTransparent2->GetBufferSize());
         if (FAILED(dc->GetDevice()->CreateGraphicsPipelineState(&transparentDesc, IID_PPV_ARGS(&psoTransparent[2])))) return false;
 
-        // ====================================================================================================
-        // SKYBOX PSO
-        // ====================================================================================================
-        D3D12_GRAPHICS_PIPELINE_STATE_DESC skyPsoDesc = psoDesc;
+        return true;
+    }
+
+    bool BuildGBufferPipelines(RenderDevice* dc)
+    {
+        std::vector<std::wstring> lod0Macros = { L"LOD_LEVEL=0" };
+        std::vector<std::wstring> lod1Macros = { L"LOD_LEVEL=1" };
+        std::vector<std::wstring> lod2Macros = { L"LOD_LEVEL=2" };
+        std::vector<std::wstring> lod0Cutout = { L"LOD_LEVEL=0", L"ALPHA_TEST=1" };
+        std::vector<std::wstring> lod1Cutout = { L"LOD_LEVEL=1", L"ALPHA_TEST=1" };
+        std::vector<std::wstring> lod2Cutout = { L"LOD_LEVEL=2", L"ALPHA_TEST=1" };
+
+        auto vsGBuffer0 = ShaderCompiler::CompileFromFile(L"Shaders/Shaders_For_GBuffer.hlsl", L"VSMain", L"vs_6_6", lod0Macros);
+        auto vsGBuffer1 = ShaderCompiler::CompileFromFile(L"Shaders/Shaders_For_GBuffer.hlsl", L"VSMain", L"vs_6_6", lod1Macros);
+        auto vsGBuffer2 = ShaderCompiler::CompileFromFile(L"Shaders/Shaders_For_GBuffer.hlsl", L"VSMain", L"vs_6_6", lod2Macros);
+        auto psGBuffer0 = ShaderCompiler::CompileFromFile(L"Shaders/Shaders_For_GBuffer.hlsl", L"PSMain", L"ps_6_6", lod0Macros);
+        auto psGBuffer1 = ShaderCompiler::CompileFromFile(L"Shaders/Shaders_For_GBuffer.hlsl", L"PSMain", L"ps_6_6", lod1Macros);
+        auto psGBuffer2 = ShaderCompiler::CompileFromFile(L"Shaders/Shaders_For_GBuffer.hlsl", L"PSMain", L"ps_6_6", lod2Macros);
+        auto psGBufferCutout0 = ShaderCompiler::CompileFromFile(L"Shaders/Shaders_For_GBuffer.hlsl", L"PSMain", L"ps_6_6", lod0Cutout);
+        auto psGBufferCutout1 = ShaderCompiler::CompileFromFile(L"Shaders/Shaders_For_GBuffer.hlsl", L"PSMain", L"ps_6_6", lod1Cutout);
+        auto psGBufferCutout2 = ShaderCompiler::CompileFromFile(L"Shaders/Shaders_For_GBuffer.hlsl", L"PSMain", L"ps_6_6", lod2Cutout);
+
+        // Create opaque G-buffer PSOs that write depth.
+        D3D12_GRAPHICS_PIPELINE_STATE_DESC gbufferPsoDesc = {};
+        gbufferPsoDesc.InputLayout = GetMeshInputLayout();
+        gbufferPsoDesc.pRootSignature = rootSignature.Get();
+        gbufferPsoDesc.RasterizerState = CD3DX12_RASTERIZER_DESC(D3D12_DEFAULT);
+        gbufferPsoDesc.RasterizerState.CullMode = D3D12_CULL_MODE_BACK;
+        gbufferPsoDesc.BlendState = CD3DX12_BLEND_DESC(D3D12_DEFAULT);
+        gbufferPsoDesc.SampleMask = UINT_MAX;
+        gbufferPsoDesc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+        gbufferPsoDesc.SampleDesc.Count = 1;
+        gbufferPsoDesc.DSVFormat = Formats::DepthDSV;
+
+        gbufferPsoDesc.NumRenderTargets = 4;
+        gbufferPsoDesc.RTVFormats[0] = Formats::GBufferAlbedo;
+        gbufferPsoDesc.RTVFormats[1] = Formats::GBufferNormal;
+        gbufferPsoDesc.RTVFormats[2] = Formats::GBufferORM;
+        gbufferPsoDesc.RTVFormats[3] = Formats::GBufferEmissive;
+        gbufferPsoDesc.DepthStencilState = CD3DX12_DEPTH_STENCIL_DESC(D3D12_DEFAULT);
+        gbufferPsoDesc.DepthStencilState.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ALL;
+        gbufferPsoDesc.DepthStencilState.DepthFunc = D3D12_COMPARISON_FUNC_LESS;
+
+        gbufferPsoDesc.VS = CD3DX12_SHADER_BYTECODE(vsGBuffer0->GetBufferPointer(), vsGBuffer0->GetBufferSize());
+        gbufferPsoDesc.PS = CD3DX12_SHADER_BYTECODE(psGBuffer0->GetBufferPointer(), psGBuffer0->GetBufferSize());
+        if (FAILED(dc->GetDevice()->CreateGraphicsPipelineState(&gbufferPsoDesc, IID_PPV_ARGS(&psoGBuffer[0])))) return false;
+
+        gbufferPsoDesc.VS = CD3DX12_SHADER_BYTECODE(vsGBuffer1->GetBufferPointer(), vsGBuffer1->GetBufferSize());
+        gbufferPsoDesc.PS = CD3DX12_SHADER_BYTECODE(psGBuffer1->GetBufferPointer(), psGBuffer1->GetBufferSize());
+        if (FAILED(dc->GetDevice()->CreateGraphicsPipelineState(&gbufferPsoDesc, IID_PPV_ARGS(&psoGBuffer[1])))) return false;
+
+        gbufferPsoDesc.VS = CD3DX12_SHADER_BYTECODE(vsGBuffer2->GetBufferPointer(), vsGBuffer2->GetBufferSize());
+        gbufferPsoDesc.PS = CD3DX12_SHADER_BYTECODE(psGBuffer2->GetBufferPointer(), psGBuffer2->GetBufferSize());
+        if (FAILED(dc->GetDevice()->CreateGraphicsPipelineState(&gbufferPsoDesc, IID_PPV_ARGS(&psoGBuffer[2])))) return false;
+
+        // Create alpha-tested G-buffer PSOs that write depth.
+        D3D12_GRAPHICS_PIPELINE_STATE_DESC gbufferCutoutPsoDesc = gbufferPsoDesc;
+        gbufferCutoutPsoDesc.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
+
+        gbufferCutoutPsoDesc.VS = CD3DX12_SHADER_BYTECODE(vsGBuffer0->GetBufferPointer(), vsGBuffer0->GetBufferSize());
+        gbufferCutoutPsoDesc.PS = CD3DX12_SHADER_BYTECODE(psGBufferCutout0->GetBufferPointer(), psGBufferCutout0->GetBufferSize());
+        if (FAILED(dc->GetDevice()->CreateGraphicsPipelineState(&gbufferCutoutPsoDesc, IID_PPV_ARGS(&psoGBufferCutout[0])))) return false;
+
+        gbufferCutoutPsoDesc.VS = CD3DX12_SHADER_BYTECODE(vsGBuffer1->GetBufferPointer(), vsGBuffer1->GetBufferSize());
+        gbufferCutoutPsoDesc.PS = CD3DX12_SHADER_BYTECODE(psGBufferCutout1->GetBufferPointer(), psGBufferCutout1->GetBufferSize());
+        if (FAILED(dc->GetDevice()->CreateGraphicsPipelineState(&gbufferCutoutPsoDesc, IID_PPV_ARGS(&psoGBufferCutout[1])))) return false;
+
+        gbufferCutoutPsoDesc.VS = CD3DX12_SHADER_BYTECODE(vsGBuffer2->GetBufferPointer(), vsGBuffer2->GetBufferSize());
+        gbufferCutoutPsoDesc.PS = CD3DX12_SHADER_BYTECODE(psGBufferCutout2->GetBufferPointer(), psGBufferCutout2->GetBufferSize());
+        if (FAILED(dc->GetDevice()->CreateGraphicsPipelineState(&gbufferCutoutPsoDesc, IID_PPV_ARGS(&psoGBufferCutout[2])))) return false;
+
+        // Create opaque G-buffer PSOs after the depth prepass.
+        D3D12_GRAPHICS_PIPELINE_STATE_DESC gbufferAfterZPrepassDesc = gbufferPsoDesc;
+        gbufferAfterZPrepassDesc.DepthStencilState.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ZERO;
+        gbufferAfterZPrepassDesc.DepthStencilState.DepthFunc = D3D12_COMPARISON_FUNC_EQUAL;
+
+        gbufferAfterZPrepassDesc.VS = CD3DX12_SHADER_BYTECODE(vsGBuffer0->GetBufferPointer(), vsGBuffer0->GetBufferSize());
+        gbufferAfterZPrepassDesc.PS = CD3DX12_SHADER_BYTECODE(psGBuffer0->GetBufferPointer(), psGBuffer0->GetBufferSize());
+        if (FAILED(dc->GetDevice()->CreateGraphicsPipelineState(&gbufferAfterZPrepassDesc, IID_PPV_ARGS(&psoGBufferAfterZPrepass[0])))) return false;
+
+        gbufferAfterZPrepassDesc.VS = CD3DX12_SHADER_BYTECODE(vsGBuffer1->GetBufferPointer(), vsGBuffer1->GetBufferSize());
+        gbufferAfterZPrepassDesc.PS = CD3DX12_SHADER_BYTECODE(psGBuffer1->GetBufferPointer(), psGBuffer1->GetBufferSize());
+        if (FAILED(dc->GetDevice()->CreateGraphicsPipelineState(&gbufferAfterZPrepassDesc, IID_PPV_ARGS(&psoGBufferAfterZPrepass[1])))) return false;
+
+        gbufferAfterZPrepassDesc.VS = CD3DX12_SHADER_BYTECODE(vsGBuffer2->GetBufferPointer(), vsGBuffer2->GetBufferSize());
+        gbufferAfterZPrepassDesc.PS = CD3DX12_SHADER_BYTECODE(psGBuffer2->GetBufferPointer(), psGBuffer2->GetBufferSize());
+        if (FAILED(dc->GetDevice()->CreateGraphicsPipelineState(&gbufferAfterZPrepassDesc, IID_PPV_ARGS(&psoGBufferAfterZPrepass[2])))) return false;
+
+        // Create alpha-tested G-buffer PSOs after the depth prepass.
+        D3D12_GRAPHICS_PIPELINE_STATE_DESC gbufferCutoutAfterZPrepassDesc = gbufferAfterZPrepassDesc;
+        gbufferCutoutAfterZPrepassDesc.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
+
+        gbufferCutoutAfterZPrepassDesc.VS = CD3DX12_SHADER_BYTECODE(vsGBuffer0->GetBufferPointer(), vsGBuffer0->GetBufferSize());
+        gbufferCutoutAfterZPrepassDesc.PS = CD3DX12_SHADER_BYTECODE(psGBufferCutout0->GetBufferPointer(), psGBufferCutout0->GetBufferSize());
+        if (FAILED(dc->GetDevice()->CreateGraphicsPipelineState(&gbufferCutoutAfterZPrepassDesc, IID_PPV_ARGS(&psoGBufferCutoutAfterZPrepass[0])))) return false;
+
+        gbufferCutoutAfterZPrepassDesc.VS = CD3DX12_SHADER_BYTECODE(vsGBuffer1->GetBufferPointer(), vsGBuffer1->GetBufferSize());
+        gbufferCutoutAfterZPrepassDesc.PS = CD3DX12_SHADER_BYTECODE(psGBufferCutout1->GetBufferPointer(), psGBufferCutout1->GetBufferSize());
+        if (FAILED(dc->GetDevice()->CreateGraphicsPipelineState(&gbufferCutoutAfterZPrepassDesc, IID_PPV_ARGS(&psoGBufferCutoutAfterZPrepass[1])))) return false;
+
+        gbufferCutoutAfterZPrepassDesc.VS = CD3DX12_SHADER_BYTECODE(vsGBuffer2->GetBufferPointer(), vsGBuffer2->GetBufferSize());
+        gbufferCutoutAfterZPrepassDesc.PS = CD3DX12_SHADER_BYTECODE(psGBufferCutout2->GetBufferPointer(), psGBufferCutout2->GetBufferSize());
+        if (FAILED(dc->GetDevice()->CreateGraphicsPipelineState(&gbufferCutoutAfterZPrepassDesc, IID_PPV_ARGS(&psoGBufferCutoutAfterZPrepass[2])))) return false;
+
+        return true;
+    }
+
+    bool BuildSkyboxPipeline(RenderDevice* dc)
+    {
+        const D3D12_INPUT_ELEMENT_DESC layoutSky[] = { { "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 0, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 } };
+
+        auto vsSky = ShaderCompiler::CompileFromFile(L"Shaders/Shaders_For_Sky_Box.hlsl", L"VSMain", L"vs_6_6");
+        auto psSky = ShaderCompiler::CompileFromFile(L"Shaders/Shaders_For_Sky_Box.hlsl", L"PSMain", L"ps_6_6");
+
+        // Create the skybox PSO with front-face culling and read-only depth.
+        D3D12_GRAPHICS_PIPELINE_STATE_DESC skyPsoDesc = {};
+        skyPsoDesc.pRootSignature = rootSignature.Get();
+        skyPsoDesc.RasterizerState = CD3DX12_RASTERIZER_DESC(D3D12_DEFAULT);
+        skyPsoDesc.BlendState = CD3DX12_BLEND_DESC(D3D12_DEFAULT);
+        skyPsoDesc.DepthStencilState = CD3DX12_DEPTH_STENCIL_DESC(D3D12_DEFAULT);
+        skyPsoDesc.DepthStencilState.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ZERO;
+        skyPsoDesc.SampleMask = UINT_MAX;
+        skyPsoDesc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+        skyPsoDesc.NumRenderTargets = 1;
+        skyPsoDesc.RTVFormats[0] = Formats::SceneColor;
+        skyPsoDesc.SampleDesc.Count = 1;
+        skyPsoDesc.DSVFormat = Formats::DepthDSV;
+
         skyPsoDesc.InputLayout = { layoutSky, 1 };
         skyPsoDesc.VS = CD3DX12_SHADER_BYTECODE(vsSky->GetBufferPointer(), vsSky->GetBufferSize());
         skyPsoDesc.PS = CD3DX12_SHADER_BYTECODE(psSky->GetBufferPointer(), psSky->GetBufferSize());
@@ -705,6 +790,7 @@ private:
             { "BLENDWEIGHT", 0, DXGI_FORMAT_R32G32B32A32_FLOAT, 0, 72, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 }
         };
 
+        // Create the opaque shadow-map PSO.
         D3D12_GRAPHICS_PIPELINE_STATE_DESC psoDesc = {};
         psoDesc.InputLayout = { layout, _countof(layout) };
         psoDesc.pRootSignature = rootSignature.Get();
@@ -723,13 +809,14 @@ private:
 
         psoDesc.NumRenderTargets = 0;
         psoDesc.RTVFormats[0] = DXGI_FORMAT_UNKNOWN;
-        psoDesc.DSVFormat = DXGI_FORMAT_D32_FLOAT;
+        psoDesc.DSVFormat = Formats::DepthDSV;
         psoDesc.SampleDesc.Count = 1;
 
         psoDesc.VS = CD3DX12_SHADER_BYTECODE(vs->GetBufferPointer(), vs->GetBufferSize());
         psoDesc.PS = { nullptr, 0 };
         if (FAILED(dc->GetDevice()->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(&shadowPSO)))) return false;
 
+        // Create the alpha-tested shadow-map PSO.
         psoDesc.PS = CD3DX12_SHADER_BYTECODE(psCutout->GetBufferPointer(), psCutout->GetBufferSize());
         if (FAILED(dc->GetDevice()->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(&shadowCutoutPSO)))) return false;
 
@@ -739,12 +826,12 @@ private:
     bool BuildPostProcessPipeline(RenderDevice* dc)
     {
         CD3DX12_ROOT_PARAMETER rootParam;
-        rootParam.InitAsConstants(2, 0, 0, D3D12_SHADER_VISIBILITY_ALL);
+        rootParam.InitAsConstants(PostProcessBinding::ConstantCount, 0, 0, D3D12_SHADER_VISIBILITY_ALL);
 
         D3D12_STATIC_SAMPLER_DESC sampler = CD3DX12_STATIC_SAMPLER_DESC(0, D3D12_FILTER_MIN_MAG_MIP_LINEAR);
 
         CD3DX12_ROOT_SIGNATURE_DESC rsDesc;
-        rsDesc.Init(1, &rootParam, 1, &sampler,
+        rsDesc.Init(PostProcessBinding::Count, &rootParam, 1, &sampler,
             D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT |
             D3D12_ROOT_SIGNATURE_FLAG_CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED);
 
@@ -769,6 +856,7 @@ private:
         auto psNoSharpen = ShaderCompiler::CompileFromFile(L"Shaders/Shaders_For_PostProcess.hlsl", L"PSMain", L"ps_6_6", noSharpenMacros);
         auto psSharpen = ShaderCompiler::CompileFromFile(L"Shaders/Shaders_For_PostProcess.hlsl", L"PSMain", L"ps_6_6", sharpenMacros);
 
+        // Create the post-process PSO without sharpening.
         D3D12_GRAPHICS_PIPELINE_STATE_DESC psoDesc = {};
         psoDesc.InputLayout = { nullptr, 0 };
         psoDesc.pRootSignature = postProcessRootSignature.Get();
@@ -786,7 +874,7 @@ private:
         psoDesc.SampleMask = UINT_MAX;
         psoDesc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
         psoDesc.NumRenderTargets = 1;
-        psoDesc.RTVFormats[0] = DXGI_FORMAT_R8G8B8A8_UNORM;
+        psoDesc.RTVFormats[0] = Formats::PostProcess;
         psoDesc.SampleDesc.Count = 1;
 
         if (FAILED(dc->GetDevice()->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(&postProcessPSO[0]))))
@@ -795,6 +883,7 @@ private:
             return false;
         }
 
+        // Create the post-process PSO with sharpening.
         psoDesc.PS = CD3DX12_SHADER_BYTECODE(
             psSharpen->GetBufferPointer(),
             psSharpen->GetBufferSize());
@@ -807,24 +896,24 @@ private:
         return true;
     }
 
-    bool BuildDeferredPipeline(RenderDevice* dc)
+    bool BuildDeferredLightingPipeline(RenderDevice* dc)
     {
-        D3D12_ROOT_PARAMETER rootParameters[3];
+        D3D12_ROOT_PARAMETER rootParameters[DeferredBinding::Count];
 
-        rootParameters[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
-        rootParameters[0].Descriptor.ShaderRegister = 0;
-        rootParameters[0].Descriptor.RegisterSpace = 0;
-        rootParameters[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+        rootParameters[DeferredBinding::FrameConstants].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
+        rootParameters[DeferredBinding::FrameConstants].Descriptor.ShaderRegister = 0;
+        rootParameters[DeferredBinding::FrameConstants].Descriptor.RegisterSpace = 0;
+        rootParameters[DeferredBinding::FrameConstants].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
 
-        rootParameters[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
-        rootParameters[1].Descriptor.ShaderRegister = 1;
-        rootParameters[1].Descriptor.RegisterSpace = 0;
-        rootParameters[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+        rootParameters[DeferredBinding::LightingConstants].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
+        rootParameters[DeferredBinding::LightingConstants].Descriptor.ShaderRegister = 1;
+        rootParameters[DeferredBinding::LightingConstants].Descriptor.RegisterSpace = 0;
+        rootParameters[DeferredBinding::LightingConstants].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
 
-        rootParameters[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
-        rootParameters[2].Descriptor.ShaderRegister = 2;
-        rootParameters[2].Descriptor.RegisterSpace = 0;
-        rootParameters[2].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+        rootParameters[DeferredBinding::SphericalHarmonics].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
+        rootParameters[DeferredBinding::SphericalHarmonics].Descriptor.ShaderRegister = 2;
+        rootParameters[DeferredBinding::SphericalHarmonics].Descriptor.RegisterSpace = 0;
+        rootParameters[DeferredBinding::SphericalHarmonics].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
 
         D3D12_STATIC_SAMPLER_DESC samplers[3];
         samplers[0] = CD3DX12_STATIC_SAMPLER_DESC(0, D3D12_FILTER_MIN_MAG_MIP_LINEAR);
@@ -849,7 +938,7 @@ private:
         samplers[2].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
 
         CD3DX12_ROOT_SIGNATURE_DESC rsDesc;
-        rsDesc.Init(3, rootParameters, 3, samplers,
+        rsDesc.Init(DeferredBinding::Count, rootParameters, 3, samplers,
             D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT |
             D3D12_ROOT_SIGNATURE_FLAG_CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED);
 
@@ -885,7 +974,7 @@ private:
         psoDesc.SampleMask = UINT_MAX;
         psoDesc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
         psoDesc.NumRenderTargets = 1;
-        psoDesc.RTVFormats[0] = DXGI_FORMAT_R16G16B16A16_FLOAT;
+        psoDesc.RTVFormats[0] = Formats::SceneColor;
         psoDesc.SampleDesc.Count = 1;
 
         if (FAILED(dc->GetDevice()->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(&deferredPSO))))
@@ -899,18 +988,18 @@ private:
 
     bool BuildHBAOPipeline(RenderDevice* dc)
     {
-        D3D12_ROOT_PARAMETER rootParameters[2];
+        D3D12_ROOT_PARAMETER rootParameters[HBAOBinding::Count];
 
-        rootParameters[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
-        rootParameters[0].Descriptor.ShaderRegister = 0;
-        rootParameters[0].Descriptor.RegisterSpace = 0;
-        rootParameters[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+        rootParameters[HBAOBinding::Constants].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
+        rootParameters[HBAOBinding::Constants].Descriptor.ShaderRegister = 0;
+        rootParameters[HBAOBinding::Constants].Descriptor.RegisterSpace = 0;
+        rootParameters[HBAOBinding::Constants].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
 
-        rootParameters[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
-        rootParameters[1].Constants.ShaderRegister = 1;
-        rootParameters[1].Constants.Num32BitValues = 4;
-        rootParameters[1].Constants.RegisterSpace = 0;
-        rootParameters[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+        rootParameters[HBAOBinding::TextureIndices].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
+        rootParameters[HBAOBinding::TextureIndices].Constants.ShaderRegister = 1;
+        rootParameters[HBAOBinding::TextureIndices].Constants.Num32BitValues = HBAOBinding::TextureIndexCount;
+        rootParameters[HBAOBinding::TextureIndices].Constants.RegisterSpace = 0;
+        rootParameters[HBAOBinding::TextureIndices].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
 
         D3D12_STATIC_SAMPLER_DESC samplers[2];
 
@@ -931,7 +1020,7 @@ private:
         samplers[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
 
         CD3DX12_ROOT_SIGNATURE_DESC rsDesc;
-        rsDesc.Init(2, rootParameters, 2, samplers,
+        rsDesc.Init(HBAOBinding::Count, rootParameters, 2, samplers,
             D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT |
             D3D12_ROOT_SIGNATURE_FLAG_CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED
         );
@@ -954,6 +1043,7 @@ private:
         auto psHBAO = ShaderCompiler::CompileFromFile(L"Shaders/Shaders_For_HBAO.hlsl", L"PSMain_HBAO", L"ps_6_6");
         auto psBlur = ShaderCompiler::CompileFromFile(L"Shaders/Shaders_For_HBAO.hlsl", L"PSMain_Blur", L"ps_6_6");
 
+        // Create the HBAO evaluation PSO.
         D3D12_GRAPHICS_PIPELINE_STATE_DESC psoDesc = {};
         psoDesc.InputLayout = { nullptr, 0 };
         psoDesc.pRootSignature = hbaoRootSignature.Get();
@@ -969,7 +1059,7 @@ private:
         psoDesc.SampleMask = UINT_MAX;
         psoDesc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
         psoDesc.NumRenderTargets = 1;
-        psoDesc.RTVFormats[0] = DXGI_FORMAT_R16_FLOAT;
+        psoDesc.RTVFormats[0] = Formats::ScalarSignal;
         psoDesc.SampleDesc.Count = 1;
 
         if (FAILED(dc->GetDevice()->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(&hbaoPSO))))
@@ -978,6 +1068,7 @@ private:
             return false;
         }
 
+        // Create the HBAO blur PSO.
         psoDesc.PS = CD3DX12_SHADER_BYTECODE(psBlur->GetBufferPointer(), psBlur->GetBufferSize());
 
         if (FAILED(dc->GetDevice()->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(&hbaoBlurPSO))))
@@ -991,8 +1082,8 @@ private:
 
     bool BuildTAAPipeline(RenderDevice* dc)
     {
-        CD3DX12_ROOT_PARAMETER rootParameters[1];
-        rootParameters[0].InitAsConstantBufferView(0);
+        CD3DX12_ROOT_PARAMETER rootParameters[ConstantBufferBinding::Count];
+        rootParameters[ConstantBufferBinding::Constants].InitAsConstantBufferView(0);
 
         D3D12_STATIC_SAMPLER_DESC samplers[2];
         samplers[0] = CD3DX12_STATIC_SAMPLER_DESC(0, D3D12_FILTER_MIN_MAG_MIP_POINT);
@@ -1006,7 +1097,7 @@ private:
         samplers[1].AddressW = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
         samplers[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
 
-        CD3DX12_ROOT_SIGNATURE_DESC rootSigDesc(1, rootParameters, 2, samplers, D3D12_ROOT_SIGNATURE_FLAG_CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED);
+        CD3DX12_ROOT_SIGNATURE_DESC rootSigDesc(ConstantBufferBinding::Count, rootParameters, 2, samplers, D3D12_ROOT_SIGNATURE_FLAG_CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED);
 
         ComPtr<ID3DBlob> serializedRootSig = nullptr;
         ComPtr<ID3DBlob> errorBlob = nullptr;
@@ -1045,7 +1136,7 @@ private:
         psoDesc.SampleMask = UINT_MAX;
         psoDesc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
         psoDesc.NumRenderTargets = 1;
-        psoDesc.RTVFormats[0] = DXGI_FORMAT_R16G16B16A16_FLOAT;
+        psoDesc.RTVFormats[0] = Formats::SceneColor;
         psoDesc.SampleDesc.Count = 1;
 
         hr = dc->GetDevice()->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(&psoTAA));
@@ -1060,8 +1151,8 @@ private:
 
     bool BuildTSRPipeline(RenderDevice* dc)
     {
-        CD3DX12_ROOT_PARAMETER rootParameters[1];
-        rootParameters[0].InitAsConstantBufferView(0);
+        CD3DX12_ROOT_PARAMETER rootParameters[ConstantBufferBinding::Count];
+        rootParameters[ConstantBufferBinding::Constants].InitAsConstantBufferView(0);
 
         D3D12_STATIC_SAMPLER_DESC samplers[2];
         samplers[0] = CD3DX12_STATIC_SAMPLER_DESC(0, D3D12_FILTER_MIN_MAG_MIP_POINT);
@@ -1075,7 +1166,7 @@ private:
         samplers[1].AddressW = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
         samplers[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
 
-        CD3DX12_ROOT_SIGNATURE_DESC rootSigDesc(1, rootParameters, 2, samplers,
+        CD3DX12_ROOT_SIGNATURE_DESC rootSigDesc(ConstantBufferBinding::Count, rootParameters, 2, samplers,
             D3D12_ROOT_SIGNATURE_FLAG_CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED);
 
         ComPtr<ID3DBlob> serializedRootSig = nullptr;
@@ -1123,7 +1214,7 @@ private:
         psoDesc.SampleMask = UINT_MAX;
         psoDesc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
         psoDesc.NumRenderTargets = 1;
-        psoDesc.RTVFormats[0] = DXGI_FORMAT_R16G16B16A16_FLOAT;
+        psoDesc.RTVFormats[0] = Formats::SceneColor;
         psoDesc.SampleDesc.Count = 1;
 
         hr = dc->GetDevice()->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(&psoTSR));
@@ -1138,8 +1229,8 @@ private:
 
     bool BuildScalarTemporalPipeline(RenderDevice* dc)
     {
-        CD3DX12_ROOT_PARAMETER rootParameters[1];
-        rootParameters[0].InitAsConstantBufferView(0);
+        CD3DX12_ROOT_PARAMETER rootParameters[ConstantBufferBinding::Count];
+        rootParameters[ConstantBufferBinding::Constants].InitAsConstantBufferView(0);
 
         D3D12_STATIC_SAMPLER_DESC samplers[2];
         samplers[0] = CD3DX12_STATIC_SAMPLER_DESC(
@@ -1159,7 +1250,7 @@ private:
         samplers[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
 
         CD3DX12_ROOT_SIGNATURE_DESC rootSigDesc(
-            1,
+            ConstantBufferBinding::Count,
             rootParameters,
             2,
             samplers,
@@ -1214,7 +1305,7 @@ private:
         psoDesc.SampleMask = UINT_MAX;
         psoDesc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
         psoDesc.NumRenderTargets = 1;
-        psoDesc.RTVFormats[0] = DXGI_FORMAT_R16_FLOAT;
+        psoDesc.RTVFormats[0] = Formats::ScalarSignal;
         psoDesc.SampleDesc.Count = 1;
 
         hr = dc->GetDevice()->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(&scalarTemporalPSO));
@@ -1227,8 +1318,8 @@ private:
 
     bool BuildMotionVectorPipeline(RenderDevice* dc)
     {
-        CD3DX12_ROOT_PARAMETER rootParameters[1];
-        rootParameters[0].InitAsConstantBufferView(0);
+        CD3DX12_ROOT_PARAMETER rootParameters[ConstantBufferBinding::Count];
+        rootParameters[ConstantBufferBinding::Constants].InitAsConstantBufferView(0);
 
         D3D12_STATIC_SAMPLER_DESC sampler =
             CD3DX12_STATIC_SAMPLER_DESC(0, D3D12_FILTER_MIN_MAG_MIP_POINT);
@@ -1238,7 +1329,7 @@ private:
         sampler.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
 
         CD3DX12_ROOT_SIGNATURE_DESC rootSigDesc(
-            1,
+            ConstantBufferBinding::Count,
             rootParameters,
             1,
             &sampler,
@@ -1290,14 +1381,13 @@ private:
         psoDesc.SampleMask = UINT_MAX;
         psoDesc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
         psoDesc.NumRenderTargets = 1;
-        psoDesc.RTVFormats[0] = DXGI_FORMAT_R16G16_FLOAT;
+        psoDesc.RTVFormats[0] = Formats::MotionVector;
         psoDesc.SampleDesc.Count = 1;
 
         hr = dc->GetDevice()->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(&motionVectorPSO));
         if (FAILED(hr))
         {
             ErrorLog::HRESULT("PipelineManager: motion-vector PSO creation failed.", hr);
-            MessageBox(NULL, L"Failed to create motion vector PSO!", L"Engine Error", MB_OK);
             return false;
         }
 
@@ -1306,11 +1396,9 @@ private:
 
     bool BuildSMAAPipeline(RenderDevice* dc)
     {
-        constexpr UINT SmaaRootConstantCount = 12;
-
         CD3DX12_ROOT_PARAMETER rootParameter;
         rootParameter.InitAsConstants(
-            SmaaRootConstantCount,
+            SMAABinding::ConstantCount,
             0,
             0,
             D3D12_SHADER_VISIBILITY_ALL);
@@ -1330,7 +1418,7 @@ private:
 
         CD3DX12_ROOT_SIGNATURE_DESC rootSignatureDesc;
         rootSignatureDesc.Init(
-            1,
+            SMAABinding::Count,
             &rootParameter,
             2,
             samplers,
@@ -1396,6 +1484,7 @@ private:
             return false;
         }
 
+        // Create the SMAA edge detection PSO.
         D3D12_GRAPHICS_PIPELINE_STATE_DESC pipelineDesc = {};
         pipelineDesc.InputLayout = { nullptr, 0 };
         pipelineDesc.pRootSignature = smaaRootSignature.Get();
@@ -1413,7 +1502,7 @@ private:
         pipelineDesc.SampleMask = UINT_MAX;
         pipelineDesc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
         pipelineDesc.NumRenderTargets = 1;
-        pipelineDesc.RTVFormats[0] = DXGI_FORMAT_R8G8_UNORM;
+        pipelineDesc.RTVFormats[0] = Formats::SMAAEdges;
         pipelineDesc.SampleDesc.Count = 1;
 
         if (FAILED(dc->GetDevice()->CreateGraphicsPipelineState(
@@ -1424,13 +1513,14 @@ private:
             return false;
         }
 
+        // Create the SMAA blend weight calculation PSO.
         pipelineDesc.VS = CD3DX12_SHADER_BYTECODE(
             weightVS->GetBufferPointer(),
             weightVS->GetBufferSize());
         pipelineDesc.PS = CD3DX12_SHADER_BYTECODE(
             weightPS->GetBufferPointer(),
             weightPS->GetBufferSize());
-        pipelineDesc.RTVFormats[0] = DXGI_FORMAT_R8G8B8A8_UNORM;
+        pipelineDesc.RTVFormats[0] = Formats::SMAAWeights;
 
         if (FAILED(dc->GetDevice()->CreateGraphicsPipelineState(
             &pipelineDesc,
@@ -1440,6 +1530,8 @@ private:
             return false;
         }
 
+        // Create the SMAA neighborhood blending PSO.
+        pipelineDesc.RTVFormats[0] = Formats::SMAAOutput;
         pipelineDesc.VS = CD3DX12_SHADER_BYTECODE(
             neighborhoodVS->GetBufferPointer(),
             neighborhoodVS->GetBufferSize());
@@ -1472,7 +1564,6 @@ private:
     ComPtr<ID3D12PipelineState> psoSkybox;
     ComPtr<ID3D12RootSignature> rootSignature;
 
-    ComPtr<ID3D12RootSignature> shadowRootSignature;
     ComPtr<ID3D12PipelineState> shadowPSO;
     ComPtr<ID3D12PipelineState> shadowCutoutPSO;
 

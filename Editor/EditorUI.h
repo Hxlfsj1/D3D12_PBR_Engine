@@ -4,6 +4,7 @@
 #include "imgui.h"
 #include "ResourceManager.h"
 #include "ErrorLog.h"
+#include "EditorSelection.h"
 
 // Palette lifted from Unreal Engine 5.4.4 itself:
 //   Engine/Source/Runtime/SlateCore/Private/Styling/StyleColors.cpp
@@ -50,23 +51,41 @@ namespace UEStyle
 // Fixed three-zone editor shell - deliberately NOT dockable:
 //   Outliner (left column) | Detail (right column) | Console (bottom row)
 // The panels are plain windows pinned to computed rects every frame, so the layout can
-// never be dragged around. The seams between them are 4px drag strips that resize the
-// adjacent pane and paint a UE-blue line under the cursor.
+// never be dragged around. Each seam is a 24px grab band CENTRED ON THE PANEL BORDER:
+// half of it lies inside the panel, half over the 4px gap, so the resize target sits
+// exactly where the border appears to be. It resizes the adjacent pane and paints a
+// UE-blue line under the cursor.
 // The remaining centre area is intentionally left empty: with no window there, the app
 // keeps receiving mouse and keyboard input for the camera.
 
 class EditorUI
 {
 public:
-    // One-time setup right after ImGui::CreateContext(): font atlas + theme
-    static void Initialize()
+    // One-time setup right after ImGui::CreateContext(): derive the UI scale from the
+    // initial viewport width, then build the font atlas and the theme at that scale.
+    static void Initialize(float viewportWidth)
     {
-        LoadEditorFont();
+        ApplyScale(viewportWidth);
+        InitializeLayoutDefaults();
+        RebuildFont();
+        ApplyUEStyle();
+    }
+
+    // Call once per frame BEFORE ImGui::NewFrame(). Re-derives the scale whenever the
+    // viewport width changed (window resized); the font atlas is re-baked only when the
+    // resulting size actually differs. Kept outside the frame because it rebuilds the atlas.
+    static void UpdateScaleForViewport(float viewportWidth)
+    {
+        if (!ApplyScale(viewportWidth))
+        {
+            return;
+        }
+        RebuildFont();
         ApplyUEStyle();
     }
 
     // Draw the three panels; call every frame between ImGui::NewFrame() and ImGui::Render()
-    static void Draw(ResourceManager& resourceManager)
+    static void Draw(ResourceManager& resourceManager, EditorSelection& selection)
     {
         const ImGuiViewport* viewport = ImGui::GetMainViewport();
         const ImVec2 origin = viewport->WorkPos;
@@ -74,45 +93,69 @@ public:
 
         // Clamping keeps the centre (the game view) alive however far a seam is dragged
         const float maxSideWidth = MaxF(
-            kMinPanelWidth,
-            total.x - kMinPanelWidth - kMinViewportWidth - 2.0f * kSplitterThickness);
-        s_leftWidth = ClampF(s_leftWidth, kMinPanelWidth, maxSideWidth);
-        s_rightWidth = ClampF(s_rightWidth, kMinPanelWidth, maxSideWidth);
+            s_minPanelWidth,
+            total.x - s_minPanelWidth - s_minViewportWidth - 2.0f * kSplitterThickness);
+        s_leftWidth = ClampF(s_leftWidth, s_minPanelWidth, maxSideWidth);
+        s_rightWidth = ClampF(s_rightWidth, s_minPanelWidth, maxSideWidth);
         s_bottomHeight = ClampF(
             s_bottomHeight,
-            kMinPanelHeight,
-            MaxF(kMinPanelHeight, total.y - kMinViewportWidth - kSplitterThickness));
+            s_minPanelHeight,
+            MaxF(s_minPanelHeight, total.y - s_minViewportWidth - kSplitterThickness));
 
-        const float columnsHeight = MaxF(kMinPanelHeight, total.y - s_bottomHeight - kSplitterThickness);
+        const float columnsHeight = MaxF(s_minPanelHeight, total.y - s_bottomHeight - kSplitterThickness);
         const float rightX = origin.x + total.x - s_rightWidth;
 
         DrawPanel("Outliner", origin, ImVec2(s_leftWidth, columnsHeight),
-            [&] { DrawOutlinerBody(resourceManager); });
+            [&] { DrawOutlinerBody(resourceManager, selection); });
         DrawPanel("Detail", ImVec2(rightX, origin.y), ImVec2(s_rightWidth, columnsHeight),
-            [&] { DrawDetailBody(resourceManager); });
+            [&] { DrawDetailBody(resourceManager, selection); });
         DrawPanel("Console", ImVec2(origin.x, origin.y + columnsHeight + kSplitterThickness),
             ImVec2(total.x, s_bottomHeight),
             [&] { DrawConsoleBody(); });
 
-        // Seams are submitted last so they sit above the panel edges. Each grab strip is
-        // centred on the visible gap and reaches kSplitterGrabPadding into BOTH neighbours,
-        // so hovering the panel edge itself is enough to start the drag.
-        const float leftSeam = origin.x + s_leftWidth;               // start of the left gap
-        const float rightSeam = rightX - kSplitterThickness;         // start of the right gap
-        const float bottomSeam = origin.y + columnsHeight;           // start of the bottom gap
-        const ImVec2 verticalGrab(
-            kSplitterThickness + 2.0f * kSplitterGrabPadding,
-            columnsHeight);
-        const ImVec2 horizontalGrab(
-            total.x + 2.0f * kSplitterGrabPadding,
-            kSplitterThickness + 2.0f * kSplitterGrabPadding);
+        // Splitter windows are created above the panels (see kSplitterWindowFlags).
+        // Submission order alone does not control top-level window stacking in ImGui.
+        // Bands are described by their CENTRE, anchored on the border the user can see:
+        // the Outliner's right edge, the Detail's left edge, and the Console's top edge.
+        const ImVec2 leftCentre(origin.x + s_leftWidth, origin.y + columnsHeight * 0.5f);
+        const ImVec2 rightCentre(rightX, origin.y + columnsHeight * 0.5f);
+        const ImVec2 bottomCentre(
+            origin.x + total.x * 0.5f,
+            origin.y + columnsHeight + kSplitterThickness);
 
-        DrawSplitter("##SplitLeft",
-            ImVec2(leftSeam - kSplitterGrabPadding, origin.y), verticalGrab, true, s_leftWidth, 1.0f);
-        DrawSplitter("##SplitRight",
-            ImVec2(rightSeam - kSplitterGrabPadding, origin.y), verticalGrab, true, s_rightWidth, -1.0f);
-        DrawSplitter("##SplitBottom",
-            ImVec2(origin.x - kSplitterGrabPadding, bottomSeam - kSplitterGrabPadding), horizontalGrab, false, s_bottomHeight, -1.0f);
+        DrawSplitter("##SplitLeft", leftCentre,
+            ImVec2(kSplitterGrabSize, columnsHeight), true, s_leftWidth, 1.0f);
+        DrawSplitter("##SplitRight", rightCentre,
+            ImVec2(kSplitterGrabSize, columnsHeight), true, s_rightWidth, -1.0f);
+        DrawSplitter("##SplitBottom", bottomCentre,
+            ImVec2(total.x, kSplitterGrabSize), false, s_bottomHeight, -1.0f);
+
+        // Only a click that starts and ends in exposed scene space may pick a model.
+        // The scene still fills the entire client area underneath these overlay panels.
+        const ImGuiIO& io = ImGui::GetIO();
+        const ImVec2 mouse = io.MousePos;
+        const float grabHalf = kSplitterGrabSize * 0.5f;
+        const bool inScene = mouse.x > leftCentre.x + grabHalf &&
+            mouse.x < rightCentre.x - grabHalf && mouse.y >= origin.y &&
+            mouse.y < bottomCentre.y - grabHalf;
+        const bool canPick = inScene && !io.WantCaptureMouse &&
+            !ImGui::IsAnyItemActive() && !ImGui::IsMouseDown(ImGuiMouseButton_Right);
+        if (ImGui::IsMouseClicked(ImGuiMouseButton_Left))
+        {
+            s_sceneClickStarted = canPick;
+            s_sceneClickStart = mouse;
+        }
+        const float dx = mouse.x - s_sceneClickStart.x;
+        const float dy = mouse.y - s_sceneClickStart.y;
+        if (!canPick || dx * dx + dy * dy > 16.0f)
+            s_sceneClickStarted = false;
+        if (ImGui::IsMouseReleased(ImGuiMouseButton_Left))
+        {
+            if (s_sceneClickStarted && io.DisplaySize.x > 0.0f && io.DisplaySize.y > 0.0f)
+                selection.RequestPick((mouse.x - viewport->Pos.x) / io.DisplaySize.x,
+                    (mouse.y - viewport->Pos.y) / io.DisplaySize.y);
+            s_sceneClickStarted = false;
+        }
     }
 
 private:
@@ -124,15 +167,83 @@ private:
         return value < low ? low : (value > high ? high : value);
     }
 
-    // kSplitterThickness is the visible gap between panels (the game shows through it);
-    // the grab strip itself is wider and straddles that gap by kSplitterGrabPadding on
-    // each side, so the panel border is a valid grab point too.
+    // ---- UI scale ------------------------------------------------------------
+    // The UI is sized from the VIEWPORT WIDTH, not from a fixed pixel value:
+    //     reference ratio: a 2560px-wide window uses a 24px font
+    // Every metric in this file was authored against a 15px font, so one factor
+    // (fontSize / 15) drives the whole layout: ApplyUEStyle() hands it to
+    // style.ScaleAllSizes(), and the hand-placed offsets below derive from it too.
+    static constexpr float kReferenceWidth = 2560.0f;
+    static constexpr float kReferenceFontSize = 24.0f;
+    static constexpr float kMetricBaseFontSize = 15.0f; // size the raw numbers were tuned at
+    static constexpr float kMinFontSize = 12.0f;        // guard rails against odd window sizes
+    static constexpr float kMaxFontSize = 40.0f;
+
+    // Recomputed by ApplyScale() whenever the viewport width changes
+    inline static float s_fontSize = kReferenceFontSize;
+    inline static float s_uiScale = kReferenceFontSize / kMetricBaseFontSize;
+    inline static float s_panelHeaderHeight = 26.0f * s_uiScale;
+    inline static float s_panelHeaderTextInset = 8.0f * s_uiScale;
+    inline static float s_panelBodyPaddingX = 8.0f * s_uiScale;
+    inline static float s_panelBodyPaddingY = 6.0f * s_uiScale;
+    inline static float s_minPanelWidth = 140.0f * s_uiScale;
+    inline static float s_minPanelHeight = 90.0f * s_uiScale;
+    inline static float s_minViewportWidth = 200.0f * s_uiScale;
+
+    // kSplitterThickness is the visible gap between the panes (the game shows through it);
+    // kSplitterGrabSize is the invisible grab band, centred on the panel border. Both are
+    // mouse-precision values, so they deliberately do NOT scale with the font.
     static constexpr float kSplitterThickness = 4.0f;
-    static constexpr float kSplitterGrabPadding = 4.0f;
-    static constexpr float kPanelHeaderHeight = 26.0f;
-    static constexpr float kMinPanelWidth = 140.0f;
-    static constexpr float kMinPanelHeight = 90.0f;
-    static constexpr float kMinViewportWidth = 200.0f;
+    static constexpr float kSplitterGrabSize = 24.0f;
+
+    // Returns true when the derived font size changed. Pure arithmetic plus bookkeeping;
+    // the caller decides whether to re-bake the atlas and the style.
+    static bool ApplyScale(float viewportWidth)
+    {
+        const float width = viewportWidth > 0.0f ? viewportWidth : kReferenceWidth;
+        // Whole-pixel steps: the size only moves 1px per ~107px of window width, so rounding
+        // keeps a window drag from re-baking the atlas (and re-reading the TTF) every frame.
+        const float exact = ClampF(
+            kReferenceFontSize * width / kReferenceWidth, kMinFontSize, kMaxFontSize);
+        const float fontSize = static_cast<float>(static_cast<int>(exact + 0.5f));
+        if (fontSize == s_fontSize)
+        {
+            return false;
+        }
+
+        s_fontSize = fontSize;
+        s_uiScale = s_fontSize / kMetricBaseFontSize;
+        s_panelHeaderHeight = 26.0f * s_uiScale;
+        s_panelHeaderTextInset = 8.0f * s_uiScale;
+        s_panelBodyPaddingX = 8.0f * s_uiScale;
+        s_panelBodyPaddingY = 6.0f * s_uiScale;
+        s_minPanelWidth = 140.0f * s_uiScale;
+        s_minPanelHeight = 90.0f * s_uiScale;
+        s_minViewportWidth = 200.0f * s_uiScale;
+        return true;
+    }
+
+    // Initial pane sizes grow with the font so the same amount of content still fits. Only
+    // applied once, so a later resize never fights a size the user dragged the seam to.
+    static void InitializeLayoutDefaults()
+    {
+        s_leftWidth = 220.0f * s_uiScale;
+        s_rightWidth = 300.0f * s_uiScale;
+        s_bottomHeight = 180.0f * s_uiScale;
+    }
+
+    // Swap the atlas contents for a font of the current size. Only ever called outside a
+    // frame: ImFontAtlas::Clear() is documented as "don't call mid-frame!". No manual
+    // texture work is needed - the DX12 backend advertises RendererHasTextures and uploads
+    // the rebuilt atlas itself - but io.FontDefault must be dropped first, because the
+    // ImFont object it points at is destroyed by the clear.
+    static void RebuildFont()
+    {
+        ImGuiIO& io = ImGui::GetIO();
+        io.FontDefault = nullptr;
+        io.Fonts->ClearFonts();
+        LoadEditorFont();
+    }
 
     static constexpr ImGuiWindowFlags kPanelFlags =
         ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove |
@@ -141,11 +252,13 @@ private:
 
     static constexpr ImGuiWindowFlags kSplitterWindowFlags =
         ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove |
-        ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoSavedSettings |
-        ImGuiWindowFlags_NoBackground | ImGuiWindowFlags_NoBringToFrontOnFocus |
+        ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse | ImGuiWindowFlags_NoSavedSettings |
+        // NoBringToFrontOnFocus would insert new splitters BEHIND the panels, hiding
+        // the part of the hit band inside them. Panels themselves retain that flag.
+        ImGuiWindowFlags_NoBackground |
         ImGuiWindowFlags_NoNavFocus;
 
-    // A clean sans-serif at UE-ish size; falls back to ImGui's built-in font if absent.
+    // A clean sans-serif at a readable size; falls back to ImGui's built-in font if absent.
     // NOTE: the bundled system fonts carry no CJK glyphs; console lines must stay
     // Latin-only until a CJK font atlas is added.
     static void LoadEditorFont()
@@ -162,7 +275,7 @@ private:
             {
                 continue;
             }
-            if (io.Fonts->AddFontFromFileTTF(path, 15.0f) != nullptr)
+            if (io.Fonts->AddFontFromFileTTF(path, s_fontSize) != nullptr)
             {
                 return;
             }
@@ -176,6 +289,16 @@ private:
     static void ApplyUEStyle()
     {
         ImGuiStyle& style = ImGui::GetStyle();
+
+        // Re-applying (after a resize changed the scale) must not compound the previous
+        // scaling: restore the untouched 1.0x metrics captured on the first call, then
+        // scale from that baseline. The assignments below are absolute, so this keeps the
+        // result bit-identical no matter how many times the window is resized.
+        if (s_hasBaseStyle)
+        {
+            style = s_baseStyle;
+        }
+
         ImVec4* c = style.Colors;
 
         // Surfaces
@@ -277,6 +400,16 @@ private:
         style.WindowMenuButtonPosition = ImGuiDir_None;
         style.AntiAliasedLines = true;
         style.AntiAliasedFill = true;
+
+        // Capture the unscaled baseline once, then scale the whole metric set (padding,
+        // spacing, scrollbars, rounding...) by the font ratio. Without the scaling a larger
+        // font ends up cramped inside spacing meant for a smaller one.
+        if (!s_hasBaseStyle)
+        {
+            s_baseStyle = style;
+            s_hasBaseStyle = true;
+        }
+        style.ScaleAllSizes(s_uiScale);
     }
 
     // A panel = pinned window + flush header strip + scrollable padded body
@@ -294,7 +427,7 @@ private:
         DrawPanelHeader(name);
 
         // Child windows ignore WindowPadding unless explicitly asked to use it
-        ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(8.0f, 6.0f));
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(s_panelBodyPaddingX, s_panelBodyPaddingY));
         ImGui::BeginChild("##body", ImVec2(0.0f, 0.0f), ImGuiChildFlags_AlwaysUseWindowPadding);
         ImGui::PopStyleVar();
         body();
@@ -311,28 +444,36 @@ private:
 
         drawList->AddRectFilled(
             pos,
-            ImVec2(pos.x + width, pos.y + kPanelHeaderHeight),
+            ImVec2(pos.x + width, pos.y + s_panelHeaderHeight),
             ImGui::GetColorU32(UEStyle::Title));
         drawList->AddLine(
-            ImVec2(pos.x, pos.y + kPanelHeaderHeight - 1.0f),
-            ImVec2(pos.x + width, pos.y + kPanelHeaderHeight - 1.0f),
+            ImVec2(pos.x, pos.y + s_panelHeaderHeight - 1.0f),
+            ImVec2(pos.x + width, pos.y + s_panelHeaderHeight - 1.0f),
             ImGui::GetColorU32(UEStyle::WindowBorder));
 
-        const ImVec2 textPos(pos.x + 8.0f, pos.y + (kPanelHeaderHeight - ImGui::GetTextLineHeight()) * 0.5f);
+        const ImVec2 textPos(pos.x + s_panelHeaderTextInset, pos.y + (s_panelHeaderHeight - ImGui::GetTextLineHeight()) * 0.5f);
         drawList->AddText(textPos, ImGui::GetColorU32(UEStyle::ForegroundHeader), name);
 
-        ImGui::Dummy(ImVec2(width, kPanelHeaderHeight));
+        ImGui::Dummy(ImVec2(width, s_panelHeaderHeight));
     }
 
-    // Drag strip between two panes; mutates the adjacent pane size
-    static void DrawSplitter(const char* id, ImVec2 pos, ImVec2 size, bool vertical, float& target, float sign)
+    // Drag band between two panes: `centre` is the panel border the band straddles,
+    // `target` is the adjacent pane size the drag mutates.
+    static void DrawSplitter(const char* id, ImVec2 centre, ImVec2 size, bool vertical, float& target, float sign)
     {
+        const ImVec2 pos(centre.x - size.x * 0.5f, centre.y - size.y * 0.5f);
         ImGui::SetNextWindowPos(pos);
         ImGui::SetNextWindowSize(size);
 
+        // ImGui clamps EVERY top-level window up to style.WindowMinSize (32x32 by default,
+        // imgui.cpp CalcWindowMinSize + CalcWindowSizeAfterConstraint - note the final
+        // ImMax is applied even when a size constraint was supplied). Without this override
+        // these thin strips silently become 32px windows and steal hover and mouse capture
+        // from the neighbouring panel far beyond the band the user is aiming at.
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowMinSize, ImVec2(1.0f, 1.0f));
         ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
         ImGui::Begin(id, nullptr, kSplitterWindowFlags);
-        ImGui::PopStyleVar();
+        ImGui::PopStyleVar(2);
 
         ImGui::InvisibleButton("##grab", size);
         const bool hovered = ImGui::IsItemHovered();
@@ -348,52 +489,52 @@ private:
             target += (vertical ? delta.x : delta.y) * sign;
         }
 
-        // UE paints the seam blue under the cursor
+        // UE paints the seam blue under the cursor; the line runs through the band centre,
+        // i.e. exactly along the panel border the user is dragging
         if (hovered || active)
         {
             ImDrawList* drawList = ImGui::GetWindowDrawList();
             const ImU32 color = ImGui::GetColorU32(active ? UEStyle::Primary : UEStyle::PrimaryHover);
             if (vertical)
             {
-                const float x = pos.x + size.x * 0.5f;
-                drawList->AddLine(ImVec2(x, pos.y), ImVec2(x, pos.y + size.y), color, 2.0f);
+                drawList->AddLine(ImVec2(centre.x, pos.y), ImVec2(centre.x, pos.y + size.y), color, 2.0f);
             }
             else
             {
-                const float y = pos.y + size.y * 0.5f;
-                drawList->AddLine(ImVec2(pos.x, y), ImVec2(pos.x + size.x, y), color, 2.0f);
+                drawList->AddLine(ImVec2(pos.x, centre.y), ImVec2(pos.x + size.x, centre.y), color, 2.0f);
             }
         }
 
         ImGui::End();
     }
 
-    static void DrawOutlinerBody(ResourceManager& resourceManager)
+    static void DrawOutlinerBody(ResourceManager& resourceManager, EditorSelection& selection)
     {
         std::vector<ModelInstance>& instances = resourceManager.GetSceneInstances();
         for (int i = 0; i < static_cast<int>(instances.size()); ++i)
         {
-            ImGui::PushID(i);
-            if (ImGui::Selectable(instances[static_cast<size_t>(i)].name.c_str(), s_selectedIndex == i))
+            const ModelInstance& instance = instances[static_cast<size_t>(i)];
+            ImGui::PushID(static_cast<int>(instance.editorId));
+            if (ImGui::Selectable(instance.name.c_str(), selection.SelectedId() == instance.editorId))
             {
-                s_selectedIndex = i;
+                selection.Select(instance.editorId);
             }
             ImGui::PopID();
         }
     }
 
-    static void DrawDetailBody(ResourceManager& resourceManager)
+    static void DrawDetailBody(ResourceManager& resourceManager, const EditorSelection& selection)
     {
         std::vector<ModelInstance>& instances = resourceManager.GetSceneInstances();
-        if (s_selectedIndex >= 0 && s_selectedIndex < static_cast<int>(instances.size()))
+        for (const ModelInstance& instance : instances)
         {
-            // Name only, per current scope; properties come later
-            ImGui::TextUnformatted(instances[static_cast<size_t>(s_selectedIndex)].name.c_str());
+            if (instance.editorId == selection.SelectedId())
+            {
+                ImGui::TextUnformatted(instance.name.c_str());
+                return;
+            }
         }
-        else
-        {
-            ImGui::TextUnformatted("(no selection)");
-        }
+        ImGui::TextUnformatted("(no selection)");
     }
 
     static void DrawConsoleBody()
@@ -411,11 +552,18 @@ private:
         ImGui::EndChild();
     }
 
-    // Layout state in pixels, mutated by the seams
+    // Layout state in pixels, mutated by the seams. The starting sizes below are placeholders:
+    // InitializeLayoutDefaults() derives them from s_uiScale at startup.
     inline static float s_leftWidth = 220.0f;
     inline static float s_rightWidth = 300.0f;
     inline static float s_bottomHeight = 180.0f;
-    inline static int s_selectedIndex = -1;
+    inline static bool s_sceneClickStarted = false;
+    inline static ImVec2 s_sceneClickStart;
+
+    // Pristine 1.0x metrics, captured on the first ApplyUEStyle() so a later re-apply can
+    // reset to them instead of scaling already-scaled values.
+    inline static ImGuiStyle s_baseStyle;
+    inline static bool s_hasBaseStyle = false;
 };
 
 #endif

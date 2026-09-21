@@ -21,7 +21,7 @@ struct SMAAConstants
     UINT padding = 0;
 };
 
-static_assert(sizeof(SMAAConstants) == 12 * sizeof(UINT));
+static_assert(sizeof(SMAAConstants) == PipelineManager::SMAABinding::ConstantCount * sizeof(UINT));
 
 class SMAAPass
 {
@@ -80,7 +80,7 @@ public:
         RDGTextureDesc edgeDesc = {};
         edgeDesc.width = static_cast<uint32_t>(width);
         edgeDesc.height = static_cast<uint32_t>(height);
-        edgeDesc.format = DXGI_FORMAT_R8G8_UNORM;
+        edgeDesc.format = PipelineManager::Formats::SMAAEdges;
         edgeDesc.flags = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
         edgeDesc.hasClearValue = true;
         edgeDesc.clearValue.Format = edgeDesc.format;
@@ -158,7 +158,7 @@ public:
         RDGTextureDesc blendWeightDesc = {};
         blendWeightDesc.width = static_cast<uint32_t>(width);
         blendWeightDesc.height = static_cast<uint32_t>(height);
-        blendWeightDesc.format = DXGI_FORMAT_R8G8B8A8_UNORM;
+        blendWeightDesc.format = PipelineManager::Formats::SMAAWeights;
         blendWeightDesc.flags = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
         blendWeightDesc.hasClearValue = true;
         blendWeightDesc.clearValue.Format = blendWeightDesc.format;
@@ -263,7 +263,7 @@ public:
             if (outputDesc == nullptr ||
                 outputDesc->width != static_cast<uint32_t>(width) ||
                 outputDesc->height != static_cast<uint32_t>(height) ||
-                outputDesc->format != DXGI_FORMAT_R8G8B8A8_UNORM ||
+                outputDesc->format != PipelineManager::Formats::SMAAOutput ||
                 (outputDesc->flags & D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET) == 0)
             {
                 ErrorLog::Write("SMAAPass: supplied output texture has incompatible dimensions, format, or flags.");
@@ -275,7 +275,7 @@ public:
             RDGTextureDesc outputDesc = {};
             outputDesc.width = static_cast<uint32_t>(width);
             outputDesc.height = static_cast<uint32_t>(height);
-            outputDesc.format = DXGI_FORMAT_R8G8B8A8_UNORM;
+            outputDesc.format = PipelineManager::Formats::SMAAOutput;
             outputDesc.flags = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
             outputDesc.hasClearValue = true;
             outputDesc.clearValue.Format = outputDesc.format;
@@ -384,8 +384,8 @@ private:
         constants.localContrastAdaptationFactor = 2.0f;
 
         cmdList->SetGraphicsRoot32BitConstants(
-            0,
-            static_cast<UINT>(sizeof(SMAAConstants) / sizeof(UINT)),
+            PipelineManager::SMAABinding::Constants,
+            PipelineManager::SMAABinding::ConstantCount,
             &constants,
             0);
 
@@ -444,8 +444,8 @@ private:
         constants.searchTextureIdx = resourceManager->GetSMAASearchTextureIdx();
 
         cmdList->SetGraphicsRoot32BitConstants(
-            0,
-            static_cast<UINT>(sizeof(SMAAConstants) / sizeof(UINT)),
+            PipelineManager::SMAABinding::Constants,
+            PipelineManager::SMAABinding::ConstantCount,
             &constants,
             0);
 
@@ -499,8 +499,8 @@ private:
         constants.blendTextureIdx = blendWeightSrvIdx;
 
         cmdList->SetGraphicsRoot32BitConstants(
-            0,
-            static_cast<UINT>(sizeof(SMAAConstants) / sizeof(UINT)),
+            PipelineManager::SMAABinding::Constants,
+            PipelineManager::SMAABinding::ConstantCount,
             &constants,
             0);
 
