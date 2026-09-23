@@ -6,6 +6,8 @@
 #include "ResourceManager.h"
 #include "ErrorLog.h"
 #include "EditorSelection.h"
+#include "EditorGizmo.h"
+#include "EditorTransform.h"
 
 // Palette lifted from Unreal Engine 5.4.4 itself:
 //   Engine/Source/Runtime/SlateCore/Private/Styling/StyleColors.cpp
@@ -85,12 +87,40 @@ public:
         ApplyUEStyle();
     }
 
-    // Draw the three panels; call every frame between ImGui::NewFrame() and ImGui::Render()
-    static void Draw(ResourceManager& resourceManager, EditorSelection& selection)
+    // Returns a quit request for the application to handle after completing the frame.
+    static bool Draw(ResourceManager& resourceManager, EditorSelection& selection,
+        EditorGizmo& gizmo, const EditorGizmo::CameraFrame& camera, EditorHistory& history)
     {
+        auto& instances = resourceManager.GetSceneInstances();
+        history.CommitInactiveTransform(instances, ImGui::GetActiveID());
+        const auto& input = ImGui::GetIO();
+        // InputText owns its native undo stack while editing (including the console).
+        // Do not replay scene history during a drag or another active UI operation.
+        if (input.KeyCtrl && !input.KeyAlt && !input.KeySuper && !input.WantTextInput &&
+            !ImGui::IsAnyItemActive() && !gizmo.IsDragging() && !ImGui::IsMouseDown(ImGuiMouseButton_Right))
+        {
+            const bool z = ImGui::IsKeyPressed(ImGuiKey_Z, false);
+            if (ImGui::IsKeyPressed(ImGuiKey_Y, false) || (z && input.KeyShift))
+                history.Redo(instances, selection);
+            else if (z) history.Undo(instances, selection);
+        }
         const ImGuiViewport* viewport = ImGui::GetMainViewport();
-        const ImVec2 origin = viewport->WorkPos;
-        const ImVec2 total = viewport->WorkSize;
+        bool quitRequested = false;
+        float menuHeight = 0.0f;
+        if (ImGui::BeginMainMenuBar())
+        {
+            menuHeight = ImGui::GetWindowSize().y;
+            if (ImGui::BeginMenu("File"))
+            {
+                quitRequested = ImGui::MenuItem("quit");
+                ImGui::EndMenu();
+            }
+            ImGui::EndMainMenuBar();
+        }
+        // WorkPos incorporates main-menu height on the next frame. Use this frame's
+        // measured height so first display and font/viewport resizing don't overlap.
+        const ImVec2 origin(viewport->Pos.x, viewport->Pos.y + menuHeight);
+        const ImVec2 total(viewport->Size.x, MaxF(0.0f, viewport->Size.y - menuHeight));
 
         // Clamping keeps the centre (the game view) alive however far a seam is dragged
         const float maxSideWidth = MaxF(
@@ -107,9 +137,9 @@ public:
         const float rightX = origin.x + total.x - s_rightWidth;
 
         DrawPanel("Outliner", origin, ImVec2(s_leftWidth, columnsHeight),
-            [&] { DrawOutlinerBody(resourceManager, selection); });
+            [&] { DrawOutlinerBody(resourceManager, selection, history); });
         DrawPanel("Detail", ImVec2(rightX, origin.y), ImVec2(s_rightWidth, columnsHeight),
-            [&] { DrawDetailBody(resourceManager, selection); });
+            [&] { DrawDetailBody(resourceManager, selection, history); });
         DrawPanel("Console", ImVec2(origin.x, origin.y + columnsHeight + kSplitterThickness),
             ImVec2(total.x, s_bottomHeight),
             [&] { DrawConsoleBody(); });
@@ -136,10 +166,14 @@ public:
         const ImGuiIO& io = ImGui::GetIO();
         const ImVec2 mouse = io.MousePos;
         const float grabHalf = kSplitterGrabSize * 0.5f;
+        history.CommitInactiveTransform(instances, ImGui::GetActiveID());
+        const bool gizmoConsumesMouse = gizmo.Draw(resourceManager.GetSceneInstances(), selection, camera,
+            ImVec2(leftCentre.x + grabHalf, origin.y),
+            ImVec2(rightCentre.x - grabHalf, bottomCentre.y - grabHalf), history);
         const bool inScene = mouse.x > leftCentre.x + grabHalf &&
             mouse.x < rightCentre.x - grabHalf && mouse.y >= origin.y &&
             mouse.y < bottomCentre.y - grabHalf;
-        const bool canPick = inScene && !io.WantCaptureMouse &&
+        const bool canPick = !gizmoConsumesMouse && inScene && !io.WantCaptureMouse &&
             !ImGui::IsAnyItemActive() && !ImGui::IsMouseDown(ImGuiMouseButton_Right);
         if (ImGui::IsMouseClicked(ImGuiMouseButton_Left))
         {
@@ -157,6 +191,7 @@ public:
                     (mouse.y - viewport->Pos.y) / io.DisplaySize.y);
             s_sceneClickStarted = false;
         }
+        return quitRequested;
     }
 
 private:
@@ -509,34 +544,178 @@ private:
         ImGui::End();
     }
 
-    static void DrawOutlinerBody(ResourceManager& resourceManager, EditorSelection& selection)
+    static void FinishRename(std::vector<ModelInstance>& instances, EditorHistory& history, bool cancel = false)
+    {
+        if (!cancel && s_renameObjectId != 0)
+        {
+            const std::string name(s_renameBuffer.data());
+            const size_t first = name.find_first_not_of(" \t\r\n");
+            if (first != std::string::npos)
+                for (auto& instance : instances)
+                    if (instance.editorId == s_renameObjectId)
+                    {
+                        history.Rename(instances, instance, name.substr(first, name.find_last_not_of(" \t\r\n") - first + 1));
+                        break;
+                    }
+        }
+        s_renameObjectId = 0;
+        s_focusRename = false;
+    }
+
+    static void DrawOutlinerBody(ResourceManager& resourceManager, EditorSelection& selection, EditorHistory& history)
     {
         std::vector<ModelInstance>& instances = resourceManager.GetSceneInstances();
         for (int i = 0; i < static_cast<int>(instances.size()); ++i)
         {
-            const ModelInstance& instance = instances[static_cast<size_t>(i)];
+            ModelInstance& instance = instances[static_cast<size_t>(i)];
             ImGui::PushID(static_cast<int>(instance.editorId));
-            if (ImGui::Selectable(instance.name.c_str(), selection.SelectedId() == instance.editorId))
+            if (s_renameObjectId == instance.editorId)
             {
-                selection.Select(instance.editorId);
+                const bool wasActive = ImGui::GetActiveID() == ImGui::GetID("##rename");
+                const bool cancel = wasActive && ImGui::IsKeyPressed(ImGuiKey_Escape, false);
+                if (s_focusRename)
+                {
+                    ImGui::SetKeyboardFocusHere();
+                    s_focusRename = false;
+                }
+                ImGui::SetNextItemWidth(-1.0f);
+                const bool submitted = ImGui::InputText("##rename", s_renameBuffer.data(), s_renameBuffer.size(),
+                    ImGuiInputTextFlags_AutoSelectAll | ImGuiInputTextFlags_EnterReturnsTrue |
+                    ImGuiInputTextFlags_CallbackResize, ResizeRenameBuffer, &s_renameBuffer);
+                if (cancel || submitted || ImGui::IsItemDeactivated())
+                    FinishRename(instances, history, cancel);
+            }
+            else
+            {
+                // The editable name is display text, not the widget ID. This also
+                // displays literal '##' and keeps duplicate filenames independent.
+                const ImVec2 textPos = ImGui::GetCursorScreenPos();
+                if (ImGui::Selectable("##instance", selection.SelectedId() == instance.editorId,
+                    ImGuiSelectableFlags_AllowDoubleClick, ImVec2(0.0f, ImGui::GetTextLineHeight())))
+                {
+                    FinishRename(instances, history);
+                    history.Select(instances, selection, instance.editorId);
+                }
+                const bool rename = ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left);
+                ImGui::GetWindowDrawList()->AddText(textPos, ImGui::GetColorU32(ImGuiCol_Text), instance.name.c_str());
+                if (rename)
+                {
+                    FinishRename(instances, history);
+                    history.Select(instances, selection, instance.editorId);
+                    s_renameObjectId = instance.editorId;
+                    s_renameBuffer.assign(instance.name.begin(), instance.name.end());
+                    s_renameBuffer.resize((std::max)(s_renameBuffer.size() + 1, size_t{256}), '\0');
+                    s_focusRename = true;
+                }
             }
             ImGui::PopID();
         }
     }
 
-    static void DrawDetailBody(ResourceManager& resourceManager, const EditorSelection& selection)
+    static void DrawDetailBody(ResourceManager& resourceManager, const EditorSelection& selection, EditorHistory& history)
     {
         std::vector<ModelInstance>& instances = resourceManager.GetSceneInstances();
-        for (const ModelInstance& instance : instances)
+        for (ModelInstance& instance : instances)
         {
             if (instance.editorId == selection.SelectedId())
             {
                 ImGui::TextUnformatted(instance.name.c_str());
+                ImGui::PushID(static_cast<int>(instance.editorId));
+                DrawTransform(instance, instances, history);
+                ImGui::PopID();
                 return;
             }
         }
         ImGui::TextUnformatted("(no selection)");
     }
+
+    static void DrawTransformRow(const char* label, DirectX::XMFLOAT3& value,
+        const char* xMeaning, const char* yMeaning, const char* zMeaning,
+        ModelInstance& instance, std::vector<ModelInstance>& instances, EditorHistory& history,
+        bool (*apply)(ModelInstance&, const DirectX::XMFLOAT3&), const char* error)
+    {
+        ImGui::PushID(label);
+        const char* axes[] = { "X", "Y", "Z" };
+        const char* meanings[] = { xMeaning, yMeaning, zMeaning };
+        const ImVec4 colors[] = { UEStyle::Hex(0xB83C3C), UEStyle::Hex(0x438A43), UEStyle::Hex(0x326FA8) };
+        float* components[] = { &value.x, &value.y, &value.z };
+        const float available = ImGui::GetContentRegionAvail().x;
+        const float labelWidth = 66.0f * s_uiScale;
+        const float gap = 4.0f * s_uiScale;
+        const float axisWidth = 17.0f * s_uiScale;
+        const bool compact = available < 265.0f * s_uiScale;
+        const float fieldWidth = compact ? available : (available - labelWidth - gap * 2.0f) / 3.0f;
+        const float startX = ImGui::GetCursorPosX();
+        ImGui::AlignTextToFramePadding();
+        ImGui::TextUnformatted(label);
+        for (int axis = 0; axis < 3; ++axis)
+        {
+            if (!compact)
+                ImGui::SameLine(startX + labelWidth + axis * (fieldWidth + gap));
+            ImGui::PushID(axis);
+            ImGui::BeginGroup();
+            const ImVec2 pos = ImGui::GetCursorScreenPos();
+            const float height = ImGui::GetFrameHeight();
+            ImDrawList* drawList = ImGui::GetWindowDrawList();
+            drawList->AddRectFilled(pos, ImVec2(pos.x + axisWidth, pos.y + height), ImGui::GetColorU32(colors[axis]));
+            drawList->AddText(ImVec2(pos.x + (axisWidth - ImGui::CalcTextSize(axes[axis]).x) * 0.5f,
+                pos.y + ImGui::GetStyle().FramePadding.y), IM_COL32_WHITE, axes[axis]);
+            ImGui::Dummy(ImVec2(axisWidth, height));
+            ImGui::SameLine(0.0f, 0.0f);
+            ImGui::SetNextItemWidth(MaxF(20.0f, fieldWidth - axisWidth));
+            const auto widget = ImGui::GetID("##value");
+            const bool changed = ImGui::InputFloat("##value", components[axis], 0.0f, 0.0f, "%.3f", ImGuiInputTextFlags_AutoSelectAll);
+            if (ImGui::IsItemActivated() || changed) history.BeginTransform(instances, instance, widget);
+            if (changed) s_transformError = apply(instance, value) ? nullptr : error;
+            if (ImGui::IsItemDeactivated()) history.CommitTransform(instances, widget);
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("%s", meanings[axis]);
+            ImGui::EndGroup();
+            ImGui::PopID();
+        }
+        ImGui::PopID();
+    }
+
+    static void DrawTransform(ModelInstance& instance, std::vector<ModelInstance>& instances, EditorHistory& history)
+    {
+        if (s_transformObjectId != instance.editorId)
+        {
+            s_transformObjectId = instance.editorId;
+            s_transformError = nullptr;
+        }
+        if (!ImGui::CollapsingHeader("Transform", ImGuiTreeNodeFlags_DefaultOpen)) return;
+
+        auto location = EditorTransform::ToEditorAxes(instance.translation);
+        auto rotation = EditorTransform::RotationDegrees(instance);
+        auto scale = EditorTransform::ToEditorAxes(instance.scale);
+        DrawTransformRow("Location", location, "World X: forward", "World Y: right", "World Z: up",
+            instance, instances, history, EditorTransform::SetLocation, "Location must contain finite values.");
+        DrawTransformRow("Rotation", rotation, "Roll (degrees)", "Pitch (degrees, positive nose-up)", "Yaw (degrees)",
+            instance, instances, history, EditorTransform::SetRotation, "Rotation must contain finite values.");
+        DrawTransformRow("Scale", scale, "X scale", "Y scale", "Z scale",
+            instance, instances, history, EditorTransform::SetScale, "Scale must be finite, with magnitude >= 0.0001 on each axis.");
+        if (s_transformError)
+        {
+            ImGui::PushStyleColor(ImGuiCol_Text, UEStyle::Error);
+            ImGui::TextWrapped("%s", s_transformError);
+            ImGui::PopStyleColor();
+        }
+    }
+
+    static int ResizeRenameBuffer(ImGuiInputTextCallbackData* data)
+    {
+        auto& buffer = *static_cast<std::vector<char>*>(data->UserData);
+        buffer.resize(static_cast<size_t>(data->BufSize));
+        data->Buf = buffer.data();
+        return 0;
+    }
+
+    inline static UINT s_renameObjectId = 0;
+    inline static bool s_focusRename = false;
+    inline static std::vector<char> s_renameBuffer;
+
+    inline static UINT s_transformObjectId = 0;
+    inline static const char* s_transformError = nullptr;
 
     static void DrawConsoleBody()
     {

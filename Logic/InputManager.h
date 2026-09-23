@@ -20,6 +20,11 @@ public:
         lastY = height / 2.0f;
     }
 
+    static bool ConfirmExit()
+    {
+        return MessageBox(0, L"Are you sure you want to exit?", L"Really?", MB_YESNO | MB_ICONQUESTION) == IDYES;
+    }
+
     bool ProcessWindowMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam, Camera& camera)
     {
         // Handle discrete input in MsgProc
@@ -29,7 +34,7 @@ public:
         {
             if (wParam == VK_ESCAPE)
             {
-                if (MessageBox(0, L"Are you sure you want to exit?", L"Really?", MB_YESNO | MB_ICONQUESTION) == IDYES)
+                if (ConfirmExit())
                 {
                     return false;
                 }
@@ -89,9 +94,12 @@ public:
         return true;
     }
 
+    void EndMouseLook() { isMouseDown = false; }
+
     void Update(float deltaTime, Camera& camera)
     {
-        // Handle continuous input in the Update loop
+        // Reserve W/E for editor tools; camera navigation requires right mouse.
+        if (!isMouseDown || !(GetAsyncKeyState(VK_RBUTTON) & 0x8000)) return;
         if (GetAsyncKeyState('W') & 0x8000)
         {
             camera.ProcessKeyboard(FORWARD, deltaTime);

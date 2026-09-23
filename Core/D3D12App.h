@@ -21,6 +21,7 @@
 #include "PipelineManager.h"
 #include "RenderStructs.h"
 #include "EditorSelectionRenderer.h"
+#include "EditorGizmo.h"
 
 // Forward declaration keeps Dear ImGui headers out of this header
 struct ImGui_ImplDX12_InitInfo;
@@ -98,6 +99,8 @@ private:
     PipelineManager m_pipelineManager;
     SettingsManager m_settingsManager;
     EditorSelection m_editorSelection;
+    EditorHistory m_editorHistory;
+    EditorGizmo m_editorGizmo;
     EditorSelectionRenderer m_editorSelectionRenderer;
 
     D3D12_VIEWPORT viewport;

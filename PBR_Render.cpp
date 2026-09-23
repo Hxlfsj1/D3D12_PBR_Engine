@@ -203,6 +203,8 @@ void D3D12App::Run()
 // Handle user input
 LRESULT D3D12App::MsgProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 {
+    if (msg == WM_RBUTTONUP || msg == WM_KILLFOCUS || msg == WM_CAPTURECHANGED)
+        m_inputManager.EndMouseLook();
     // Give Dear ImGui first refusal on every window message.
     // The handler silently returns 0 until the context exists, so this is safe before InitImGui.
     if (ImGui_ImplWin32_WndProcHandler(hwnd, msg, wParam, lParam))
@@ -224,7 +226,7 @@ LRESULT D3D12App::MsgProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
         case WM_MBUTTONDOWN: case WM_MBUTTONUP: case WM_MBUTTONDBLCLK:
         case WM_XBUTTONDOWN: case WM_XBUTTONUP: case WM_XBUTTONDBLCLK:
         case WM_MOUSEWHEEL: case WM_MOUSEHWHEEL:
-            if (io.WantCaptureMouse)
+            if (io.WantCaptureMouse || m_editorGizmo.IsDragging())
             {
                 return 0;
             }
@@ -232,7 +234,7 @@ LRESULT D3D12App::MsgProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
         case WM_KEYDOWN: case WM_KEYUP:
         case WM_SYSKEYDOWN: case WM_SYSKEYUP:
         case WM_CHAR:
-            if (io.WantCaptureKeyboard)
+            if (io.WantCaptureKeyboard || (m_editorGizmo.IsDragging() && wParam == VK_ESCAPE))
             {
                 return 0;
             }
@@ -472,6 +474,16 @@ void D3D12App::Update()
 {
     auto& instances = m_resourceManager.GetSceneInstances();
 
+    // UI edits mark transforms dirty after the preceding frame's instance upload.
+    // Rebuild matrices/culling below as one coherent update, and discard temporal
+    // history because the current motion vectors only describe camera motion.
+    if (std::any_of(instances.begin(), instances.end(), [](const ModelInstance& instance) { return instance.isDirty; }))
+    {
+        m_temporalHistoryValid = false;
+        m_hbaoHistoryValid = false;
+        m_dlssHistoryValid = false;
+    }
+
     // ====================================================================================================
     // Handle FPS
     // ====================================================================================================
@@ -503,7 +515,9 @@ void D3D12App::Update()
     }
 
     // Continuous keyboard movement must update the camera before building frame matrices and culling volumes.
-    m_inputManager.Update(deltaTime, camera);
+    if (!m_editorGizmo.IsDragging() &&
+        (ImGui::GetCurrentContext() == nullptr || !ImGui::GetIO().WantCaptureKeyboard))
+        m_inputManager.Update(deltaTime, camera);
 
     // ====================================================================================================
     // Calculate V * P matrix
@@ -902,8 +916,9 @@ void D3D12App::Render()
     EditorUI::UpdateScaleForViewport(io.DisplaySize.x);
 
     ImGui::NewFrame();
-    m_editorSelectionRenderer.Poll(m_deviceContext, m_resourceManager, m_editorSelection);
-    EditorUI::Draw(m_resourceManager, m_editorSelection);
+    m_editorSelectionRenderer.Poll(m_deviceContext, m_resourceManager, m_editorSelection, m_editorHistory);
+    const EditorGizmo::CameraFrame gizmoCamera{ m_currUnjitteredViewProjGpu, m_currViewGpu, m_currUnjitteredProjGpu };
+    const bool quitRequested = EditorUI::Draw(m_resourceManager, m_editorSelection, m_editorGizmo, gizmoCamera, m_editorHistory);
 
     if (m_antiAliasingMode == AntiAliasingMode::DLSS)
     {
@@ -2003,6 +2018,14 @@ void D3D12App::Render()
     if (FAILED(hr))
     {
         ReportFrameError("Application: swap-chain Present failed.", hr);
+    }
+
+    // Match Escape's confirmation and shutdown path, without destroying the window
+    // while ImGui or the frame command list is still being recorded.
+    if (quitRequested && InputManager::ConfirmExit())
+    {
+        Running = false;
+        DestroyWindow(hwnd);
     }
 }
 

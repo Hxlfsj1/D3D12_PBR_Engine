@@ -194,6 +194,9 @@
     <ClInclude Include="Core\Window.h" />
     <ClInclude Include="Editor\EditorUI.h" />
     <ClInclude Include="Editor\EditorSelection.h" />
+    <ClInclude Include="Editor\EditorTransform.h" />
+    <ClInclude Include="Editor\EditorGizmo.h" />
+    <ClInclude Include="Editor\EditorHistory.h" />
     <ClInclude Include="Editor\EditorSelectionRenderer.h" />
     <ClInclude Include="ThirdParty\imgui\imconfig.h" />
     <ClInclude Include="ThirdParty\imgui\imgui.h" />

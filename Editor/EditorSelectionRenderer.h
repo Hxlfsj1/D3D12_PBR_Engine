@@ -2,6 +2,7 @@
 
 #include "EditorSelection.h"
 #include "ResourceManager.h"
+#include "EditorHistory.h"
 #include "PBR_Shader.h"
 #include <cmath>
 #include <cstddef>
@@ -60,7 +61,7 @@ public:
         return true;
     }
 
-    void Poll(RenderDevice& deviceContext, ResourceManager& resources, EditorSelection& selection)
+    void Poll(RenderDevice& deviceContext, ResourceManager& resources, EditorSelection& selection, EditorHistory& history)
     {
         for (size_t i = 0; i < m_readbacks.size(); ++i)
         {
@@ -78,7 +79,9 @@ public:
                 bool exists = false;
                 for (const auto& instance : resources.GetSceneInstances())
                     exists |= instance.editorId == id;
+                const auto previousId = selection.SelectedId();
                 selection.ApplyPick(slot.revision, exists ? id : 0);
+                history.RecordSelection(resources.GetSceneInstances(), previousId, selection.SelectedId());
             }
             slot.fenceValue = 0;
         }

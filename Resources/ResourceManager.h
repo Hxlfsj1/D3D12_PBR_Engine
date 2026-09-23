@@ -136,7 +136,10 @@ public:
 
             ModelInstance instance;
             instance.editorId = m_nextEditorId++;
-            instance.name = desc.name;
+            // Display the source filename (including extension), independent of the
+            // legacy scene label. Handle both separators without changing UTF-8 bytes.
+            const size_t separator = desc.modelPath.find_last_of("/\\");
+            instance.name = desc.modelPath.substr(separator == std::string::npos ? 0 : separator + 1);
             instance.pModel = myModels[desc.modelPath].get();
             instance.translation = desc.pos;
             instance.rotation = desc.rot;
