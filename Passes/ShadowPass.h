@@ -23,11 +23,14 @@ public:
         Camera* camera = nullptr;
         DirectX::XMFLOAT3 lightDir = {};
         float aspectRatio = 1.0f;
-        float shadowMaxDistance = 100.0f;
-        float shadowMapSize = 4096.0f;
+        float shadowMapSize = 0.0f;
     };
 
-    // Per-frame results of the cascade setup, consumed by both the CPU side
+    static constexpr std::array<float, NUM_CASCADES + 1> kCascadeSplits =
+    {
+        0.1f, 5.0f, 15.0f, 50.0f, 100.0f
+    };
+
     struct FrameData
     {
         DirectX::XMFLOAT3 lightDir = {};
@@ -77,21 +80,13 @@ public:
         XMMATRIX lightView = XMMatrixLookAtLH(lightPosition, XMVectorAdd(lightPosition, lightDir), lightUp);
         XMStoreFloat4x4(&frameData.lightView, lightView);
 
-        constexpr float nearClip = 0.1f;
         constexpr float shadowDepthPadding = 50.0f;
 
-        const std::array<float, NUM_CASCADES + 1> cascadeSplits = {
-            nearClip,
-            5.0f,
-            15.0f,
-            50.0f,
-            input.shadowMaxDistance
-        };
         frameData.cascadeSplits = XMFLOAT4(
-            cascadeSplits[1],
-            cascadeSplits[2],
-            cascadeSplits[3],
-            cascadeSplits[4]);
+            kCascadeSplits[1],
+            kCascadeSplits[2],
+            kCascadeSplits[3],
+            kCascadeSplits[4]);
 
         std::array<float, NUM_CASCADES> orthoWidths = {};
         std::array<float, NUM_CASCADES> depthRanges = {};
@@ -99,8 +94,8 @@ public:
         {
             BoundingFrustum cascadeFrustum = input.camera->GetWorldSpaceFrustum(
                 input.aspectRatio,
-                cascadeSplits[cascadeIdx],
-                cascadeSplits[cascadeIdx + 1]);
+                kCascadeSplits[cascadeIdx],
+                kCascadeSplits[cascadeIdx + 1]);
 
             // Initialize this cascade's frustum
             XMFLOAT3 cascadeCorners[8];
@@ -113,7 +108,6 @@ public:
             }
             frustumCenter = XMVectorScale(frustumCenter, 1.0f / 8.0f);
 
-            // Bounding-sphere radius: distance from the centroid to a vertex of the larger (far) plane
             float sphereRadius = 0.0f;
             for (const XMFLOAT3& corner : cascadeCorners)
             {
@@ -185,8 +179,11 @@ public:
         cmdList->SetGraphicsRootSignature(pipelineManager->GetRootSignature());
         cmdList->SetPipelineState(pipelineManager->GetShadowPSO());
 
-        D3D12_VIEWPORT shadowViewport = { 0.0f, 0.0f, 4096.0f, 4096.0f, 0.0f, 1.0f };
-        D3D12_RECT shadowScissor = { 0, 0, 4096, 4096 };
+        const UINT shadowMapSize = resourceManager->GetShadowMapSize();
+        D3D12_VIEWPORT shadowViewport =
+            { 0.0f, 0.0f, static_cast<float>(shadowMapSize), static_cast<float>(shadowMapSize), 0.0f, 1.0f };
+        D3D12_RECT shadowScissor =
+            { 0, 0, static_cast<LONG>(shadowMapSize), static_cast<LONG>(shadowMapSize) };
 
         cmdList->RSSetViewports(1, &shadowViewport);
         cmdList->RSSetScissorRects(1, &shadowScissor);

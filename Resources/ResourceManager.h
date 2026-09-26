@@ -1284,6 +1284,13 @@ public:
         return m_shadowMap.Get();
     }
 
+    // Single source of truth for the shadow-map resolution: the resource is created
+    // here, so every consumer (shadow viewport, texel snapping) queries this value.
+    UINT GetShadowMapSize() const
+    {
+        return m_shadowMapSize;
+    }
+
     ID3D12Resource* GetPostProcessRT()
     {
         return m_offscreenRT.Get();

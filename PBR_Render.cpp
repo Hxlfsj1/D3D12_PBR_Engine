@@ -636,6 +636,7 @@ void D3D12App::Update()
     shadowInput.camera = &camera;
     shadowInput.lightDir = m_settingsManager.lighting.lightDir;
     shadowInput.aspectRatio = static_cast<float>(Width) / Height;
+    shadowInput.shadowMapSize = static_cast<float>(m_resourceManager.GetShadowMapSize());
 
     ShadowPass::FrameData shadowFrame = ShadowPass::PrepareFrame(shadowInput);
     passCb.lightDir = shadowFrame.lightDir;
