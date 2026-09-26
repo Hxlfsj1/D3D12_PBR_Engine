@@ -49,3 +49,6 @@
 
 # WorkBuddy agent workspace data (memory, logs) — never commit
 /.workbuddy/
+
+# Per-user ImGui window state
+/imgui.ini

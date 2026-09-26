@@ -15,7 +15,7 @@
 - TAA、TSR、DLSS、SMAA、Motion Vector 和时域 HBAO 在真实帧流程中的位置和差异。
 - 如何在一个仍然足够小的学习工程中实践视锥裁剪、LOD、实例批处理、PBR/IBL 和 PCSS。
 
-它目前更接近“模型查看器 + 渲染技术试验场”，而不是通用游戏引擎：没有编辑器、ECS、正式资产管线、多平台后端或动画系统。
+它目前更接近“模型查看器 + 渲染技术试验场”，而不是通用游戏引擎：已有轻量 ImGui 编辑器，支持模型选择、变换、改名和撤销，但没有 ECS、正式资产管线、多平台后端或动画系统。编辑器说明见 [Editor/README.md](Editor/README.md)。
 
 ## 基础架构
 
@@ -62,7 +62,7 @@ SettingsManager / ResourceManager / PBR_Model / IBLBaker
 | Visual Studio / MSVC | 安装 C++ 桌面开发工作负载，并提供 `v145` Platform Toolset | 必需 | `LearnDirectX.vcxproj` | 报告找不到 `v145`，需要安装该工具集或显式 retarget。 |
 | C++ 标准 | C++20 | 必需 | `.vcxproj` 已配置 | 较旧工具链可能无法编译。 |
 | Windows SDK | `WindowsTargetPlatformVersion=10.0` | 必需 | Visual Studio Installer / Windows SDK | 找不到 Windows、DXGI 或 D3D12 头文件/库。 |
-| 构建平台 | **x64 Debug 或 x64 Release** | 必需 | Visual Studio / MSBuild | 工程仍残留 Win32 配置，但当前 NVIDIA SDK 和依赖链只按 x64 维护。 |
+| 构建平台 | **x64 Debug 或 x64 Release** | 必需 | Visual Studio / MSBuild | 工程和 NVIDIA SDK 依赖链仅提供 x64 配置。 |
 | GPU 与驱动 | D3D12、Shader Model 6.6、直接索引 CBV/SRV/UAV descriptor heap | 必需 | GPU/驱动 | 设备虽可能达到 Feature Level 11_0，Root Signature 或 SM 6.6 shader 仍可能失败。 |
 | NuGet | `Microsoft.Direct3D.D3D12` `1.619.1` | 必需 | `packages.config` | 缺少 Agility SDK、DXC props/targets 或运行时 DLL。 |
 | NuGet | `directxtk12_desktop_win10` `2026.4.1.1` | 必需 | `packages.config` | 找不到 `ResourceUploadBatch.h`、`WICTextureLoader.h` 或 DirectXTK12 库。 |
@@ -96,7 +96,7 @@ SettingsManager / ResourceManager / PBR_Model / IBLBaker
 - MSVC `v145` Platform Toolset。
 - Windows 10/11 SDK。
 
-如果当前 Visual Studio 不识别 `LearnDirectX.slnx`，可以直接打开 `LearnDirectX.vcxproj`。不要因为工程里存在 Win32 配置就选择 Win32；当前受支持的平台是 x64。
+如果当前 Visual Studio 不识别 `LearnDirectX.slnx`，可以直接打开 `LearnDirectX.vcxproj`。当前工程仅提供 x64 构建配置。
 
 ### 2. 安装 vcpkg 依赖
 
@@ -350,7 +350,7 @@ HLSL 在运行时通过 DXC 编译为 Shader Model 6.6，不依赖 Visual Studio
 
 ## 已知限制
 
-- 只维护 Windows/x64/D3D12；`.vcxproj` 中的 Win32 配置不是当前受支持目标。
+- 只维护 Windows/x64/D3D12；工程已移除不受支持的 Win32 配置。
 - 没有正式资产管线或在线资源下载；模型和 HDR 由使用者在本机准备。
 - vcpkg 仍使用 classic/user-wide integration，没有 manifest 锁定 Assimp/meshoptimizer 版本。
 - 模型加载面向 `.glb` 内嵌资源；动画/蒙皮字段存在，但当前帧流程没有动画更新。
@@ -366,6 +366,6 @@ HLSL 在运行时通过 DXC 编译为 Shader Model 6.6，不依赖 Visual Studio
 - 不要提交 `Models/`、`HDRs/` 或 `Scene_Assets/`；修改场景前先确认目标资源只需存在于本机。
 - `ThirdParty/` 是有意提交的依赖，不要把其中的 DLL/LIB 当作普通构建产物删除。
 - 排查构建失败时，先区分 NuGet、vcpkg、vendored dependency 和 Windows SDK 四种来源。
-- 使用 x64 构建；不要根据 `.vcxproj` 中残留的 Win32 configuration 推断 Win32 已受支持。
+- 使用 x64 构建；不要添加未配套验证依赖链的 Win32 configuration。
 - 修改配置协议时，同时更新 `Resources/Settings_Manager.h`、`Settings/*.json` 和本 README。
 - 修改 pass 或帧顺序时，以 `PBR_Render.cpp` 的 RDG 构建代码为准，并同步更新两条渲染流程。

@@ -1,8 +1,7 @@
 # EditorConfig (https://editorconfig.org)
 # Governs how EDITORS write files into the working tree (new files and saves).
-# Complements .gitattributes, which governs git checkouts; neither can command
-# non-editor writers (scripts, shell redirection), so tmp/normalize_eol.py
-# remains the final backstop.
+# Complements .gitattributes, which governs Git checkouts. Scripts writing text
+# must also preserve CRLF in the working tree; Git stores normalized LF.
 root = true
 
 [*]

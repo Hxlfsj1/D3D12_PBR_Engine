@@ -211,7 +211,7 @@
     <ClInclude Include="ThirdParty\meshoptimizer.h">
       <Filter>ThirdParty</Filter>
     </ClInclude>
-    <ClInclude Include="Passes\GbufferPass.h">
+    <ClInclude Include="Passes\GBufferPass.h">
       <Filter>Passes</Filter>
     </ClInclude>
     <ClInclude Include="Passes\DeferredLightingPass.h">
