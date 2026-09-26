@@ -4,6 +4,7 @@
 #include "EditorSelection.h"
 #include "EditorTransform.h"
 #include "EditorHistory.h"
+#include "EditorTheme.h"
 #include "SceneObject.h"
 #include <algorithm>
 #include <cmath>
@@ -228,11 +229,11 @@ public:
 
         ImDrawList* draw = ImGui::GetBackgroundDrawList();
         draw->PushClipRect(clipMin, clipMax, true);
-        const ImU32 colors[] = { IM_COL32(235, 70, 70, 255), IM_COL32(85, 205, 85, 255), IM_COL32(75, 145, 255, 255) };
+        const ImU32 colors[] = { EditorTheme::GizmoAxis(0), EditorTheme::GizmoAxis(1), EditorTheme::GizmoAxis(2) };
         for (int axis = 0; axis < 3; ++axis)
         {
             const bool highlighted = axis == (IsDragging() ? m_axis : hovered);
-            const ImU32 color = highlighted ? IM_COL32(255, 215, 70, 255) : colors[axis];
+            const ImU32 color = highlighted ? EditorTheme::GizmoSelected : colors[axis];
             if (m_mode == Mode::Translate && axisValid[axis])
             {
                 const auto direction = Mul(Sub(ends[axis], centre), 1.0f / Length(Sub(ends[axis], centre)));
@@ -248,7 +249,7 @@ public:
                     if (valid[axis][i - 1] && valid[axis][i])
                         draw->AddLine(rings[axis][i - 1], rings[axis][i], color, highlighted ? 3.5f : 2.0f);
         }
-        if (m_mode == Mode::Translate) draw->AddCircleFilled(centre, 3.0f, IM_COL32_WHITE);
+        if (m_mode == Mode::Translate) draw->AddCircleFilled(centre, 3.0f, EditorTheme::GizmoCenter);
         draw->PopClipRect();
         return consumed;
     }
@@ -359,8 +360,8 @@ private:
 
         auto* draw = ImGui::GetBackgroundDrawList();
         draw->PushClipRect(clipMin, clipMax, true);
-        const ImU32 colors[] = { IM_COL32(235,70,70,255), IM_COL32(85,205,85,255), IM_COL32(75,145,255,255) };
-        const ImU32 yellow = IM_COL32(255,215,70,255);
+        const ImU32 colors[] = { EditorTheme::GizmoAxis(0), EditorTheme::GizmoAxis(1), EditorTheme::GizmoAxis(2) };
+        const ImU32 yellow = EditorTheme::GizmoSelected;
         const int active = IsDragging() ? m_axis : hovered;
         const int mask = active >= 0 ? ScaleMask(active) : 0;
         for (int plane = 0; plane < 3; ++plane)
@@ -368,7 +369,7 @@ private:
             if (!planeValid[plane]) continue;
             const auto* p = planes[plane];
             const bool selected = active == plane + 3;
-            draw->AddQuadFilled(p[0], p[1], p[2], p[3], selected ? IM_COL32(255,215,70,65) : IM_COL32(180,180,180,25));
+            draw->AddQuadFilled(p[0], p[1], p[2], p[3], EditorTheme::GizmoPlane(selected));
             draw->AddPolyline(p + 1, 3, selected ? yellow : colors[(plane+2)%3], ImDrawFlags_None, 3.0f);
         }
         for (int axis = 0; axis < 3; ++axis)
@@ -378,8 +379,8 @@ private:
             draw->AddLine(centre, ends[axis], color, 3.0f);
             draw->AddRectFilled(Sub(ends[axis], ImVec2(5,5)), Add(ends[axis], ImVec2(5,5)), color);
         }
-        draw->AddRectFilled(Sub(centre, ImVec2(8,8)), Add(centre, ImVec2(8,8)), active == 6 ? yellow : IM_COL32(225,225,225,255));
-        draw->AddRect(Sub(centre, ImVec2(8,8)), Add(centre, ImVec2(8,8)), IM_COL32(40,40,40,255));
+        draw->AddRectFilled(Sub(centre, ImVec2(8,8)), Add(centre, ImVec2(8,8)), active == 6 ? yellow : EditorTheme::GizmoCenter);
+        draw->AddRect(Sub(centre, ImVec2(8,8)), Add(centre, ImVec2(8,8)), EditorTheme::GizmoOutline);
         draw->PopClipRect();
         return consumed;
     }

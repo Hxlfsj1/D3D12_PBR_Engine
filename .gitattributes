@@ -24,3 +24,5 @@
 *.glb -text
 *.hdr -text
 *.pdf -text
+*.ttf -text
+*.otf -text

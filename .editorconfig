@@ -10,5 +10,5 @@ end_of_line = crlf
 
 # Binary or UTF-16 payloads (mirrors the -text list in .gitattributes):
 # an editor must never "fix" their line endings
-[*.{reg,lib,dll,pdb,exe,glb,hdr,pdf}]
+[*.{reg,lib,dll,pdb,exe,glb,hdr,pdf,ttf,otf}]
 end_of_line = unset

@@ -5,6 +5,8 @@
     <ClInclude Include="Editor\EditorTransform.h"><Filter>Editor</Filter></ClInclude>
     <ClInclude Include="Editor\EditorGizmo.h"><Filter>Editor</Filter></ClInclude>
     <ClInclude Include="Editor\EditorHistory.h"><Filter>Editor</Filter></ClInclude>
+    <ClInclude Include="Editor\EditorTheme.h"><Filter>Editor</Filter></ClInclude>
+    <ClInclude Include="Editor\EditorUICenter.h"><Filter>Editor</Filter></ClInclude>
     <ClInclude Include="Editor\EditorSelectionRenderer.h"><Filter>Editor</Filter></ClInclude>
     <None Include="Shaders\EditorSelection.hlsl"><Filter>Shaders</Filter></None>
   </ItemGroup>

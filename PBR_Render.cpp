@@ -911,9 +911,9 @@ void D3D12App::Render()
             static_cast<float>(uiTargetDesc.Width) / io.DisplaySize.x,
             static_cast<float>(uiTargetDesc.Height) / io.DisplaySize.y);
     }
-    // Re-derive the editor UI scale from this frame's viewport width before the frame is
-    // opened; the font atlas and style are only rebuilt when the width actually changed.
-    EditorUI::UpdateScaleForViewport(io.DisplaySize.x);
+    // Rebuild fonts and style only when the window's DPI changes, before NewFrame.
+    // Resizing the client area must not change typography or control density.
+    EditorUI::UpdateScale(static_cast<float>(GetDpiForWindow(hwnd)) / 96.0f);
 
     ImGui::NewFrame();
     m_editorSelectionRenderer.Poll(m_deviceContext, m_resourceManager, m_editorSelection, m_editorHistory);
@@ -2081,13 +2081,11 @@ bool D3D12App::InitImGui()
 
     IMGUI_CHECKVERSION();
     ImGui::CreateContext();
-    ImGui::StyleColorsDark();
 
-    // The editor UI is sized from the viewport width (reference: 2560px wide => 24px font),
-    // so the initial client size must be read here, before the first ImGui frame opens.
+    // Initialize the shared editor theme before the first frame using window DPI.
     RECT clientRect = {};
     GetClientRect(hwnd, &clientRect);
-    EditorUI::Initialize(static_cast<float>(clientRect.right - clientRect.left));
+    EditorUI::Initialize(static_cast<float>(clientRect.right - clientRect.left), static_cast<float>(GetDpiForWindow(hwnd)) / 96.0f);
     ErrorLog::Write("Editor: UI initialized (fixed three-pane layout).");
 
     if (!ImGui_ImplWin32_Init(hwnd))

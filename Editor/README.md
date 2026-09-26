@@ -1,5 +1,15 @@
 # 模型选择与描边
 
+## UI 创建中心
+
+所有面板及控件统一通过 `EditorUICenter.h` 创建，颜色、字体和尺寸集中在 `EditorTheme.h`。参照本机 UE 5.4.4 Starship 源码，使用随项目分发的 Roboto 字体。字号按 DPI 缩放，不再跟随窗口宽度变化。Outliner、Details、Output Log 和 File 菜单均使用统一组件；搜索框实际过滤对应面板内容。
+
+按 **F10** 打开或关闭 UI 创建中心的组件模板窗口。新 UI 的接入方式和参考源码见 [STYLE_REFERENCE.md](STYLE_REFERENCE.md)。MSBuild 自动执行 `CheckUIArchitecture.ps1`，阻止功能面板绕过中心直接创建 ImGui 控件。模板是 ImGui 对 Starship 的适配，字体和语义色有明确来源，图标与布局不是 UE 整个窗口的逐像素复制。
+
+Outliner 和 Output Log 使用 Unity 式深浅交替行底色，颜色仍由统一主题管理。搜索后按显示顺序重新交替，模型选中与悬停高亮覆盖行底色。
+
+Console 单击一行（包括文字右侧空白）后整行选中，Ctrl+C 复制完整内容和换行；超出可视宽度的内容也会复制。拖动仍可选择部分文字或多行，Ctrl+A 选择当前日志文本。选中文字期间冻结当前日志快照，避免新日志改变复制范围；离开输入区域后更新。滚动查看旧日志时不自动跳到底部。
+
 ## Outliner / 模型名称
 
 模型实例加载后默认使用源文件名（包含扩展名，例如 `CyberPunk_Car.glb`）。双击 Outliner 中的名称进入编辑，Enter 或点击其他位置确认，Esc 取消；空白名称保留原名。同名实例仍按各自稳定 ID 独立选择和编辑。改名只修改运行中实例的显示名称，不重命名模型文件，也不自动写回场景配置。

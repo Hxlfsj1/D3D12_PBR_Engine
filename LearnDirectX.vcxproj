@@ -193,6 +193,8 @@
     <ClInclude Include="ThirdParty\tiny_gltf.h" />
     <ClInclude Include="Core\Window.h" />
     <ClInclude Include="Editor\EditorUI.h" />
+    <ClInclude Include="Editor\EditorTheme.h" />
+    <ClInclude Include="Editor\EditorUICenter.h" />
     <ClInclude Include="Editor\EditorSelection.h" />
     <ClInclude Include="Editor\EditorTransform.h" />
     <ClInclude Include="Editor\EditorGizmo.h" />
@@ -325,6 +327,13 @@
   </Target>
   <Target Name="CopyDLSSRuntime" AfterTargets="Build" Condition="'$(Platform)'=='x64'">
     <Copy SourceFiles="@(DLSSRuntime)" DestinationFolder="$(TargetDir)" SkipUnchangedFiles="true" />
+  </Target>
+  <Target Name="CopyEditorFonts" AfterTargets="Build">
+    <ItemGroup><EditorFonts Include="$(ProjectDir)Editor\Assets\Fonts\*" /></ItemGroup>
+    <Copy SourceFiles="@(EditorFonts)" DestinationFolder="$(TargetDir)EditorAssets\Fonts" SkipUnchangedFiles="true" />
+  </Target>
+  <Target Name="CheckEditorUIArchitecture" BeforeTargets="ClCompile">
+    <Exec Command="powershell.exe -NoProfile -ExecutionPolicy Bypass -File &quot;$(ProjectDir)Editor\CheckUIArchitecture.ps1&quot; -Root &quot;$(ProjectDir).&quot;" />
   </Target>
   <Target Name="CleanDLSSRuntime" AfterTargets="Clean" Condition="'$(Platform)'=='x64'">
     <Delete Files="$(TargetDir)nvngx_dlss.dll" />
