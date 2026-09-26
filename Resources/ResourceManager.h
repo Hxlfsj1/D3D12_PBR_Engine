@@ -18,6 +18,7 @@
 #include <WICTextureLoader.h>
 #include <algorithm>
 #include <memory>
+#include <mutex>
 
 using Microsoft::WRL::ComPtr;
 
@@ -177,6 +178,7 @@ public:
         iblBRDFIdx = srvIdx++;
         iblEnvCubeIdx = srvIdx++;
 
+        m_passConstantFrames.resize(frameBufferCount);
         constantBufferUploadHeap.resize(frameBufferCount);
         cbvGPUAddress.resize(frameBufferCount);
         m_rdgTransientResourcePools.resize(frameBufferCount);
@@ -1148,6 +1150,80 @@ public:
         return skyboxVBV;
     }
 
+    struct PassConstantAllocation
+    {
+        UINT8* cpuAddress = nullptr;
+        D3D12_GPU_VIRTUAL_ADDRESS gpuAddress = 0;
+        explicit operator bool() const { return cpuAddress != nullptr; }
+    };
+
+    // Call only after the frame slot's GPU fence has completed, before recording its passes.
+    void BeginPassConstantsFrame(int frameIndex)
+    {
+        std::lock_guard<std::mutex> lock(m_passConstantsMutex);
+        auto& frame = m_passConstantFrames.at(frameIndex);
+        for (auto& page : frame.pages) page.used = 0;
+        frame.activePage = 0;
+        frame.failed = false;
+    }
+
+    bool PassConstantsAllocationFailed(int frameIndex)
+    {
+        std::lock_guard<std::mutex> lock(m_passConstantsMutex);
+        return m_passConstantFrames.at(frameIndex).failed;
+    }
+
+    PassConstantAllocation AllocatePassConstants(int frameIndex, size_t byteSize)
+    {
+        std::lock_guard<std::mutex> lock(m_passConstantsMutex);
+        auto& frame = m_passConstantFrames.at(frameIndex);
+        if (frame.failed) return {};
+        if (byteSize == 0 || byteSize > PassConstantsPageSize)
+        {
+            ErrorLog::Write("ResourceManager: invalid pass constant-buffer size.");
+            frame.failed = true;
+            return {};
+        }
+        const UINT64 alignedSize = (static_cast<UINT64>(byteSize) + 255ull) & ~255ull;
+        while (frame.activePage < frame.pages.size() &&
+            alignedSize > PassConstantsPageSize - frame.pages[frame.activePage].used)
+        {
+            ++frame.activePage;
+        }
+        if (frame.activePage == frame.pages.size())
+        {
+            PassConstantsPage page;
+            ComPtr<ID3D12Device> device;
+            HRESULT hr = constantBufferUploadHeap.at(frameIndex)->GetDevice(IID_PPV_ARGS(&device));
+            if (SUCCEEDED(hr))
+            {
+                auto heap = CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_UPLOAD);
+                auto desc = CD3DX12_RESOURCE_DESC::Buffer(PassConstantsPageSize);
+                hr = device->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &desc,
+                    D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&page.resource));
+            }
+            if (SUCCEEDED(hr))
+            {
+                const D3D12_RANGE noCpuReads = { 0, 0 };
+                hr = page.resource->Map(0, &noCpuReads, reinterpret_cast<void**>(&page.cpuAddress));
+            }
+            if (FAILED(hr))
+            {
+                ErrorLog::HRESULT("ResourceManager: pass constant upload allocation failed.", hr);
+                frame.failed = true;
+                return {};
+            }
+            frame.pages.push_back(std::move(page));
+        }
+        auto& page = frame.pages[frame.activePage];
+        PassConstantAllocation allocation = {
+            page.cpuAddress + page.used,
+            page.resource->GetGPUVirtualAddress() + page.used
+        };
+        page.used += alignedSize;
+        return allocation;
+    }
+
     UINT8* GetCBVAddress(int frameIndex)
     {
         return cbvGPUAddress[frameIndex];
@@ -1454,6 +1530,22 @@ private:
 
     ComPtr<ID3D12Resource> dummyEmissive;
     UINT dummyEmissiveIdx;
+
+    static constexpr UINT64 PassConstantsPageSize = 64ull * 1024ull;
+    struct PassConstantsPage
+    {
+        ComPtr<ID3D12Resource> resource;
+        UINT8* cpuAddress = nullptr;
+        UINT64 used = 0;
+    };
+    struct PassConstantsFrame
+    {
+        std::vector<PassConstantsPage> pages;
+        size_t activePage = 0;
+        bool failed = false;
+    };
+    std::vector<PassConstantsFrame> m_passConstantFrames;
+    std::mutex m_passConstantsMutex;
 
     std::vector<ComPtr<ID3D12Resource>> constantBufferUploadHeap;
     std::vector<UINT8*> cbvGPUAddress;

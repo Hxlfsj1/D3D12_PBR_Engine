@@ -302,11 +302,6 @@ private:
         ID3D12DescriptorHeap* heaps[] = { resourceManager->GetMainDescriptorHeap() };
         cmdList->SetDescriptorHeaps(1, heaps);
 
-        constexpr UINT64 constantsPageOffset = 1024ull * 1024ull * 11ull;
-        constexpr UINT64 constantsStride = D3D12_CONSTANT_BUFFER_DATA_PLACEMENT_ALIGNMENT;
-        const UINT signalIndex = static_cast<UINT>(settings.signal);
-        const UINT64 constantsOffset = constantsPageOffset + signalIndex * constantsStride;
-
         Constants constants = {};
         constants.currJitteredInvViewProj = currJitteredInvViewProj;
         constants.prevUnjitteredViewProj = prevUnjitteredViewProj;
@@ -330,13 +325,11 @@ private:
         constants.previousNormalTextureIdx = views.previousNormalSrvIdx;
         constants.currentJitterPixels = currentJitterPixels;
 
-        UINT8* constantsCpuAddress =
-            resourceManager->GetCBVAddress(frameIndex) + constantsOffset;
-        D3D12_GPU_VIRTUAL_ADDRESS constantsGpuAddress =
-            resourceManager->GetCBVGPUAddress(frameIndex) + constantsOffset;
-        memcpy(constantsCpuAddress, &constants, sizeof(constants));
+        const auto allocation = resourceManager->AllocatePassConstants(frameIndex, sizeof(Constants));
+        if (!allocation) return;
+        memcpy(allocation.cpuAddress, &constants, sizeof(Constants));
 
-        cmdList->SetGraphicsRootConstantBufferView(PipelineManager::ConstantBufferBinding::Constants, constantsGpuAddress);
+        cmdList->SetGraphicsRootConstantBufferView(PipelineManager::ConstantBufferBinding::Constants, allocation.gpuAddress);
         cmdList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
         cmdList->DrawInstanced(3, 1, 0, 0);
     }

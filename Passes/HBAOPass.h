@@ -29,13 +29,9 @@ public:
         ID3D12GraphicsCommandList* cmdList,
         ResourceManager* resourceManager,
         PipelineManager* pipelineManager,
-        const DirectX::XMFLOAT4X4& viewMat,
-        const DirectX::XMFLOAT4X4& projMat,
-        const DirectX::XMFLOAT4X4& invProjMat,
         int width,
         int height,
-        int frameIndex,
-        UINT temporalFrameIndex,
+        D3D12_GPU_VIRTUAL_ADDRESS constantsGpuAddress,
         D3D12_CPU_DESCRIPTOR_HANDLE hbaoRtv,
         UINT depthSrvIdx,
         UINT gbufferNormalSrvIdx)
@@ -55,24 +51,7 @@ public:
         ID3D12DescriptorHeap* heaps[] = { resourceManager->GetMainDescriptorHeap() };
         cmdList->SetDescriptorHeaps(1, heaps);
 
-        const UINT64 hbaoConstantsOffset = 1024 * 1024 * 9;
-        UINT8* cbvCpuAddress = resourceManager->GetCBVAddress(frameIndex) + hbaoConstantsOffset;
-        D3D12_GPU_VIRTUAL_ADDRESS cbvGpuAddress = resourceManager->GetCBVGPUAddress(frameIndex) + hbaoConstantsOffset;
-
-        HBAOConstants hbaoCb = {};
-        hbaoCb.projMat = projMat;
-        hbaoCb.invProjMat = invProjMat;
-        hbaoCb.viewMat = viewMat;
-        hbaoCb.radius = 1.0f;
-        hbaoCb.bias = 0.1f;
-        hbaoCb.power = 2.0f;
-        hbaoCb.resolutionX = (float)width;
-        hbaoCb.resolutionY = (float)height;
-        hbaoCb.temporalFrameIndex = temporalFrameIndex;
-
-        memcpy(cbvCpuAddress, &hbaoCb, sizeof(HBAOConstants));
-
-        cmdList->SetGraphicsRootConstantBufferView(PipelineManager::HBAOBinding::Constants, cbvGpuAddress);
+        cmdList->SetGraphicsRootConstantBufferView(PipelineManager::HBAOBinding::Constants, constantsGpuAddress);
 
         UINT bindlessIndices1[PipelineManager::HBAOBinding::TextureIndexCount] = { depthSrvIdx, gbufferNormalSrvIdx, 0, 0 };
         cmdList->SetGraphicsRoot32BitConstants(PipelineManager::HBAOBinding::TextureIndices, PipelineManager::HBAOBinding::TextureIndexCount, bindlessIndices1, 0);
@@ -91,7 +70,7 @@ public:
         UINT gbufferNormalSrvIdx,
         int width,
         int height,
-        int frameIndex)
+        D3D12_GPU_VIRTUAL_ADDRESS constantsGpuAddress)
     {
         cmdList->OMSetRenderTargets(1, &blurRtv, FALSE, nullptr);
         const float clearAO[] = { 1.0f, 1.0f, 1.0f, 1.0f };
@@ -108,8 +87,7 @@ public:
         ID3D12DescriptorHeap* heaps[] = { resourceManager->GetMainDescriptorHeap() };
         cmdList->SetDescriptorHeaps(1, heaps);
 
-        const UINT64 hbaoConstantsOffset = 1024 * 1024 * 9;
-        cmdList->SetGraphicsRootConstantBufferView(PipelineManager::HBAOBinding::Constants, resourceManager->GetCBVGPUAddress(frameIndex) + hbaoConstantsOffset);
+        cmdList->SetGraphicsRootConstantBufferView(PipelineManager::HBAOBinding::Constants, constantsGpuAddress);
 
         UINT bindlessIndices2[PipelineManager::HBAOBinding::TextureIndexCount] = { hbaoRawSrvIdx, depthSrvIdx, gbufferNormalSrvIdx, 0 };
         cmdList->SetGraphicsRoot32BitConstants(PipelineManager::HBAOBinding::TextureIndices, PipelineManager::HBAOBinding::TextureIndexCount, bindlessIndices2, 0);
@@ -189,6 +167,22 @@ public:
             return {};
         }
 
+        HBAOConstants hbaoCb = {};
+        hbaoCb.projMat = projMat;
+        hbaoCb.invProjMat = invProjMat;
+        hbaoCb.viewMat = viewMat;
+        hbaoCb.radius = 1.0f;
+        hbaoCb.bias = 0.1f;
+        hbaoCb.power = 2.0f;
+        hbaoCb.resolutionX = (float)width;
+        hbaoCb.resolutionY = (float)height;
+        hbaoCb.temporalFrameIndex = temporalFrameIndex;
+
+        const auto allocation = resourceManager->AllocatePassConstants(frameIndex, sizeof(HBAOConstants));
+        if (!allocation) return {};
+        memcpy(allocation.cpuAddress, &hbaoCb, sizeof(HBAOConstants));
+        const D3D12_GPU_VIRTUAL_ADDRESS constantsGpuAddress = allocation.gpuAddress;
+
         RDGPassParameters rawParams;
         rawParams.ReadSRV(depthSrv);
         rawParams.ReadSRV(gbufferNormalSrv);
@@ -204,13 +198,9 @@ public:
                     cmdList,
                     resourceManager,
                     pipelineManager,
-                    viewMat,
-                    projMat,
-                    invProjMat,
                     width,
                     height,
-                    frameIndex,
-                    temporalFrameIndex,
+                    constantsGpuAddress,
                     hbaoRawRtv.cpuHandle,
                     depthSrv.descriptorIndex,
                     gbufferNormalSrv.descriptorIndex);
@@ -238,7 +228,7 @@ public:
                     gbufferNormalSrv.descriptorIndex,
                     width,
                     height,
-                    frameIndex);
+                    constantsGpuAddress);
             });
 
         return { hbaoBlurred, rawPass, blurPass };

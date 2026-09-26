@@ -77,9 +77,6 @@ public:
         ID3D12DescriptorHeap* heaps[] = { resourceManager->GetMainDescriptorHeap() };
         cmdList->SetDescriptorHeaps(1, heaps);
 
-        const UINT64 taaConstantsOffset = 1024 * 1024 * 12;
-        UINT8* cbvCpuAddress = resourceManager->GetCBVAddress(frameIndex) + taaConstantsOffset;
-
         TAAConstants cb = {};
         cb.currJitteredInvViewProj = currJitteredInvViewProjGpu;
         cb.prevUnjitteredViewProj = prevUnjitteredViewProjGpu;
@@ -126,8 +123,10 @@ public:
         cb.depthTextureIdx = views.depthSrvIdx;
         cb.motionTextureIdx = views.motionSrvIdx;
 
-        memcpy(cbvCpuAddress, &cb, sizeof(TAAConstants));
-        cmdList->SetGraphicsRootConstantBufferView(PipelineManager::ConstantBufferBinding::Constants, resourceManager->GetCBVGPUAddress(frameIndex) + taaConstantsOffset);
+        const auto allocation = resourceManager->AllocatePassConstants(frameIndex, sizeof(TAAConstants));
+        if (!allocation) return;
+        memcpy(allocation.cpuAddress, &cb, sizeof(TAAConstants));
+        cmdList->SetGraphicsRootConstantBufferView(PipelineManager::ConstantBufferBinding::Constants, allocation.gpuAddress);
 
         cmdList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
         cmdList->DrawInstanced(3, 1, 0, 0);

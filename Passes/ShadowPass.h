@@ -27,14 +27,21 @@ public:
         float shadowMapSize = 4096.0f;
     };
 
+    // Per-frame results of the cascade setup, consumed by both the CPU side
     struct FrameData
     {
         DirectX::XMFLOAT3 lightDir = {};
+        // World -> light view space (CPU)
         DirectX::XMFLOAT4X4 lightView = {};
+        // World -> light clip space, one orthographic projection per cascade (GPU)
         std::array<DirectX::XMFLOAT4X4, NUM_CASCADES> lightViewProj = {};
+        // Far distance of each cascade
         DirectX::XMFLOAT4 cascadeSplits = {};
+        // Orthographic width of each cascade, = 2 * bounding-sphere radius
         DirectX::XMFLOAT4 cascadeOrthoWidths = {};
+        // Depth span of each cascade's orthographic box, = 2r + depth padding
         DirectX::XMFLOAT4 cascadeDepthRanges = {};
+        // Light-space AABB of each cascade (CPU)
         std::array<DirectX::BoundingBox, NUM_CASCADES> cascadeShadowAreas = {};
     };
 
@@ -45,6 +52,7 @@ public:
         RDGPassHandle pass;
     };
 
+    
     static FrameData PrepareFrame(const FramePreparationInput& input)
     {
         using namespace DirectX;
@@ -94,6 +102,7 @@ public:
                 cascadeSplits[cascadeIdx],
                 cascadeSplits[cascadeIdx + 1]);
 
+            // Initialize this cascade's frustum
             XMFLOAT3 cascadeCorners[8];
             cascadeFrustum.GetCorners(cascadeCorners);
 
@@ -104,6 +113,7 @@ public:
             }
             frustumCenter = XMVectorScale(frustumCenter, 1.0f / 8.0f);
 
+            // Bounding-sphere radius: distance from the centroid to a vertex of the larger (far) plane
             float sphereRadius = 0.0f;
             for (const XMFLOAT3& corner : cascadeCorners)
             {
@@ -115,6 +125,7 @@ public:
 
             XMVECTOR lightSpaceCenter = XMVector3Transform(frustumCenter, lightView);
             float orthoWidth = sphereRadius * 2.0f;
+            // Returns the snapped(based on this cascade's shadow map) lightSpaceCenter.xy
             float texelSize = orthoWidth / input.shadowMapSize;
             float snappedX = std::floor(XMVectorGetX(lightSpaceCenter) / texelSize) * texelSize;
             float snappedY = std::floor(XMVectorGetY(lightSpaceCenter) / texelSize) * texelSize;
@@ -127,6 +138,7 @@ public:
             float cascadeMinZ = snappedZ - sphereRadius - shadowDepthPadding;
             float cascadeMaxZ = snappedZ + sphereRadius;
 
+            // Final calculation of the bounding box
             BoundingBox& cascadeArea = frameData.cascadeShadowAreas[cascadeIdx];
             cascadeArea.Center = XMFLOAT3(
                 (minX + maxX) * 0.5f,
@@ -138,15 +150,10 @@ public:
                 (cascadeMaxZ - cascadeMinZ) * 0.5f);
 
             XMMATRIX lightProjection = XMMatrixOrthographicOffCenterLH(
-                minX,
-                maxX,
-                minY,
-                maxY,
-                cascadeMinZ,
-                cascadeMaxZ);
-            XMStoreFloat4x4(
-                &frameData.lightViewProj[cascadeIdx],
-                XMMatrixTranspose(lightView * lightProjection));
+                minX, maxX,
+                minY, maxY,
+                cascadeMinZ, cascadeMaxZ);
+            XMStoreFloat4x4(&frameData.lightViewProj[cascadeIdx], XMMatrixTranspose(lightView * lightProjection));
             orthoWidths[cascadeIdx] = orthoWidth;
             depthRanges[cascadeIdx] = cascadeMaxZ - cascadeMinZ;
         }

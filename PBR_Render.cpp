@@ -838,6 +838,7 @@ void D3D12App::ReportFrameError(const char* operation, HRESULT hr)
 
 bool D3D12App::BeginFrame()
 {
+    m_resourceManager.BeginPassConstantsFrame(frameIndex);
     m_resourceManager.ResetTransientSrvUavDescriptors(frameIndex);
     m_resourceManager.BeginRDGFrame(&m_deviceContext, frameIndex);
 
@@ -1345,6 +1346,13 @@ void D3D12App::Render()
         }
 
         forwardGraph.Execute(m_deviceContext.GetCommandList());
+        if (m_resourceManager.PassConstantsAllocationFailed(frameIndex))
+        {
+            ErrorLog::Write("Application: pass constant allocation failed; rendering stopped.");
+            Running = false;
+            EndFrame();
+            return;
+        }
 
         if (dlssEvaluatedByForwardGraph)
         {
@@ -1959,6 +1967,13 @@ void D3D12App::Render()
 
         // Execute the entire graph after all passes have been added
         deferredGraph.Execute(m_deviceContext.GetCommandList());
+        if (m_resourceManager.PassConstantsAllocationFailed(frameIndex))
+        {
+            ErrorLog::Write("Application: pass constant allocation failed; rendering stopped.");
+            Running = false;
+            EndFrame();
+            return;
+        }
 
         if (dlssEvaluatedByDeferredGraph)
         {

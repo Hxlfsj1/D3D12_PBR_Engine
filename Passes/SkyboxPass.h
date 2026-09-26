@@ -58,6 +58,7 @@ public:
         UINT skyboxTexIdx = resourceManager->GetIblEnvCubeIdx();
         cmdList->SetGraphicsRoot32BitConstants(PipelineManager::MeshBinding::DrawConstants, 1, &skyboxTexIdx, PipelineManager::MeshBinding::SkyboxTextureOffset);
 
+        cmdList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
         cmdList->DrawInstanced(36, 1, 0, 0);
     }
 

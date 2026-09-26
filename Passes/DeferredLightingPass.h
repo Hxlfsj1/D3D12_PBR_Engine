@@ -58,10 +58,6 @@ public:
         cmdList->RSSetViewports(1, &viewport);
         cmdList->RSSetScissorRects(1, &scissorRect);
 
-        const UINT64 deferredConstantsOffset = 1024 * 1024 * 8;
-        UINT8* cbvCpuAddress = resourceManager->GetCBVAddress(frameIndex) + deferredConstantsOffset;
-        D3D12_GPU_VIRTUAL_ADDRESS cbvGpuAddress = resourceManager->GetCBVGPUAddress(frameIndex) + deferredConstantsOffset;
-
         DeferredConstants deferredCb = {};
         deferredCb.invViewProj = invViewProjMat;
         deferredCb.gbufferAlbedoIdx = srvIndices.gbufferAlbedo;
@@ -71,7 +67,9 @@ public:
         deferredCb.hbaoIdx = srvIndices.hbao;
         deferredCb.gbufferEmissiveIdx = srvIndices.gbufferEmissive;
 
-        memcpy(cbvCpuAddress, &deferredCb, sizeof(DeferredConstants));
+        const auto allocation = resourceManager->AllocatePassConstants(frameIndex, sizeof(DeferredConstants));
+        if (!allocation) return;
+        memcpy(allocation.cpuAddress, &deferredCb, sizeof(DeferredConstants));
 
         PassConstants* passConstants = reinterpret_cast<PassConstants*>(
             resourceManager->GetCBVAddress(frameIndex));
@@ -84,7 +82,7 @@ public:
         cmdList->SetDescriptorHeaps(1, heaps);
 
         cmdList->SetGraphicsRootConstantBufferView(PipelineManager::DeferredBinding::FrameConstants, resourceManager->GetCBVGPUAddress(frameIndex));
-        cmdList->SetGraphicsRootConstantBufferView(PipelineManager::DeferredBinding::LightingConstants, cbvGpuAddress);
+        cmdList->SetGraphicsRootConstantBufferView(PipelineManager::DeferredBinding::LightingConstants, allocation.gpuAddress);
         cmdList->SetGraphicsRootConstantBufferView(PipelineManager::DeferredBinding::SphericalHarmonics, resourceManager->GetSHBufferGPUAddress());
 
         cmdList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
