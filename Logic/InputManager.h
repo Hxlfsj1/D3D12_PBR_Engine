@@ -44,6 +44,7 @@ public:
 
         case WM_RBUTTONDOWN:
         {
+            camera.ResetFlySpeed();
             isMouseDown = true;
             lastX = (float)GET_X_LPARAM(lParam);
             lastY = (float)GET_Y_LPARAM(lParam);
@@ -53,7 +54,7 @@ public:
 
         case WM_RBUTTONUP:
         {
-            isMouseDown = false;
+            EndMouseLook(camera);
 
             return true;
         }
@@ -94,31 +95,19 @@ public:
         return true;
     }
 
-    void EndMouseLook() { isMouseDown = false; }
+    void EndMouseLook(Camera& camera) { isMouseDown = false; camera.ResetFlySpeed(); }
 
-    void Update(float deltaTime, Camera& camera)
+    void Update(float deltaTime, Camera& camera, bool allowNavigation = true)
     {
         // Reserve W/E for editor tools; camera navigation requires right mouse.
-        if (!isMouseDown || !(GetAsyncKeyState(VK_RBUTTON) & 0x8000)) return;
-        if (GetAsyncKeyState('W') & 0x8000)
+        if (!allowNavigation || !isMouseDown || !(GetAsyncKeyState(VK_RBUTTON) & 0x8000))
         {
-            camera.ProcessKeyboard(FORWARD, deltaTime);
+            EndMouseLook(camera);
+            return;
         }
-
-        if (GetAsyncKeyState('S') & 0x8000)
-        {
-            camera.ProcessKeyboard(BACKWARD, deltaTime);
-        }
-
-        if (GetAsyncKeyState('A') & 0x8000)
-        {
-            camera.ProcessKeyboard(LEFT, deltaTime);
-        }
-
-        if (GetAsyncKeyState('D') & 0x8000)
-        {
-            camera.ProcessKeyboard(RIGHT, deltaTime);
-        }
+        const auto down = [](int key) { return (GetAsyncKeyState(key) & 0x8000) ? 1.0f : 0.0f; };
+        camera.ProcessFlyMovement(down('D') - down('A'), down('Q') - down('E'),
+            down('W') - down('S'), deltaTime, down(VK_SHIFT) != 0.0f);
     }
 
 private:

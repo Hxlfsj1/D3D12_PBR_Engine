@@ -3,6 +3,8 @@
 
 #include <DirectXMath.h>
 #include <DirectXCollision.h>
+#include <algorithm>
+#include <cmath>
 
 using namespace DirectX;
 
@@ -106,6 +108,40 @@ public:
         XMStoreFloat3(&Position, pos);
     }
 
+    void ResetFlySpeed() { m_flySpeedMultiplier = 1.0f; }
+
+    // Input axes: camera right/forward, but vertical movement follows world up.
+    void ProcessFlyMovement(float right, float up, float forward, float deltaTime, bool accelerate)
+    {
+        XMVECTOR direction = XMVectorAdd(
+            XMVectorAdd(XMVectorScale(XMLoadFloat3(&Right), right),
+                XMVectorScale(XMLoadFloat3(&WorldUp), up)),
+            XMVectorScale(XMLoadFloat3(&Front), forward));
+        if (XMVectorGetX(XMVector3LengthSq(direction)) < 0.000001f)
+        {
+            ResetFlySpeed();
+            return;
+        }
+        if (!accelerate) ResetFlySpeed();
+        if (!std::isfinite(deltaTime) || deltaTime <= 0.0f) return;
+
+        float distanceTime = deltaTime;
+        if (accelerate)
+        {
+            constexpr float maxMultiplier = 64.0f;
+            constexpr float acceleration = (maxMultiplier - 1.0f) / 8.0f; // Rise from 1x to 64x over eight seconds.
+            const float rampTime = (std::min)(deltaTime,
+                (maxMultiplier - m_flySpeedMultiplier) / acceleration);
+            // Integrate the ramp, including the portion after reaching the cap.
+            // This gives the same travel distance at different frame rates.
+            distanceTime = m_flySpeedMultiplier * rampTime + 0.5f * acceleration * rampTime * rampTime
+                + maxMultiplier * (deltaTime - rampTime);
+            m_flySpeedMultiplier = (std::min)(maxMultiplier, m_flySpeedMultiplier + acceleration * rampTime);
+        }
+        const XMVECTOR offset = XMVectorScale(XMVector3Normalize(direction), MovementSpeed * distanceTime);
+        XMStoreFloat3(&Position, XMVectorAdd(XMLoadFloat3(&Position), offset));
+    }
+
     void ProcessMouseMovement(float xoffset, float yoffset, bool constrainPitch = true)
     {
         xoffset *= MouseSensitivity;
@@ -143,6 +179,7 @@ public:
     }
 
 private:
+    float m_flySpeedMultiplier = 1.0f;
     void updateCameraVectors()
     {
         XMVECTOR quat = XMQuaternionRotationRollPitchYaw(

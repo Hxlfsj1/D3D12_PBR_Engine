@@ -108,6 +108,7 @@ public:
             }
             frustumCenter = XMVectorScale(frustumCenter, 1.0f / 8.0f);
 
+            // Bounding-sphere radius: distance from the centroid to a vertex of the larger (far) plane
             float sphereRadius = 0.0f;
             for (const XMFLOAT3& corner : cascadeCorners)
             {

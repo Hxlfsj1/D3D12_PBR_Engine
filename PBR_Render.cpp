@@ -204,7 +204,7 @@ void D3D12App::Run()
 LRESULT D3D12App::MsgProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 {
     if (msg == WM_RBUTTONUP || msg == WM_KILLFOCUS || msg == WM_CAPTURECHANGED)
-        m_inputManager.EndMouseLook();
+        m_inputManager.EndMouseLook(camera);
     // Give Dear ImGui first refusal on every window message.
     // The handler silently returns 0 until the context exists, so this is safe before InitImGui.
     if (ImGui_ImplWin32_WndProcHandler(hwnd, msg, wParam, lParam))
@@ -515,9 +515,10 @@ void D3D12App::Update()
     }
 
     // Continuous keyboard movement must update the camera before building frame matrices and culling volumes.
-    if (!m_editorGizmo.IsDragging() &&
-        (ImGui::GetCurrentContext() == nullptr || !ImGui::GetIO().WantCaptureKeyboard))
-        m_inputManager.Update(deltaTime, camera);
+    const bool allowCameraNavigation = !m_editorGizmo.IsDragging() &&
+        (ImGui::GetCurrentContext() == nullptr ||
+            (!ImGui::GetIO().WantCaptureKeyboard && !ImGui::GetIO().WantCaptureMouse && !ImGui::GetIO().AppFocusLost));
+    m_inputManager.Update(deltaTime, camera, allowCameraNavigation);
 
     // ====================================================================================================
     // Calculate V * P matrix
