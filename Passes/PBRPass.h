@@ -244,9 +244,10 @@ public:
         cmdList->RSSetViewports(1, &viewport);
         cmdList->RSSetScissorRects(1, &scissorRect);
 
-        cmdList->SetGraphicsRootSignature(pipelineManager->GetRootSignature());
         ID3D12DescriptorHeap* heaps[] = { resourceManager->GetMainDescriptorHeap() };
         cmdList->SetDescriptorHeaps(1, heaps);
+
+        cmdList->SetGraphicsRootSignature(pipelineManager->GetRootSignature());
 
         D3D12_GPU_VIRTUAL_ADDRESS baseGpuAddress = resourceManager->GetCBVGPUAddress(frameIndex);
         cmdList->SetGraphicsRootConstantBufferView(PipelineManager::MeshBinding::FrameConstants, baseGpuAddress);
@@ -557,10 +558,10 @@ private:
         cmdList->RSSetViewports(1, &viewport);
         cmdList->RSSetScissorRects(1, &scissorRect);
 
-        cmdList->SetGraphicsRootSignature(pipelineManager->GetRootSignature());
-
         ID3D12DescriptorHeap* heaps[] = { resourceManager->GetMainDescriptorHeap() };
         cmdList->SetDescriptorHeaps(1, heaps);
+
+        cmdList->SetGraphicsRootSignature(pipelineManager->GetRootSignature());
 
         D3D12_GPU_VIRTUAL_ADDRESS baseGpuAddress = resourceManager->GetCBVGPUAddress(frameIndex);
         cmdList->SetGraphicsRootConstantBufferView(PipelineManager::MeshBinding::FrameConstants, baseGpuAddress);

@@ -364,14 +364,14 @@ private:
         cmdList->RSSetViewports(1, &viewport);
         cmdList->RSSetScissorRects(1, &scissorRect);
 
-        cmdList->SetGraphicsRootSignature(pipelineManager->GetSMAARootSignature());
-        cmdList->SetPipelineState(pipelineManager->GetSMAAEdgePSO());
-
         ID3D12DescriptorHeap* descriptorHeaps[] =
         {
             resourceManager->GetMainDescriptorHeap()
         };
         cmdList->SetDescriptorHeaps(1, descriptorHeaps);
+
+        cmdList->SetGraphicsRootSignature(pipelineManager->GetSMAARootSignature());
+        cmdList->SetPipelineState(pipelineManager->GetSMAAEdgePSO());
 
         SMAAConstants constants = {};
         constants.rtMetrics = DirectX::XMFLOAT4(
@@ -423,15 +423,15 @@ private:
         cmdList->RSSetViewports(1, &viewport);
         cmdList->RSSetScissorRects(1, &scissorRect);
 
-        cmdList->SetGraphicsRootSignature(
-            pipelineManager->GetSMAARootSignature());
-        cmdList->SetPipelineState(pipelineManager->GetSMAAWeightPSO());
-
         ID3D12DescriptorHeap* descriptorHeaps[] =
         {
             resourceManager->GetMainDescriptorHeap()
         };
         cmdList->SetDescriptorHeaps(1, descriptorHeaps);
+
+        cmdList->SetGraphicsRootSignature(
+            pipelineManager->GetSMAARootSignature());
+        cmdList->SetPipelineState(pipelineManager->GetSMAAWeightPSO());
 
         SMAAConstants constants = {};
         constants.rtMetrics = DirectX::XMFLOAT4(
@@ -478,16 +478,16 @@ private:
         cmdList->RSSetViewports(1, &viewport);
         cmdList->RSSetScissorRects(1, &scissorRect);
 
-        cmdList->SetGraphicsRootSignature(
-            pipelineManager->GetSMAARootSignature());
-        cmdList->SetPipelineState(
-            pipelineManager->GetSMAANeighborhoodPSO());
-
         ID3D12DescriptorHeap* descriptorHeaps[] =
         {
             resourceManager->GetMainDescriptorHeap()
         };
         cmdList->SetDescriptorHeaps(1, descriptorHeaps);
+
+        cmdList->SetGraphicsRootSignature(
+            pipelineManager->GetSMAARootSignature());
+        cmdList->SetPipelineState(
+            pipelineManager->GetSMAANeighborhoodPSO());
 
         SMAAConstants constants = {};
         constants.rtMetrics = DirectX::XMFLOAT4(

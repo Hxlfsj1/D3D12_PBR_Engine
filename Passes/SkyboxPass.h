@@ -34,9 +34,10 @@ public:
         cmdList->RSSetViewports(1, &viewport);
         cmdList->RSSetScissorRects(1, &scissorRect);
 
-        cmdList->SetGraphicsRootSignature(pipelineManager->GetRootSignature());
         ID3D12DescriptorHeap* heaps[] = { resourceManager->GetMainDescriptorHeap() };
         cmdList->SetDescriptorHeaps(1, heaps);
+
+        cmdList->SetGraphicsRootSignature(pipelineManager->GetRootSignature());
 
         // Bind the PSO (Pipeline State Object) for Skybox rendering
         cmdList->SetPipelineState(pipelineManager->GetSkybox_PSO());

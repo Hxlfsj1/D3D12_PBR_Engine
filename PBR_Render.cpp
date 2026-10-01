@@ -1229,6 +1229,14 @@ void D3D12App::Render()
                     { opaqueOutput.sceneColor, opaqueOutput.depth, motionOutput.motionTexture },
                     [this](ID3D12GraphicsCommandList* commandList)
                     {
+                        // The post-process root signature declares
+                        // CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED, so the heap must be bound first
+                        ID3D12DescriptorHeap* heaps[] =
+                        {
+                            m_resourceManager.GetMainDescriptorHeap()
+                        };
+                        commandList->SetDescriptorHeaps(1, heaps);
+
                         commandList->SetGraphicsRootSignature(
                             m_pipelineManager.GetPostProcessRootSignature());
                         commandList->SetPipelineState(
@@ -1237,12 +1245,6 @@ void D3D12App::Render()
                         commandList->RSSetScissorRects(1, &scissorRect);
                         commandList->IASetPrimitiveTopology(
                             D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-
-                        ID3D12DescriptorHeap* heaps[] =
-                        {
-                            m_resourceManager.GetMainDescriptorHeap()
-                        };
-                        commandList->SetDescriptorHeaps(1, heaps);
                     });
 
                 if (!dlssOutput.outputTexture.IsValid() || !dlssOutput.pass.IsValid())
@@ -1848,6 +1850,14 @@ void D3D12App::Render()
                         { deferredOutput.sceneColor, gbufferOutput.depth, motionOutput.motionTexture },
                         [this](ID3D12GraphicsCommandList* commandList)
                         {
+                            // The post-process root signature declares
+                            // CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED, so the heap must be bound first
+                            ID3D12DescriptorHeap* heaps[] =
+                            {
+                                m_resourceManager.GetMainDescriptorHeap()
+                            };
+                            commandList->SetDescriptorHeaps(1, heaps);
+
                             commandList->SetGraphicsRootSignature(
                                 m_pipelineManager.GetPostProcessRootSignature());
                             commandList->SetPipelineState(
@@ -1856,12 +1866,6 @@ void D3D12App::Render()
                             commandList->RSSetScissorRects(1, &scissorRect);
                             commandList->IASetPrimitiveTopology(
                                 D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-
-                            ID3D12DescriptorHeap* heaps[] =
-                            {
-                                m_resourceManager.GetMainDescriptorHeap()
-                            };
-                            commandList->SetDescriptorHeaps(1, heaps);
                         });
 
                     if (!dlssOutput.outputTexture.IsValid() || !dlssOutput.pass.IsValid())
@@ -2155,6 +2159,11 @@ void D3D12App::RecordImGuiDrawData()
     ID3D12DescriptorHeap* heaps[] = { m_imguiSrvHeap.Get() };
     commandList->SetDescriptorHeaps(1, heaps);
     ImGui_ImplDX12_RenderDrawData(ImGui::GetDrawData(), commandList);
+
+    // Hand the engine heap back: any HEAP_DIRECTLY_INDEXED root signature set afterwards
+    // would otherwise capture ImGui's heap as its bindless index space.
+    ID3D12DescriptorHeap* engineHeaps[] = { m_resourceManager.GetMainDescriptorHeap() };
+    commandList->SetDescriptorHeaps(1, engineHeaps);
 
     // Hand the back buffer back to the swap chain in PRESENT state
     barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_RENDER_TARGET;

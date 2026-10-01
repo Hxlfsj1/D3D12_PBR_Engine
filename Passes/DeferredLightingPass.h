@@ -75,11 +75,11 @@ public:
             resourceManager->GetCBVAddress(frameIndex));
         passConstants->shadowMapIdx = srvIndices.shadowMap;
 
-        cmdList->SetGraphicsRootSignature(pipelineManager->GetDeferredRootSignature());
-        cmdList->SetPipelineState(pipelineManager->GetDeferredPSO());
-
         ID3D12DescriptorHeap* heaps[] = { resourceManager->GetMainDescriptorHeap() };
         cmdList->SetDescriptorHeaps(1, heaps);
+
+        cmdList->SetGraphicsRootSignature(pipelineManager->GetDeferredRootSignature());
+        cmdList->SetPipelineState(pipelineManager->GetDeferredPSO());
 
         cmdList->SetGraphicsRootConstantBufferView(PipelineManager::DeferredBinding::FrameConstants, resourceManager->GetCBVGPUAddress(frameIndex));
         cmdList->SetGraphicsRootConstantBufferView(PipelineManager::DeferredBinding::LightingConstants, allocation.gpuAddress);

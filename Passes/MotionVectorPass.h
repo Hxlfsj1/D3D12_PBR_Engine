@@ -132,11 +132,11 @@ private:
         cmdList->RSSetViewports(1, &viewport);
         cmdList->RSSetScissorRects(1, &scissorRect);
 
-        cmdList->SetGraphicsRootSignature(pipelineManager->GetMotionVectorRootSignature());
-        cmdList->SetPipelineState(pipelineManager->GetMotionVectorPSO());
-
         ID3D12DescriptorHeap* heaps[] = { resourceManager->GetMainDescriptorHeap() };
         cmdList->SetDescriptorHeaps(1, heaps);
+
+        cmdList->SetGraphicsRootSignature(pipelineManager->GetMotionVectorRootSignature());
+        cmdList->SetPipelineState(pipelineManager->GetMotionVectorPSO());
 
         MotionVectorConstants motionCb = {};
         motionCb.currJitteredInvViewProj = currJitteredInvViewProjGpu;

@@ -72,9 +72,12 @@ public:
                 nullptr);
         }
 
-        cmdList->SetGraphicsRootSignature(pipelineManager->GetRootSignature());
+        // The root signature declares CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED: binding a
+        // descriptor heap resets descriptor-table state, so the heap must be bound first
         ID3D12DescriptorHeap* heaps[] = { resourceManager->GetMainDescriptorHeap() };
         cmdList->SetDescriptorHeaps(1, heaps);
+
+        cmdList->SetGraphicsRootSignature(pipelineManager->GetRootSignature());
 
         D3D12_GPU_VIRTUAL_ADDRESS baseGpuAddress = resourceManager->GetCBVGPUAddress(frameIndex);
         cmdList->SetGraphicsRootConstantBufferView(PipelineManager::MeshBinding::FrameConstants, baseGpuAddress);

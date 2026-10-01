@@ -71,11 +71,11 @@ public:
         cmdList->RSSetViewports(1, &viewport);
         cmdList->RSSetScissorRects(1, &scissorRect);
 
-        cmdList->SetGraphicsRootSignature(pipelineManager->GetTAARootSignature());
-        cmdList->SetPipelineState(pipelineManager->GetTAAPSO());
-
         ID3D12DescriptorHeap* heaps[] = { resourceManager->GetMainDescriptorHeap() };
         cmdList->SetDescriptorHeaps(1, heaps);
+
+        cmdList->SetGraphicsRootSignature(pipelineManager->GetTAARootSignature());
+        cmdList->SetPipelineState(pipelineManager->GetTAAPSO());
 
         TAAConstants cb = {};
         cb.currJitteredInvViewProj = currJitteredInvViewProjGpu;

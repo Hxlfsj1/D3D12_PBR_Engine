@@ -45,11 +45,11 @@ public:
         cmdList->RSSetViewports(1, &viewport);
         cmdList->RSSetScissorRects(1, &scissorRect);
 
-        cmdList->SetGraphicsRootSignature(pipelineManager->GetHBAORootSignature());
-        cmdList->SetPipelineState(pipelineManager->GetHBAOPSO());
-
         ID3D12DescriptorHeap* heaps[] = { resourceManager->GetMainDescriptorHeap() };
         cmdList->SetDescriptorHeaps(1, heaps);
+
+        cmdList->SetGraphicsRootSignature(pipelineManager->GetHBAORootSignature());
+        cmdList->SetPipelineState(pipelineManager->GetHBAOPSO());
 
         cmdList->SetGraphicsRootConstantBufferView(PipelineManager::HBAOBinding::Constants, constantsGpuAddress);
 
@@ -81,11 +81,11 @@ public:
         cmdList->RSSetViewports(1, &viewport);
         cmdList->RSSetScissorRects(1, &scissorRect);
 
-        cmdList->SetGraphicsRootSignature(pipelineManager->GetHBAORootSignature());
-        cmdList->SetPipelineState(pipelineManager->GetHBAOBlurPSO());
-
         ID3D12DescriptorHeap* heaps[] = { resourceManager->GetMainDescriptorHeap() };
         cmdList->SetDescriptorHeaps(1, heaps);
+
+        cmdList->SetGraphicsRootSignature(pipelineManager->GetHBAORootSignature());
+        cmdList->SetPipelineState(pipelineManager->GetHBAOBlurPSO());
 
         cmdList->SetGraphicsRootConstantBufferView(PipelineManager::HBAOBinding::Constants, constantsGpuAddress);
 

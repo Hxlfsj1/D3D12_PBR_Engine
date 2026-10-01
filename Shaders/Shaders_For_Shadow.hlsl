@@ -1,7 +1,7 @@
 cbuffer PassConstants : register(b0)
 {
     float3 camPos;
-    float padding1;
+    float materialMipBias;
     float3 cameraForward;
     float paddingCameraForward;
     float3 lightDir;
@@ -89,6 +89,6 @@ void PSMain(VS_OUTPUT input)
         input.instanceID,
         materialID,
         input.texCoord,
-        0.0f);
+        materialMipBias);
 }
 #endif

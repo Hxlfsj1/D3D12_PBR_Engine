@@ -78,11 +78,11 @@ public:
         commandList->RSSetViewports(1, &viewport);
         commandList->RSSetScissorRects(1, &scissorRect);
 
-        commandList->SetGraphicsRootSignature(pipelineManager->GetTSRRootSignature());
-        commandList->SetPipelineState(pipelineManager->GetTSRPSO());
-
         ID3D12DescriptorHeap* heaps[] = { resourceManager->GetMainDescriptorHeap() };
         commandList->SetDescriptorHeaps(1, heaps);
+
+        commandList->SetGraphicsRootSignature(pipelineManager->GetTSRRootSignature());
+        commandList->SetPipelineState(pipelineManager->GetTSRPSO());
 
         TSRConstants constants = {};
         constants.currJitteredInvViewProj = currJitteredInvViewProjGpu;

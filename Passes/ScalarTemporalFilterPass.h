@@ -296,11 +296,11 @@ private:
         cmdList->RSSetViewports(1, &viewport);
         cmdList->RSSetScissorRects(1, &scissorRect);
 
-        cmdList->SetGraphicsRootSignature(pipelineManager->GetScalarTemporalRootSignature());
-        cmdList->SetPipelineState(pipelineManager->GetScalarTemporalPSO());
-
         ID3D12DescriptorHeap* heaps[] = { resourceManager->GetMainDescriptorHeap() };
         cmdList->SetDescriptorHeaps(1, heaps);
+
+        cmdList->SetGraphicsRootSignature(pipelineManager->GetScalarTemporalRootSignature());
+        cmdList->SetPipelineState(pipelineManager->GetScalarTemporalPSO());
 
         Constants constants = {};
         constants.currJitteredInvViewProj = currJitteredInvViewProj;

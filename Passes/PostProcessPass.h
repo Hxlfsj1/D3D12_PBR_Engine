@@ -32,15 +32,15 @@ public:
         cmdList->RSSetViewports(1, &viewport);
         cmdList->RSSetScissorRects(1, &scissorRect);
 
+        ID3D12DescriptorHeap* heaps[] = { resourceManager->GetMainDescriptorHeap() };
+        cmdList->SetDescriptorHeaps(1, heaps);
+
         cmdList->SetGraphicsRootSignature(pipelineManager->GetPostProcessRootSignature());
         cmdList->SetPipelineState(pipelineManager->GetPostProcessPSO(enableSharpen));
 
         cmdList->RSSetViewports(1, &viewport);
         cmdList->RSSetScissorRects(1, &scissorRect);
         cmdList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-
-        ID3D12DescriptorHeap* heaps[] = { resourceManager->GetMainDescriptorHeap() };
-        cmdList->SetDescriptorHeaps(1, heaps);
 
         UINT postProcessConstants[PipelineManager::PostProcessBinding::ConstantCount] =
         {

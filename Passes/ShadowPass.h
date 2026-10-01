@@ -177,6 +177,12 @@ public:
         size_t visibleInstancesSize,
         const std::array<D3D12_CPU_DESCRIPTOR_HANDLE, NUM_CASCADES>& shadowDsvHandles)
     {
+        // The root signature declares CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED, so the descriptor
+        // heap must be bound first: otherwise the signature captures whatever heap was bound
+        // previously and every ResourceDescriptorHeap[] index resolves inside that heap.
+        ID3D12DescriptorHeap* heaps[] = { resourceManager->GetMainDescriptorHeap() };
+        cmdList->SetDescriptorHeaps(1, heaps);
+
         cmdList->SetGraphicsRootSignature(pipelineManager->GetRootSignature());
         cmdList->SetPipelineState(pipelineManager->GetShadowPSO());
 
@@ -197,9 +203,6 @@ public:
             D3D12_CPU_DESCRIPTOR_HANDLE dsv = shadowDsvHandles[cascadeIdx];
             cmdList->OMSetRenderTargets(0, nullptr, FALSE, &dsv);
             cmdList->ClearDepthStencilView(dsv, D3D12_CLEAR_FLAG_DEPTH, 1.0f, 0, 0, nullptr);
-
-            ID3D12DescriptorHeap* heaps[] = { resourceManager->GetMainDescriptorHeap() };
-            cmdList->SetDescriptorHeaps(1, heaps);
 
             D3D12_GPU_VIRTUAL_ADDRESS baseGpuAddress = resourceManager->GetCBVGPUAddress(frameIndex);
             cmdList->SetGraphicsRootConstantBufferView(PipelineManager::MeshBinding::FrameConstants, baseGpuAddress);
