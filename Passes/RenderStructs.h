@@ -1,4 +1,4 @@
-#ifndef RENDER_STRUCTS_H
+﻿#ifndef RENDER_STRUCTS_H
 #define RENDER_STRUCTS_H
 
 #include "stdafx.h"
@@ -19,7 +19,7 @@ struct alignas(D3D12_CONSTANT_BUFFER_DATA_PLACEMENT_ALIGNMENT) PassConstants
     DirectX::XMFLOAT3 cameraForward;
     float paddingCameraForward;
     DirectX::XMFLOAT3 lightDir;
-    float padding2;
+    float environmentIntensity;
     DirectX::XMFLOAT3 lightColor;
     float tanSunAngularRadius;
 
@@ -45,8 +45,7 @@ struct MaterialData
     UINT emissiveIdx;
     DirectX::XMFLOAT4 baseColorFactor;
     UINT isUnlit;
-
-    UINT pad[3];
+    DirectX::XMFLOAT3 emissiveFactor; // Linear factor including emissive strength; retains 48-byte stride.
 };
 
 struct InstanceData

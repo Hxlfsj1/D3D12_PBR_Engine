@@ -1,4 +1,4 @@
-// Wrapping up the main functions and variables
+﻿// Wrapping up the main functions and variables
 
 // 1. Abstract the foundational boilerplate of the Win32 windowing system.
 // 2. Encapsulate the intricacies of Direct3D 12 hardware initialization and synchronization.
@@ -19,6 +19,8 @@
 #include "ResourceManager.h"
 #include "InputManager.h"
 #include "PipelineManager.h"
+#include "SSGIPipeline.h"
+#include "SSGIHistory.h"
 #include "RenderStructs.h"
 #include "EditorSelectionRenderer.h"
 #include "EditorGizmo.h"
@@ -97,6 +99,8 @@ private:
     ResourceManager m_resourceManager;
     InputManager m_inputManager;
     PipelineManager m_pipelineManager;
+    SSGIPipeline m_ssgiPipeline;
+    SSGIHistory m_ssgiHistory;
     SettingsManager m_settingsManager;
     EditorSelection m_editorSelection;
     EditorHistory m_editorHistory;
@@ -132,6 +136,7 @@ private:
     AntiAliasingMode m_antiAliasingMode = AntiAliasingMode::None;
     UINT m_temporalJitterFrameIndex = 0;
     UINT m_dlssJitterFrameIndex = 0;
+    UINT m_ssgiFrameIndex = 0;
     UINT m_hbaoTemporalFrameIndex;
     bool m_temporalHistoryValid = false;
     bool m_hbaoHistoryValid = false;

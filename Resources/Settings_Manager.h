@@ -7,6 +7,8 @@
 #include <vector>
 #include <string>
 #include <fstream>
+#include <cmath>
+#include <stdexcept>
 #include <DirectXMath.h>
 #include "json.hpp"
 
@@ -75,10 +77,19 @@ enum class AntiAliasingMode
 
 struct PipelineConfig
 {
+    float environmentIntensity = 1.0f;
     bool useDeferred = true;
     bool useZPrepass = false;
     AntiAliasingMode antiAliasing = AntiAliasingMode::None;
     DLSSQualityMode dlssQuality = DLSSQualityMode::Quality;
+};
+
+struct SSGIConfig
+{
+    bool enabled = false;
+    float intensity = 1.0f;
+    int quality = 1;
+    float radius = 2.0f;
 };
 
 struct LightingConfig
@@ -94,6 +105,7 @@ public:
     WindowConfig window;
     PipelineConfig pipeline;
     LightingConfig lighting;
+    SSGIConfig ssgi;
 
     inline static std::string s_skyboxPath = "HDRs/citrus_orchard_road_puresky_4k.hdr";
 
@@ -300,8 +312,30 @@ private:
                     OutputDebugStringA(
                         ("Warning: Unknown dlss_quality value '" + dlssQuality + "'; using Quality.\n").c_str());
                 }
+
+                if (j.contains("environment"))
+                {
+                    pipeline.environmentIntensity = j.at("environment").value("intensity", 1.0f);
+                    if (!std::isfinite(pipeline.environmentIntensity) || pipeline.environmentIntensity < 0)
+                        throw std::runtime_error("Environment intensity must be finite and nonnegative.");
+                }
+
+                if (j.contains("ssgi"))
+                {
+                    const auto& config = j.at("ssgi");
+                    ssgi.enabled = config.value("enabled", ssgi.enabled);
+                    ssgi.intensity = config.value("intensity", ssgi.intensity);
+                    if (config.contains("quality") && !config.at("quality").is_number_integer())
+                        throw std::runtime_error("SSGI quality must be an integer from 1 to 4.");
+                    ssgi.quality = config.value("quality", ssgi.quality);
+                    ssgi.radius = config.value("radius", ssgi.radius);
+                    if (!(std::isfinite(ssgi.radius) && ssgi.radius > 0 &&
+                        std::isfinite(ssgi.intensity) && ssgi.intensity >= 0 &&
+                        ssgi.quality >= 1 && ssgi.quality <= 4))
+                        throw std::runtime_error("SSGI requires finite radius > 0, finite intensity >= 0 and quality from 1 to 4.");
+                }
             }
-            catch (const nlohmann::json::exception& e)
+            catch (const std::exception& e)
             {
                 ErrorLog::Write(
                     "Settings: pipeline JSON contains an invalid field. File: " + filepath +

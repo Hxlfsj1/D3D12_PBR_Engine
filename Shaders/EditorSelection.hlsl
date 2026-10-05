@@ -1,4 +1,4 @@
-// Editor utility only: unlit object IDs and a visible-surface outline.
+﻿// Editor utility only: unlit object IDs and a visible-surface outline.
 #ifdef OBJECT_IDS
 cbuffer ObjectConstants : register(b0)
 {
@@ -13,7 +13,7 @@ struct MaterialData
     uint albedoIdx, normalIdx, ormIdx, emissiveIdx;
     float4 baseColorFactor;
     uint isUnlit;
-    uint3 padding;
+    float3 emissiveFactor;
 };
 StructuredBuffer<MaterialData> materials : register(t0);
 SamplerState materialSampler : register(s0);

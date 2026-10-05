@@ -1,11 +1,11 @@
-cbuffer PassConstants : register(b0)
+﻿cbuffer PassConstants : register(b0)
 {
     float3 camPos;
     float materialMipBias;
     float3 cameraForward;
     float paddingCameraForward;
     float3 lightDir;
-    float padding2;
+    float environmentIntensity;
     float3 lightColor;
     float tanSunAngularRadius;
     
@@ -42,7 +42,7 @@ struct MaterialData
     uint emissiveIdx;
     float4 baseColorFactor;
     uint isUnlit;
-    uint3 pad;
+    float3 emissiveFactor;
 };
 
 StructuredBuffer<InstanceData> gInstanceData : register(t6);

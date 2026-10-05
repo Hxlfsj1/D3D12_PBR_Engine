@@ -1,4 +1,4 @@
-#ifndef D3D12_MODEL_H
+﻿#ifndef D3D12_MODEL_H
 #define D3D12_MODEL_H
 
 #include "stdafx.h"
@@ -72,19 +72,21 @@ public:
     std::vector<std::vector<unsigned int>> lodIndices;
     std::vector<Texture> textures;
     XMFLOAT4 baseColorFactor;
+    XMFLOAT3 emissiveFactor = { 0, 0, 0 };
     bool isUnlit;
     UINT materialID = 0;
 
     ComPtr<ID3D12Resource> vertexBufferUploader;
     std::vector<ComPtr<ID3D12Resource>> indexBufferUploaders;
 
-    Mesh(ID3D12Device* device, ID3D12GraphicsCommandList* cmdList, std::vector<Vertex>& vertices, std::vector<std::vector<unsigned int>>& lodIndices, std::vector<Texture>& textures, XMFLOAT4 _baseColorFactor = { 1.0f, 1.0f, 1.0f, 1.0f }, bool _isUnlit = false)
+    Mesh(ID3D12Device* device, ID3D12GraphicsCommandList* cmdList, std::vector<Vertex>& vertices, std::vector<std::vector<unsigned int>>& lodIndices, std::vector<Texture>& textures, XMFLOAT4 _baseColorFactor = { 1.0f, 1.0f, 1.0f, 1.0f }, bool _isUnlit = false, XMFLOAT3 _emissiveFactor = { 0, 0, 0 })
     {
         this->vertices = std::move(vertices);
         this->lodIndices = std::move(lodIndices);
         this->textures = std::move(textures);
         this->baseColorFactor = _baseColorFactor;
         this->isUnlit = _isUnlit;
+        this->emissiveFactor = _emissiveFactor;
         setupMesh(device, cmdList);
     }
 
@@ -309,6 +311,7 @@ private:
         std::vector<Texture> textures;
         XMFLOAT4 baseColorFactor = { 1.0f, 1.0f, 1.0f, 1.0f };
         bool isUnlit = false;
+        XMFLOAT3 emissiveFactor = { 0, 0, 0 };
 
         DirectX::XMMATRIX invTranspose = DirectX::XMMatrixTranspose(DirectX::XMMatrixInverse(nullptr, nodeTransform));
 
@@ -436,6 +439,17 @@ private:
                         };
                     }
 
+                    double emissiveStrength = 1.0;
+                    auto extension = gltfMaterial.extensions.find("KHR_materials_emissive_strength");
+                    if (extension != gltfMaterial.extensions.end() && extension->second.Has("emissiveStrength"))
+                        emissiveStrength = extension->second.Get("emissiveStrength").GetNumberAsDouble();
+                    if (gltfMaterial.emissiveFactor.size() >= 3)
+                        emissiveFactor = {
+                            float(gltfMaterial.emissiveFactor[0] * emissiveStrength),
+                            float(gltfMaterial.emissiveFactor[1] * emissiveStrength),
+                            float(gltfMaterial.emissiveFactor[2] * emissiveStrength)
+                        };
+
                     isUnlit = gltfMaterial.extensions.find("KHR_materials_unlit") != gltfMaterial.extensions.end();
                     foundGltfMaterial = true;
                 };
@@ -452,6 +466,13 @@ private:
             if (!foundGltfMaterial && mesh->mMaterialIndex < gltfModel.materials.size())
             {
                 applyGltfMaterial(gltfModel.materials[mesh->mMaterialIndex]);
+            }
+
+            if (!foundGltfMaterial)
+            {
+                aiColor3D emission(0, 0, 0);
+                if (material->Get(AI_MATKEY_COLOR_EMISSIVE, emission) == AI_SUCCESS)
+                    emissiveFactor = { emission.r, emission.g, emission.b };
             }
 
             aiColor4D assimpBaseColor;
@@ -479,7 +500,7 @@ private:
             }
         }
 
-        return Mesh(device, cmdList, vertices, allLodIndices, textures, baseColorFactor, isUnlit);
+        return Mesh(device, cmdList, vertices, allLodIndices, textures, baseColorFactor, isUnlit, emissiveFactor);
     }
 
     void LoadAssimpTexture(ID3D12Device* device, DirectX::ResourceUploadBatch& upload, aiMaterial* mat, aiTextureType type, TextureType typeEnum, std::vector<Texture>& textures, const aiScene* scene)

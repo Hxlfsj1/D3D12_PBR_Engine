@@ -1,4 +1,4 @@
-struct InstanceData
+﻿struct InstanceData
 {
     float4x4 wvpMat;
     float4x4 worldMat;
@@ -16,7 +16,7 @@ struct MaterialData
     uint emissiveIdx;
     float4 baseColorFactor;
     uint isUnlit;
-    uint3 pad;
+    float3 emissiveFactor;
 };
 
 cbuffer PassConstants : register(b0)

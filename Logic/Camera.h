@@ -108,37 +108,53 @@ public:
         XMStoreFloat3(&Position, pos);
     }
 
-    void ResetFlySpeed() { m_flySpeedMultiplier = 1.0f; }
+    void ResetFlySpeed()
+    {
+        m_flySpeedMultiplier = 1.0f;
+        m_flySpeed = 0.0f;
+        m_lastFlyDirection = XMFLOAT3(0.0f, 0.0f, 0.0f);
+    }
 
     // Input axes: camera right/forward, but vertical movement follows world up.
     void ProcessFlyMovement(float right, float up, float forward, float deltaTime, bool accelerate)
     {
+        if (!std::isfinite(deltaTime) || deltaTime <= 0.0f) return;
+
+        static constexpr float kEasingTimeConstant = 0.04f;
+
         XMVECTOR direction = XMVectorAdd(
             XMVectorAdd(XMVectorScale(XMLoadFloat3(&Right), right),
                 XMVectorScale(XMLoadFloat3(&WorldUp), up)),
             XMVectorScale(XMLoadFloat3(&Front), forward));
-        if (XMVectorGetX(XMVector3LengthSq(direction)) < 0.000001f)
+
+        float targetSpeed = 0.0f;
+        if (XMVectorGetX(XMVector3LengthSq(direction)) > 0.000001f)
         {
-            ResetFlySpeed();
+            if (!accelerate) m_flySpeedMultiplier = 1.0f;
+            else
+            {
+                constexpr float maxMultiplier = 64.0f;
+                constexpr float acceleration = (maxMultiplier - 1.0f) / 8.0f;
+                m_flySpeedMultiplier = (std::min)(maxMultiplier, m_flySpeedMultiplier + acceleration * deltaTime);
+            }
+            direction = XMVector3Normalize(direction);
+            XMStoreFloat3(&m_lastFlyDirection, direction);
+            targetSpeed = MovementSpeed * m_flySpeedMultiplier;
+        }
+        else
+        {
+            m_flySpeedMultiplier = 1.0f;
+            direction = XMLoadFloat3(&m_lastFlyDirection);
+        }
+
+        m_flySpeed += (targetSpeed - m_flySpeed) * (1.0f - expf(-deltaTime / kEasingTimeConstant));
+        if (targetSpeed == 0.0f && m_flySpeed < 0.0001f)
+        {
+            m_flySpeed = 0.0f;
             return;
         }
-        if (!accelerate) ResetFlySpeed();
-        if (!std::isfinite(deltaTime) || deltaTime <= 0.0f) return;
 
-        float distanceTime = deltaTime;
-        if (accelerate)
-        {
-            constexpr float maxMultiplier = 64.0f;
-            constexpr float acceleration = (maxMultiplier - 1.0f) / 8.0f; // Rise from 1x to 64x over eight seconds.
-            const float rampTime = (std::min)(deltaTime,
-                (maxMultiplier - m_flySpeedMultiplier) / acceleration);
-            // Integrate the ramp, including the portion after reaching the cap.
-            // This gives the same travel distance at different frame rates.
-            distanceTime = m_flySpeedMultiplier * rampTime + 0.5f * acceleration * rampTime * rampTime
-                + maxMultiplier * (deltaTime - rampTime);
-            m_flySpeedMultiplier = (std::min)(maxMultiplier, m_flySpeedMultiplier + acceleration * rampTime);
-        }
-        const XMVECTOR offset = XMVectorScale(XMVector3Normalize(direction), MovementSpeed * distanceTime);
+        const XMVECTOR offset = XMVectorScale(direction, m_flySpeed * deltaTime);
         XMStoreFloat3(&Position, XMVectorAdd(XMLoadFloat3(&Position), offset));
     }
 
@@ -180,6 +196,8 @@ public:
 
 private:
     float m_flySpeedMultiplier = 1.0f;
+    float m_flySpeed = 0.0f;
+    XMFLOAT3 m_lastFlyDirection = XMFLOAT3(0.0f, 0.0f, 0.0f);
     void updateCameraVectors()
     {
         XMVECTOR quat = XMQuaternionRotationRollPitchYaw(

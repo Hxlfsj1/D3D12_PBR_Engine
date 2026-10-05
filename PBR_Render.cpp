@@ -1,4 +1,4 @@
-#include "D3D12App.h"
+﻿#include "D3D12App.h"
 #include "PBR_Shader.h"
 #include "Window.h"
 #include "RenderDevice.h"
@@ -16,6 +16,9 @@
 #include "GBufferPass.h"
 #include "HBAOPass.h"
 #include "DeferredLightingPass.h"
+#include "SSGIPass.h"
+#include "SSGITemporalPass.h"
+#include "SSGICompositePass.h"
 #include "MotionVectorPass.h"
 #include "TAAPass.h"
 #include "TSRPass.h"
@@ -56,6 +59,17 @@ D3D12App* g_App = nullptr;
 
 int WINAPI WinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance, _In_ LPSTR lpCmdLine, _In_ int nShowCmd)
 {
+    // WIC needs COM initialized before decoding model textures on this thread.
+    if (FAILED(CoInitializeEx(nullptr, COINIT_MULTITHREADED)))
+    {
+        ErrorLog::Write("Application: COM initialization failed.");
+        return 1;
+    }
+    struct ComLifetime
+    {
+        ~ComLifetime() { CoUninitialize(); }
+    } comLifetime;
+
     // Disable system DPI scaling to unlock raw GPU performance
     SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
 
@@ -387,6 +401,13 @@ bool D3D12App::InitD3D()
         ErrorLog::Write("Application: main pipeline initialization failed.");
         return false;
     }
+    if (m_settingsManager.pipeline.useDeferred && m_settingsManager.ssgi.enabled &&
+        (!m_ssgiPipeline.Initialize(m_deviceContext.GetDevice()) ||
+         !m_ssgiHistory.Initialize(m_deviceContext.GetDevice(), SceneWidth, SceneHeight)))
+    {
+        ErrorLog::Write("Application: SSGI pipeline initialization failed.");
+        return false;
+    }
     if (m_antiAliasingMode == AntiAliasingMode::TAA &&
         !m_pipelineManager.InitializeTAA(&m_deviceContext))
     {
@@ -459,6 +480,13 @@ bool D3D12App::InitD3D()
         return false;
     }
 
+    if (m_settingsManager.pipeline.useDeferred && m_settingsManager.ssgi.enabled &&
+        !m_resourceManager.InitializeBlueNoiseTexture(&m_deviceContext))
+    {
+        ErrorLog::Write("Application: blue-noise texture initialization failed.");
+        return false;
+    }
+
     m_resourceManager.SealPersistentSrvUavDescriptors();
 
     viewport = CD3DX12_VIEWPORT(0.0f, 0.0f, (float)Width, (float)Height);
@@ -482,6 +510,7 @@ void D3D12App::Update()
         m_temporalHistoryValid = false;
         m_hbaoHistoryValid = false;
         m_dlssHistoryValid = false;
+        m_ssgiHistory.Invalidate();
     }
 
     // ====================================================================================================
@@ -519,6 +548,8 @@ void D3D12App::Update()
         (ImGui::GetCurrentContext() == nullptr ||
             (!ImGui::GetIO().WantCaptureKeyboard && !ImGui::GetIO().WantCaptureMouse && !ImGui::GetIO().AppFocusLost));
     m_inputManager.Update(deltaTime, camera, allowCameraNavigation);
+    m_ssgiHistory.RejectCameraCut(camera.Position, camera.Front, camera.Zoom);
+    if (deltaTime > 0.25f) m_ssgiHistory.Invalidate();
 
     // ====================================================================================================
     // Calculate V * P matrix
@@ -632,6 +663,7 @@ void D3D12App::Update()
     }
     passCb.cameraForward = camera.Front;
     passCb.lightColor = m_settingsManager.lighting.lightColor;
+    passCb.environmentIntensity = m_settingsManager.pipeline.environmentIntensity;
 
     ShadowPass::FramePreparationInput shadowInput = {};
     shadowInput.camera = &camera;
@@ -885,6 +917,8 @@ bool D3D12App::EndFrame()
 
 void D3D12App::Render()
 {
+    bool ssgiHistoryWritten = false;
+    // Normal composition: add SSGI to scene lighting, then render sky/transparency.
     const bool useZPrepass =
         m_settingsManager.pipeline.useZPrepass &&
         m_antiAliasingMode != AntiAliasingMode::TSR;
@@ -919,6 +953,7 @@ void D3D12App::Render()
     EditorUI::UpdateScale(static_cast<float>(GetDpiForWindow(hwnd)) / 96.0f);
 
     ImGui::NewFrame();
+
     m_editorSelectionRenderer.Poll(m_deviceContext, m_resourceManager, m_editorSelection, m_editorHistory);
     const EditorGizmo::CameraFrame gizmoCamera{ m_currUnjitteredViewProjGpu, m_currViewGpu, m_currUnjitteredProjGpu };
     const bool quitRequested = EditorUI::Draw(m_resourceManager, m_editorSelection, m_editorGizmo, gizmoCamera, m_editorHistory);
@@ -1708,7 +1743,8 @@ void D3D12App::Render()
                 SceneWidth,
                 SceneHeight,
                 frameIndex,
-                deferredInput);
+                deferredInput,
+                m_settingsManager.ssgi.enabled);
             if (!deferredOutput.sceneColor.IsValid() || !deferredOutput.pass.IsValid())
             {
                 OutputDebugStringA(
@@ -1720,48 +1756,89 @@ void D3D12App::Render()
             deferredGraph.AddPassDependencies(deferredOutput.pass, { shadowOutput.pass, hbaoProducer });
             RDGPassHandle sceneColorProducer = deferredOutput.pass;
 
-            RDGPassHandle skyboxPass = SkyboxPass::AddToGraph(
-                deferredGraph,
-                &m_deviceContext,
-                &m_resourceManager,
-                &m_pipelineManager,
-                camera,
-                sceneViewport,
-                sceneScissorRect,
-                SceneWidth,
-                SceneHeight,
-                { deferredOutput.sceneColor, gbufferOutput.depth });
-            if (!skyboxPass.IsValid())
+            if (m_settingsManager.ssgi.enabled)
             {
-                OutputDebugStringA(
-                    "Error: Deferred skybox RDG construction failed; rendering stopped.\n");
-                Running = false;
-                EndFrame();
-                return;
+                SSGIPass::Input ssgiInput = { gbufferOutput.depth, gbufferOutput.normal,
+                    gbufferOutput.orm, deferredOutput.bounceSource };
+                auto ssgiOutput = SSGIPass::AddToGraph(deferredGraph, &m_resourceManager,
+                    &m_ssgiPipeline, m_currViewGpu, m_currJitteredProjGpu, m_currJitteredInvProjGpu,
+                    SceneWidth, SceneHeight, frameIndex, m_ssgiFrameIndex++, m_settingsManager.ssgi, ssgiInput);
+                if (!ssgiOutput.reconstructedGI.IsValid() || !ssgiOutput.reconstructionPass.IsValid())
+                {
+                    ErrorLog::Write("SSGI: RDG construction failed; rendering stopped.");
+                    Running = false;
+                    EndFrame();
+                    return;
+                }
+                auto temporal = SSGITemporalPass::AddToGraph(deferredGraph, &m_resourceManager,
+                    &m_ssgiPipeline, m_ssgiHistory, m_currJitteredInvViewProjGpu, frameIndex,
+                    { ssgiOutput.reconstructedGI, gbufferOutput.depth, gbufferOutput.normal, gbufferOutput.orm });
+                if (!temporal.gi.IsValid() || !temporal.pass.IsValid())
+                {
+                    ErrorLog::Write("SSGI: temporal RDG construction failed; rendering stopped.");
+                    Running = false;
+                    EndFrame();
+                    return;
+                }
+                auto composite = SSGICompositePass::AddToGraph(deferredGraph, &m_resourceManager,
+                    &m_ssgiPipeline, m_currViewGpu, m_currJitteredInvProjGpu, SceneWidth, SceneHeight,
+                    frameIndex, { deferredOutput.sceneColor, temporal.gi, gbufferOutput.depth,
+                        gbufferOutput.normal, gbufferOutput.orm, gbufferOutput.albedo }, m_settingsManager.ssgi.intensity);
+                if (!composite.IsValid())
+                {
+                    ErrorLog::Write("SSGI: composite RDG construction failed; rendering stopped.");
+                    Running = false;
+                    EndFrame();
+                    return;
+                }
+                sceneColorProducer = composite;
+                ssgiHistoryWritten = true;
             }
-            deferredGraph.AddPassDependencies(skyboxPass, { sceneColorProducer });
-            sceneColorProducer = skyboxPass;
 
-            RDGPassHandle transparentPass = PBRPass::AddTransparentToGraph(
-                deferredGraph,
-                &m_deviceContext,
-                &m_resourceManager,
-                &m_pipelineManager,
-                frameIndex,
-                sceneViewport,
-                sceneScissorRect,
-                g_visibleInstances,
-                transparentStartIndex,
-                { deferredOutput.sceneColor, gbufferOutput.depth, shadowOutput.shadowMapSrv });
-            if (!transparentPass.IsValid())
             {
-                OutputDebugStringA(
-                    "Error: Deferred transparent RDG construction failed; rendering stopped.\n");
-                Running = false;
-                EndFrame();
-                return;
+                RDGPassHandle skyboxPass = SkyboxPass::AddToGraph(
+                    deferredGraph,
+                    &m_deviceContext,
+                    &m_resourceManager,
+                    &m_pipelineManager,
+                    camera,
+                    sceneViewport,
+                    sceneScissorRect,
+                    SceneWidth,
+                    SceneHeight,
+                    { deferredOutput.sceneColor, gbufferOutput.depth });
+                if (!skyboxPass.IsValid())
+                {
+                    OutputDebugStringA(
+                        "Error: Deferred skybox RDG construction failed; rendering stopped.\n");
+                    Running = false;
+                    EndFrame();
+                    return;
+                }
+                deferredGraph.AddPassDependencies(skyboxPass, { sceneColorProducer });
+                sceneColorProducer = skyboxPass;
+
+                RDGPassHandle transparentPass = PBRPass::AddTransparentToGraph(
+                    deferredGraph,
+                    &m_deviceContext,
+                    &m_resourceManager,
+                    &m_pipelineManager,
+                    frameIndex,
+                    sceneViewport,
+                    sceneScissorRect,
+                    g_visibleInstances,
+                    transparentStartIndex,
+                    { deferredOutput.sceneColor, gbufferOutput.depth, shadowOutput.shadowMapSrv });
+                if (!transparentPass.IsValid())
+                {
+                    OutputDebugStringA(
+                        "Error: Deferred transparent RDG construction failed; rendering stopped.\n");
+                    Running = false;
+                    EndFrame();
+                    return;
+                }
+                sceneColorProducer = transparentPass;
             }
-            sceneColorProducer = transparentPass;
 
             RDGTextureHandle deferredFinalColor = deferredOutput.sceneColor;
             RDGPassHandle deferredFinalColorProducer = sceneColorProducer;
@@ -2021,6 +2098,9 @@ void D3D12App::Render()
     ID3D12CommandList* lists[] = { m_deviceContext.GetCommandList() };
     // Submit recorded rendering commands to the GPU for execution
     m_deviceContext.GetCommandQueue()->ExecuteCommandLists(1, lists);
+    if (ssgiHistoryWritten)
+        m_ssgiHistory.Commit(m_currJitteredViewProjGpu, m_currJitteredInvViewProjGpu,
+            camera.Position, camera.Front, camera.Zoom);
     // Insert a signal into the queue to track GPU progress
     HRESULT hr = m_deviceContext.GetCommandQueue()->Signal(
         m_deviceContext.GetFence(frameIndex),

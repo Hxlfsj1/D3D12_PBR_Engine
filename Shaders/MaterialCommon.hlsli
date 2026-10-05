@@ -2,6 +2,23 @@
 #define MATERIAL_COMMON_HLSLI
 
 static const float MIN_PERCEPTUAL_ROUGHNESS = 0.005f;
+static const float3 DIELECTRIC_F0 = float3(0.04f, 0.04f, 0.04f);
+
+float3 fresnelSchlickRoughness(float cosTheta, float3 F0, float roughness)
+{
+    return F0 + (max(float3(1.0 - roughness, 1.0 - roughness, 1.0 - roughness), F0) - F0) *
+        pow(clamp(1.0 - cosTheta, 0.0, 1.0), 5.0);
+}
+
+float3 ComputeMaterialF0(float3 albedo, float metallic)
+{
+    return lerp(DIELECTRIC_F0, albedo, metallic);
+}
+
+float3 ComputeDiffuseEnergy(float3 F, float metallic)
+{
+    return (1.0f - F) * (1.0f - metallic);
+}
 
 float3 DecodeSRGBColor(float3 color)
 {

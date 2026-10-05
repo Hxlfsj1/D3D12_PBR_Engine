@@ -1,4 +1,4 @@
-/*
+﻿/*
 G-Buffer Pass Output Summary:
 
 1. Target0: BaseColor and Alpha
@@ -19,7 +19,7 @@ struct MaterialData
     uint emissiveIdx;
     float4 baseColorFactor;
     uint isUnlit;
-    uint3 pad;
+    float3 emissiveFactor;
 };
 
 struct InstanceData
@@ -121,7 +121,7 @@ GBufferOutput PSMain(VS_OUTPUT input, bool isFrontFace : SV_IsFrontFace)
         Texture2D tEmissive = ResourceDescriptorHeap[mat.emissiveIdx];
         float3 emissiveSample = DecodeSRGBColor(
             tEmissive.SampleBias(s1, input.texCoord, materialMipBias).rgb);
-        output.emissive = float4(emissiveSample, 1.0f);
+        output.emissive = float4(emissiveSample * mat.emissiveFactor, 1.0f);
     }
     
 #if LOD_LEVEL == 0

@@ -1,4 +1,4 @@
-#ifndef LOD_LEVEL
+﻿#ifndef LOD_LEVEL
 #define LOD_LEVEL 0
 #endif
 
@@ -9,7 +9,7 @@ cbuffer PassConstants : register(b0)
     float3 cameraForward;
     float paddingCameraForward;
     float3 lightDir;
-    float padding2;
+    float environmentIntensity;
     float3 lightColor;
     float tanSunAngularRadius;
     
@@ -31,7 +31,7 @@ struct MaterialData
     uint emissiveIdx;
     float4 baseColorFactor;
     uint isUnlit;
-    uint3 pad;
+    float3 emissiveFactor;
 };
 
 struct InstanceData
@@ -267,7 +267,7 @@ float4 PSMain(VS_OUTPUT input, bool isFrontFace : SV_IsFrontFace) : SV_TARGET
     float NdotL = max(dot(N, L), 0.0);
     
     float3 irradiance = EvaluateSH9(N);
-    float3 diffuse_IBL = irradiance * albedo;
+    float3 diffuse_IBL = irradiance * albedo * environmentIntensity;
     float3 directDiffuse = albedo * lightColor * NdotL;
     
     float3 totalDiffuse = diffuse_IBL + directDiffuse;
@@ -331,7 +331,7 @@ float4 PSMain(VS_OUTPUT input, bool isFrontFace : SV_IsFrontFace) : SV_TARGET
     float3 F_IBL = fresnelSchlickRoughness(max(dot(N, V), 0.0), F0, roughness);
     float3 kD_IBL = ComputeDiffuseEnergy(F_IBL, metallic);
     float3 irradiance = EvaluateSH9(N);
-    float3 diffuse_IBL = irradiance * albedo;
+    float3 diffuse_IBL = irradiance * albedo * environmentIntensity;
     float3 specular_IBL = float3(0.0, 0.0, 0.0);
     
 #if LOD_LEVEL == 0
@@ -352,12 +352,12 @@ float4 PSMain(VS_OUTPUT input, bool isFrontFace : SV_IsFrontFace) : SV_TARGET
     // The kD_IBL term is decoupled from the split-sum specular BRDF
     // It serves as a visual constraint to mimic energy conservation rather than achieving strict physical correctness
     float3 ambientDiffuse = kD_IBL * diffuse_IBL * ao;
-    float3 ambientSpecular = specular_IBL * ao;
+    float3 ambientSpecular = (specular_IBL * environmentIntensity) * ao;
     
     // Add emissive (if applicable)
     Texture2D tEmissive = ResourceDescriptorHeap[mat.emissiveIdx];
     float3 emissive = hasEmissive
-        ? DecodeSRGBColor(tEmissive.SampleBias(s1, input.texCoord, materialMipBias).rgb)
+        ? DecodeSRGBColor(tEmissive.SampleBias(s1, input.texCoord, materialMipBias).rgb) * mat.emissiveFactor
         : float3(0.0, 0.0, 0.0);
     
     float3 totalDiffuse = directDiffuse + ambientDiffuse;

@@ -1,4 +1,4 @@
-#ifndef RESOURCE_MANAGER_H
+﻿#ifndef RESOURCE_MANAGER_H
 #define RESOURCE_MANAGER_H
 
 #include <stb_image.h>
@@ -9,6 +9,7 @@
 #include "Settings_Manager.h"
 #include "RenderStructs.h"
 #include "RDGResourceLease.h"
+#include "BlueNoiseTexture.h"
 
 #include <map>
 #include <vector>
@@ -311,7 +312,8 @@ public:
                 mat.albedoIdx = dummyAlbedoIdx;
                 mat.normalIdx = dummyNormalIdx;
                 mat.ormIdx = dummyORMIdx;
-                mat.emissiveIdx = dummyEmissiveIdx;
+                mat.emissiveIdx = dummyAlbedoIdx; // White identity texture supports factor-only emission.
+                mat.emissiveFactor = mesh.emissiveFactor;
                 mat.baseColorFactor = mesh.baseColorFactor;
                 mat.isUnlit = mesh.isUnlit;
 
@@ -912,6 +914,13 @@ public:
     {
         return mainDescriptorHeap.Get();
     }
+
+    bool InitializeBlueNoiseTexture(RenderDevice* deviceContext)
+    {
+        return m_blueNoise.Initialize(deviceContext->GetDevice(), deviceContext->GetCommandQueue());
+    }
+
+    ID3D12Resource* GetBlueNoiseTexture() const { return m_blueNoise.Get(); }
 
     UINT AllocateSrvUavDescriptor()
     {
@@ -1520,6 +1529,7 @@ private:
     ComPtr<ID3D12Resource> texBRDFLUT;
 
     ComPtr<ID3D12Resource> m_smaaAreaTexture;
+    BlueNoiseTexture m_blueNoise;
     ComPtr<ID3D12Resource> m_smaaAreaUpload;
     ComPtr<ID3D12Resource> m_smaaSearchTexture;
     ComPtr<ID3D12Resource> m_smaaSearchUpload;

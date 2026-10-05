@@ -2,5 +2,14 @@
   "use_deferred": true,
   "use_z_prepass": false,
   "anti_aliasing": "DLSS",
-  "dlss_quality": "Quality"
+  "dlss_quality": "Quality",
+  "environment": {
+    "intensity": 0.1
+  },
+  "ssgi": {
+    "enabled": true,
+    "intensity": 1,
+    "quality": 1,
+    "radius": 2.0
+  }
 }

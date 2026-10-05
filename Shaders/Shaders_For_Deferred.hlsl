@@ -1,11 +1,11 @@
-cbuffer PassConstants : register(b0)
+﻿cbuffer PassConstants : register(b0)
 {
     float3 camPos;
     float padding1;
     float3 cameraForward;
     float paddingCameraForward;
     float3 lightDir;
-    float padding2;
+    float environmentIntensity;
     float3 lightColor;
     float tanSunAngularRadius;
     
@@ -58,8 +58,21 @@ VS_OUTPUT VSMain(uint vertexID : SV_VertexID)
 
 #include "LightingCommon.hlsli"
 
-float4 PSMain(VS_OUTPUT input) : SV_TARGET
+#ifndef OUTPUT_BOUNCE_SOURCE
+#define OUTPUT_BOUNCE_SOURCE 0
+#endif
+
+struct PS_OUTPUT
 {
+    float4 sceneColor : SV_Target0;
+#if OUTPUT_BOUNCE_SOURCE
+    float4 bounceSource : SV_Target1;
+#endif
+};
+
+PS_OUTPUT PSMain(VS_OUTPUT input)
+{
+    PS_OUTPUT output = (PS_OUTPUT)0;
     Texture2D tAlbedo = ResourceDescriptorHeap[gbufferAlbedoIdx];
     Texture2D tNormal = ResourceDescriptorHeap[gbufferNormalIdx];
     Texture2D tORM = ResourceDescriptorHeap[gbufferORMIdx];
@@ -78,7 +91,8 @@ float4 PSMain(VS_OUTPUT input) : SV_TARGET
     float4 ormSample = tORM.SampleLevel(s1, input.texCoord, 0);
     if (ormSample.a < 0.5f)
     {
-        return float4(albedo, 1.0f);
+        output.sceneColor = float4(albedo, 1.0f);
+        return output;
     }
     float ao = max(ormSample.r, 0.01);
     float roughness = ClampPerceptualRoughness(ormSample.g);
@@ -129,7 +143,7 @@ float4 PSMain(VS_OUTPUT input) : SV_TARGET
     float3 kD_IBL = ComputeDiffuseEnergy(F_IBL, metallic);
     
     float3 irradiance = EvaluateSH9(N);
-    float3 diffuse_IBL = irradiance * albedo;
+    float3 diffuse_IBL = irradiance * albedo * environmentIntensity;
     
     Texture2D tHBAO = ResourceDescriptorHeap[hbaoIdx];
     float hbao = tHBAO.SampleLevel(s1, input.texCoord, 0).r;
@@ -143,7 +157,7 @@ float4 PSMain(VS_OUTPUT input) : SV_TARGET
     Texture2D tBRDF = ResourceDescriptorHeap[iblBRDFIdx];
     float2 brdf = tBRDF.Sample(s1, float2(max(dot(N, V), 0.0), roughness)).rg;
     float3 specular_IBL = ComputeSplitSumSpecularIBL(prefilteredColor, brdf, F_IBL);
-    float3 ambientSpecular = specular_IBL * finalAO; 
+    float3 ambientSpecular = (specular_IBL * environmentIntensity) * finalAO;
     float3 ambient = ambientDiffuse + ambientSpecular;
     
     float3 PBR_Color = ambient + Lo;
@@ -153,5 +167,14 @@ float4 PSMain(VS_OUTPUT input) : SV_TARGET
     
     float3 color = PBR_Color + emissiveColor;
 
-    return float4(color, 1.0f);
+    output.sceneColor = float4(color, 1.0f);
+#if OUTPUT_BOUNCE_SOURCE
+    // Current outgoing diffuse radiance only: no environment, specular, AO or GI feedback.
+    // Limit only GI-source emission. Preserve visible emission and RGB ratios.
+    const float MaxSSGIEmissive = 2.0f;
+    float peakEmission = max(emissiveColor.r, max(emissiveColor.g, emissiveColor.b));
+    float3 giEmissive = emissiveColor * (MaxSSGIEmissive / max(MaxSSGIEmissive, peakEmission));
+    output.bounceSource = float4(directDiffuse + giEmissive, 1.0f);
+#endif
+    return output;
 }

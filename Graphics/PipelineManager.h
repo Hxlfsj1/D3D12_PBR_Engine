@@ -1,4 +1,4 @@
-/*
+﻿/*
 1. Root Signatures: Define the register layouts and data binding interfaces between CPU and GPU
 2. PSOs: Pre-compile shaders and fixed-function states into immutable hardware blueprints
 */
@@ -66,7 +66,7 @@ public:
         static constexpr DXGI_FORMAT GBufferAlbedo = DXGI_FORMAT_R8G8B8A8_UNORM;
         static constexpr DXGI_FORMAT GBufferNormal = DXGI_FORMAT_R16G16B16A16_FLOAT;
         static constexpr DXGI_FORMAT GBufferORM = DXGI_FORMAT_R8G8B8A8_UNORM;
-        static constexpr DXGI_FORMAT GBufferEmissive = DXGI_FORMAT_R8G8B8A8_UNORM;
+        static constexpr DXGI_FORMAT GBufferEmissive = DXGI_FORMAT_R16G16B16A16_FLOAT;
         static constexpr DXGI_FORMAT ScalarSignal = DXGI_FORMAT_R16_FLOAT;
         static constexpr DXGI_FORMAT MotionVector = DXGI_FORMAT_R16G16_FLOAT;
         static constexpr DXGI_FORMAT PostProcess = DXGI_FORMAT_R8G8B8A8_UNORM;
@@ -281,9 +281,9 @@ public:
         return deferredRootSignature.Get();
     }
 
-    ID3D12PipelineState* GetDeferredPSO()
+    ID3D12PipelineState* GetDeferredPSO(bool outputBounceSource = false)
     {
-        return deferredPSO.Get();
+        return outputBounceSource ? deferredBouncePSO.Get() : deferredPSO.Get();
     }
 
     ID3D12RootSignature* GetHBAORootSignature()
@@ -983,6 +983,17 @@ private:
             return false;
         }
 
+        auto bouncePS = ShaderCompiler::CompileFromFile(
+            L"Shaders/Shaders_For_Deferred.hlsl", L"PSMain", L"ps_6_6", { L"OUTPUT_BOUNCE_SOURCE=1" });
+        psoDesc.PS = CD3DX12_SHADER_BYTECODE(bouncePS->GetBufferPointer(), bouncePS->GetBufferSize());
+        psoDesc.NumRenderTargets = 2;
+        psoDesc.RTVFormats[1] = Formats::SceneColor;
+        if (FAILED(dc->GetDevice()->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(&deferredBouncePSO))))
+        {
+            ErrorLog::Write("PipelineManager: deferred bounce-source PSO creation failed.");
+            return false;
+        }
+
         return true;
     }
 
@@ -1574,6 +1585,7 @@ private:
 
     ComPtr<ID3D12RootSignature> deferredRootSignature;
     ComPtr<ID3D12PipelineState> deferredPSO;
+    ComPtr<ID3D12PipelineState> deferredBouncePSO;
 
     ComPtr<ID3D12RootSignature> hbaoRootSignature;
     ComPtr<ID3D12PipelineState> hbaoPSO;
