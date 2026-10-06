@@ -60,7 +60,7 @@ float4 PSMain(float4 position : SV_POSITION) : SV_Target0
         float2 bilinear = lerp(1 - fraction, fraction, float2(offset));
         float weight = bilinear.x * bilinear.y * pow(agreement, 32) * exp2(-4 * planeError * planeError);
 
-        sum += gi.Load(int3(tap, 0)).rgb * weight; // Alpha is history length, never a lighting factor.
+        sum += gi.Load(int3(tap, 0)).rgb * weight; // Spatial variance in alpha is never a lighting factor.
         weightSum += weight;
     }
     float3 indirect = weightSum > 1e-5 ? sum / weightSum : 0;

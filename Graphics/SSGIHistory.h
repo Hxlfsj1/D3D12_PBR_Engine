@@ -10,7 +10,8 @@ class SSGIHistory
 public:
     struct Textures
     {
-        Microsoft::WRL::ComPtr<ID3D12Resource> gi, depth, normal;
+        // gi.a = history length; fastGI.a = slow-history luminance second moment.
+        Microsoft::WRL::ComPtr<ID3D12Resource> gi, fastGI, depth, normal;
     };
 
     bool Initialize(ID3D12Device* device, UINT sceneWidth, UINT sceneHeight)
@@ -21,6 +22,7 @@ public:
         for (auto& set : textures)
         {
             if (!Create(device, DXGI_FORMAT_R16G16B16A16_FLOAT, set.gi) ||
+                !Create(device, DXGI_FORMAT_R16G16B16A16_FLOAT, set.fastGI) ||
                 !Create(device, DXGI_FORMAT_R32_FLOAT, set.depth) ||
                 !Create(device, DXGI_FORMAT_R16G16B16A16_FLOAT, set.normal)) return false;
         }

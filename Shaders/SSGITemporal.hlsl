@@ -1,4 +1,5 @@
 #include "SSGICommon.hlsli"
+#include "../ThirdParty/NVIDIA/NRD/RelaxDiffuse.hlsli"
 
 cbuffer Constants : register(b0)
 {
@@ -6,7 +7,10 @@ cbuffer Constants : register(b0)
     uint2 Size, OutputSize;
     uint DepthIndex, NormalIndex, ORMIndex, CurrentIndex;
     uint PreviousGIIndex, PreviousDepthIndex, PreviousNormalIndex, HistoryValid;
-    uint OutputGIIndex, OutputDepthIndex, OutputNormalIndex, Padding;
+    uint OutputGIIndex, OutputDepthIndex, OutputNormalIndex, PreviousFastIndex;
+    uint OutputFastIndex;
+    float MaxHistoryFrames, MaxFastAccumulatedFrames;
+    uint Padding;
 };
 
 float3 WorldPosition(float2 uv, float z, float4x4 inverseMatrix)
@@ -14,10 +18,13 @@ float3 WorldPosition(float2 uv, float z, float4x4 inverseMatrix)
     return SSGIViewPosition(uv, z, inverseMatrix);
 }
 
-bool SameSurface(float3 p, float3 n, float3 q, float3 m, float footprint, float planeTolerance)
+bool SameSurface(float3 p, float3 n, float3 q, float3 m, float planeTolerance)
 {
     float3 delta = q - p;
-    return dot(n, m) >= 0.85 && length(delta) <= footprint * 3 &&
+    // Reprojection already restricts taps to the previous bilinear footprint.
+    // At grazing angles coplanar taps can be far apart along the surface;
+    // reject normal/plane disagreement, not that tangential separation.
+    return dot(n, m) >= 0.85 &&
         max(abs(dot(delta, n)), abs(dot(delta, m))) <= planeTolerance;
 }
 
@@ -25,16 +32,19 @@ bool SameSurface(float3 p, float3 n, float3 q, float3 m, float footprint, float 
 void CSMain(uint3 id : SV_DispatchThreadID)
 {
     if (any(id.xy >= OutputSize)) return;
+
     Texture2D<float> depth = ResourceDescriptorHeap[DepthIndex];
     Texture2D<float4> normal = ResourceDescriptorHeap[NormalIndex];
     Texture2D<float4> orm = ResourceDescriptorHeap[ORMIndex];
     Texture2D<float4> current = ResourceDescriptorHeap[CurrentIndex];
+    RWTexture2D<float4> outputFast = ResourceDescriptorHeap[OutputFastIndex];
     RWTexture2D<float4> output = ResourceDescriptorHeap[OutputGIIndex];
     RWTexture2D<float> outputDepth = ResourceDescriptorHeap[OutputDepthIndex];
     RWTexture2D<float4> outputNormal = ResourceDescriptorHeap[OutputNormalIndex];
     uint2 pixel = id.xy * 2;
     float z = depth.Load(int3(pixel, 0));
     output[id.xy] = 0;
+    outputFast[id.xy] = 0;
     outputDepth[id.xy] = 1;
     outputNormal[id.xy] = 0;
     if (z >= 1 || orm.Load(int3(pixel, 0)).a < 0.5) return;
@@ -44,6 +54,9 @@ void CSMain(uint3 id : SV_DispatchThreadID)
     float3 value = current.Load(int3(id.xy, 0)).rgb;
     outputDepth[id.xy] = z;
     outputNormal[id.xy] = float4(encodedNormal, 1);
+    float luminance = RelaxLuminance(value);
+    float moment2 = luminance * luminance;
+    outputFast[id.xy] = float4(value, moment2);
     output[id.xy] = float4(value, 1); // Alpha is history length here, not the raw hit fraction.
 
     if (!HistoryValid) return;
@@ -67,6 +80,9 @@ void CSMain(uint3 id : SV_DispatchThreadID)
     Texture2D<float4> previousGI = ResourceDescriptorHeap[PreviousGIIndex];
     Texture2D<float> previousDepth = ResourceDescriptorHeap[PreviousDepthIndex];
     Texture2D<float4> previousNormal = ResourceDescriptorHeap[PreviousNormalIndex];
+
+    Texture2D<float4> previousFast = ResourceDescriptorHeap[PreviousFastIndex];
+    float4 fastHistory = 0;
     float4 history = 0;
     float historyWeight = 0;
     [loop] for (int i = 0; i < 4; ++i)
@@ -81,44 +97,25 @@ void CSMain(uint3 id : SV_DispatchThreadID)
         float3 q = WorldPosition((tap * 2 + 0.5) / Size, tapZ, PreviousInvViewProj);
         float3 m = normalize(tapNormal.xyz * 2 - 1);
 
-        if (!SameSurface(p, n, q, m, footprint, planeTolerance)) continue;
+        if (!SameSurface(p, n, q, m, planeTolerance)) continue;
+
         float2 weights = lerp(1 - fraction, fraction, float2(offset));
         float weight = weights.x * weights.y;
 
         history += previousGI.Load(int3(tap, 0)) * weight;
+        fastHistory += previousFast.Load(int3(tap, 0)) * weight;
         historyWeight += weight;
     }
+
     if (historyWeight < 0.01) return;
 
     history /= historyWeight;
 
-    // Geometry-compatible current neighborhood supplies a variance clip box for stale lighting.
-    float3 sum = value, sumSquared = value * value, low = value, high = value;
-    float count = 1;
-    [loop] for (int y = -1; y <= 1; ++y)
-    [loop] for (int x = -1; x <= 1; ++x)
-    {
-        if (x == 0 && y == 0) continue;
-        int2 tap = int2(id.xy) + int2(x, y);
-        if (any(tap < 0) || any(tap >= int2(OutputSize))) continue;
-        int2 fullPixel = tap * 2;
-        float tapZ = depth.Load(int3(fullPixel, 0));
-        if (tapZ >= 1 || orm.Load(int3(fullPixel, 0)).a < 0.5) continue;
-        float3 tapN = normalize(normal.Load(int3(fullPixel, 0)).xyz * 2 - 1);
-        float3 q = WorldPosition((fullPixel + 0.5) / Size, tapZ, InvViewProj);
-        if (!SameSurface(p, n, q, tapN, footprint, planeTolerance)) continue;
-        float3 c = current.Load(int3(tap, 0)).rgb;
-        sum += c; sumSquared += c * c; low = min(low, c); high = max(high, c); ++count;
-    }
-    float3 mean = sum / count;
-    float3 sigma = sqrt(max(sumSquared / count - mean * mean, 0));
-    low = max(low, min(value, mean - 1.5 * sigma));
-    high = min(high, max(value, mean + 1.5 * sigma));
-    float3 clipped = clamp(history.rgb, low, high);
-    float frames = min(history.a, 15);
-    // A clipped history has stale lighting; let it adapt promptly without losing geometric validity.
-    if (any(abs(clipped - history.rgb) > 1e-3)) { frames = min(frames, 3); }
-    float3 result = lerp(value, clipped, frames / (frames + 1));
-    output[id.xy] = float4(result, frames + 1);
-
+    fastHistory /= historyWeight;
+    float frames = min(history.a + 1, MaxHistoryFrames);
+    // RELAX: independent slow/fast accumulation before neighborhood clamping.
+    float alpha = 1.0 / frames;
+    float fastAlpha = max(1.0 / (MaxFastAccumulatedFrames + 1.0), alpha);
+    output[id.xy] = float4(lerp(history.rgb, value, alpha), frames);
+    outputFast[id.xy] = float4(lerp(fastHistory.rgb, value, fastAlpha), lerp(fastHistory.a, moment2, alpha));
 }

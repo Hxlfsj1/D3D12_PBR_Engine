@@ -49,14 +49,28 @@ when DLSS reduces that resolution further.
    Multiple rays use fixed R2 spatial offsets. Raw data, conversion and licensing
    live in `ThirdParty/NVIDIA/STBN`; the shared loader uploads it once on SSGI startup.
 4. A 5x5 binomial spatial reconstruction uses normal and symmetric tangent-plane weights.
-5. Independent temporal history uses geometry-checked reprojection, neighborhood variance
-   clipping and a maximum history length of 16. Clipped history adapts with a shorter weight.
-6. Bilateral upsampling applies receiver albedo, diffuse energy response and SSGI intensity,
+5. Independent temporal history uses geometry-checked reprojection and two accumulation
+   speeds. Previous bilinear taps are checked against normal agreement and symmetric
+   tangent-plane distance. No Euclidean `3 * footprint` cutoff is applied: it rejected
+   valid coplanar history at grazing angles. Plane tolerance and history weights are
+   unchanged. Slow history uses a 16-sample cap; fast history uses NRD's six-previous-frame
+   parameter (steady-state weight 1/7). A separate pass uses RELAX's 5x5 fast-history
+   YCoCg clamp, bounded update acceleration and noise-aware reset. No single-frame RGB
+   threshold shortens history to three samples. See `ThirdParty/NVIDIA/NRD/README.md`
+   for the pinned source, license, port scope and validation.
+6. Two half-resolution variance-guided A-trous passes (steps 1 and 2) filter the clamped
+   temporal signal. Luminance second moments use the slow accumulation weight and are
+   corrected when clamping changes its color. Depth/normal weights preserve geometry
+   boundaries; history shorter than three samples uses a 5x5 variance estimate. Only
+   the composite consumes spatial output, so blur does not accumulate in history.
+   This adds two compute dispatches, not another depth hierarchy or additional rays.
+7. Bilateral upsampling applies receiver albedo, diffuse energy response and SSGI intensity,
    then adds the result to HDR scene lighting before sky/transparency and post-processing.
 
 Misses return zero; black geometry still terminates rays. RGB stores E/pi and averages
 all rays, including misses. Hit fraction is not used to renormalize lighting. Temporal
-alpha stores history length. Thickness 0.15 and normal bias 0.02 remain named constants
+alpha stores history length; fast-history alpha stores the slow luminance second moment,
+and spatial-output alpha stores variance. Thickness 0.15 and normal bias 0.02 remain named constants
 at the trace call site. Ceil-sized reductions use physical pixel cell coordinates so
 odd image sizes remain aligned. Different ray mips use nonuniform descriptor indexing.
 
@@ -71,6 +85,12 @@ fallback is added. Temporal reprojection currently uses camera matrices rather t
 per-object motion vectors. Coarse-cell depth ranges and the seven-level hierarchy can
 limit traversal efficiency in complex views.
 
+Known traversal precision issue: `RayCell` still uses a fixed 0.0001-pixel address
+offset. At sufficiently large FP32 pixel coordinates (for example 2049), the offset
+can round away, revisiting a boundary until the iteration budget is exhausted.
+This remains separate from the fixed grazing-angle temporal rejection; the cleanup
+does not change traversal or the scene-tested filtering settings.
+
 ## Diagnostic cleanup
 
 Temporary GPU counters, color probes, readback buffers, CSV writers, pure-GI preview
@@ -79,3 +99,18 @@ readback passes are attached to the production graph. Normal rendering error rep
 remains available. Before removing the tools, GPU regression checks passed for trace
 normalization, odd sizes, black hits, finite radii, and the emission cap/visible-color
 separation. Debug and Release builds are checked during cleanup.
+
+The final cleanup also removes the unused `tmp/nrd-reference` comparison sources.
+Production NRD/STBN helpers, assets and licenses remain, along with previous reports.
+The T-key spatial-filter comparison switch is gone; both A-trous passes are enabled
+whenever the configured SSGI pipeline runs. No test-only shader variants remain.
+
+## Completed static-camera investigation
+
+The temporary A/B/C capture has been removed from the running pipeline. Existing
+`Logs/SSGI-Temporal-*` reports are retained as evidence for the old algorithm;
+they do not measure the new RELAX-based path. In the completed 256-frame quality-1
+capture, disabling the old brightness clamp and its history reduction lowered
+fixed-screen frame-difference RMS by about 86%, without darkening the output.
+This motivated the fast/slow history replacement. No automatic probe readback or
+extra comparison histories run in the new pipeline.

@@ -24,7 +24,10 @@ public:
         return Build(device, L"Shaders/SSGIPyramid.hlsl", pyramid) &&
             Build(device, L"Shaders/SSGITrace.hlsl", trace) &&
             Build(device, L"Shaders/SSGIReconstruct.hlsl", reconstruct) &&
-            Build(device, L"Shaders/SSGITemporal.hlsl", temporal) && BuildComposite(device);
+            Build(device, L"Shaders/SSGITemporal.hlsl", temporal) &&
+            Build(device, L"Shaders/SSGIHistoryClamp.hlsl", historyClamp) &&
+            Build(device, L"Shaders/SSGIAtrous.hlsl", atrousFirst, { L"SSGI_ATROUS_FIRST=1" }) &&
+            Build(device, L"Shaders/SSGIAtrous.hlsl", atrous) && BuildComposite(device);
     }
 
     ID3D12RootSignature* Root() const { return root.Get(); }
@@ -32,6 +35,8 @@ public:
     ID3D12PipelineState* Trace() const { return trace.Get(); }
     ID3D12PipelineState* Reconstruct() const { return reconstruct.Get(); }
     ID3D12PipelineState* Temporal() const { return temporal.Get(); }
+    ID3D12PipelineState* HistoryClamp() const { return historyClamp.Get(); }
+    ID3D12PipelineState* Atrous(bool first) const { return first ? atrousFirst.Get() : atrous.Get(); }
     ID3D12PipelineState* Composite() const { return composite.Get(); }
 
 private:
@@ -61,9 +66,9 @@ private:
     }
 
     bool Build(ID3D12Device* device, const wchar_t* path,
-        Microsoft::WRL::ComPtr<ID3D12PipelineState>& output)
+        Microsoft::WRL::ComPtr<ID3D12PipelineState>& output, const std::vector<std::wstring>& defines = {})
     {
-        auto shader = ShaderCompiler::CompileFromFile(path, L"CSMain", L"cs_6_6");
+        auto shader = ShaderCompiler::CompileFromFile(path, L"CSMain", L"cs_6_6", defines);
         if (!shader) return false;
         D3D12_COMPUTE_PIPELINE_STATE_DESC desc = {};
         desc.pRootSignature = root.Get();
@@ -74,5 +79,5 @@ private:
     }
 
     Microsoft::WRL::ComPtr<ID3D12RootSignature> root;
-    Microsoft::WRL::ComPtr<ID3D12PipelineState> pyramid, trace, reconstruct, temporal, composite;
+    Microsoft::WRL::ComPtr<ID3D12PipelineState> pyramid, trace, reconstruct, temporal, historyClamp, atrousFirst, atrous, composite;
 };

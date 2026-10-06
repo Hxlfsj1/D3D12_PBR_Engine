@@ -18,6 +18,7 @@
 #include "DeferredLightingPass.h"
 #include "SSGIPass.h"
 #include "SSGITemporalPass.h"
+#include "SSGIAtrousPass.h"
 #include "SSGICompositePass.h"
 #include "MotionVectorPass.h"
 #include "TAAPass.h"
@@ -1780,9 +1781,19 @@ void D3D12App::Render()
                     EndFrame();
                     return;
                 }
+                auto spatial = SSGIAtrousPass::AddToGraph(deferredGraph, &m_resourceManager,
+                    &m_ssgiPipeline, m_currViewGpu, m_currJitteredInvProjGpu, SceneWidth, SceneHeight,
+                    frameIndex, { temporal.moments, temporal.gi, gbufferOutput.depth, gbufferOutput.normal });
+                if (!spatial.gi.IsValid() || !spatial.pass.IsValid())
+                {
+                    ErrorLog::Write("SSGI: A-trous RDG construction failed; rendering stopped.");
+                    Running = false;
+                    EndFrame();
+                    return;
+                }
                 auto composite = SSGICompositePass::AddToGraph(deferredGraph, &m_resourceManager,
                     &m_ssgiPipeline, m_currViewGpu, m_currJitteredInvProjGpu, SceneWidth, SceneHeight,
-                    frameIndex, { deferredOutput.sceneColor, temporal.gi, gbufferOutput.depth,
+                    frameIndex, { deferredOutput.sceneColor, spatial.gi, gbufferOutput.depth,
                         gbufferOutput.normal, gbufferOutput.orm, gbufferOutput.albedo }, m_settingsManager.ssgi.intensity);
                 if (!composite.IsValid())
                 {

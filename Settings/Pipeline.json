@@ -10,6 +10,6 @@
     "enabled": true,
     "intensity": 1,
     "quality": 1,
-    "radius": 2.0
+    "radius": 0.5
   }
 }

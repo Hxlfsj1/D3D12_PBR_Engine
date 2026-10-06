@@ -1,0 +1,10 @@
+A=current clipping and short history on clip; B=clip without short history; C=no brightness clip.
+All modes share traced/reconstructed input, geometry rejection and 16-frame history cap. Visible output=A.
+Warmup=64 frames; measured=256; probe stride=8 half-resolution pixels; tiles=8x6, top-left origin.
+tile=-1 is whole screen. Statistics exclude background. Length/raw/spatial/output means divide by valid.
+History/clip_down/neighbors means divide by accepted. RMS deltas compare successive same-screen probes, not motion-compensated.
+Camera is unjittered; projection jitter remains active. Darkening must not be mistaken for noise reduction.
+Reject tap counts are exclusive normal -> distance -> plane; invalid/out-of-bounds taps are not classified.
+Capture overhead is temporary; do not benchmark performance until COMPLETE. A camera move starts a new epoch.
+begin epoch=0 scene=1707x1067 quality=1 radius=0.5 probes_per_mode=7169
+restart epoch=1 reason=camera

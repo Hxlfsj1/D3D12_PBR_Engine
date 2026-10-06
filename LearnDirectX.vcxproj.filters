@@ -151,6 +151,18 @@
     <None Include="Shaders\SSGITemporal.hlsl">
       <Filter>Shaders</Filter>
     </None>
+    <None Include="Shaders\SSGIHistoryClamp.hlsl">
+      <Filter>Shaders</Filter>
+    </None>
+    <None Include="Shaders\SSGIAtrous.hlsl">
+      <Filter>Shaders</Filter>
+    </None>
+    <None Include="ThirdParty\NVIDIA\NRD\RelaxDiffuse.hlsli">
+      <Filter>Shaders</Filter>
+    </None>
+    <None Include="ThirdParty\NVIDIA\NRD\RelaxAtrous.hlsli">
+      <Filter>Shaders</Filter>
+    </None>
     <None Include="Shaders\SSGIComposite.hlsl">
       <Filter>Shaders</Filter>
     </None>
@@ -189,6 +201,9 @@
       <Filter>Graphics</Filter>
     </ClInclude>
     <ClInclude Include="Passes\SSGITemporalPass.h">
+      <Filter>Passes</Filter>
+    </ClInclude>
+    <ClInclude Include="Passes\SSGIAtrousPass.h">
       <Filter>Passes</Filter>
     </ClInclude>
     <ClInclude Include="Passes\SSGICompositePass.h">

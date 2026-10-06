@@ -47,9 +47,34 @@ namespace SSGI
         uint32_t depthIndex, normalIndex, ormIndex, currentIndex;
         uint32_t previousGIIndex, previousDepthIndex, previousNormalIndex, historyValid;
         uint32_t outputGIIndex, outputDepthIndex, outputNormalIndex;
+        uint32_t previousFastIndex;
+        uint32_t outputFastIndex;
+        float maxHistoryFrames = 16.0f, maxFastAccumulatedFrames = 6.0f;
         uint32_t padding = 0;
     };
-    static_assert(sizeof(TemporalConstants) == 256);
+    static_assert(sizeof(TemporalConstants) == 272);
+
+    struct HistoryClampConstants
+    {
+        uint32_t width, height, slowIndex, fastIndex;
+        uint32_t noisyIndex, outputGIIndex, outputFastIndex;
+        float sigmaScale = 2.0f;
+        float accelerationAmount = 0.3f, resetAmount = 0.5f;
+        float spatialSigmaScale = 4.5f, temporalSigmaScale = 0.5f;
+        uint32_t outputMomentsIndex;
+        uint32_t padding[3] = {};
+    };
+    static_assert(sizeof(HistoryClampConstants) == 64);
+
+    struct AtrousConstants
+    {
+        DirectX::XMFLOAT4X4 view, invProj;
+        uint32_t width, height, outputWidth, outputHeight;
+        uint32_t giIndex, depthIndex, normalIndex, historyIndex;
+        uint32_t outputIndex, step;
+        float phiLuminance = 2.0f, depthThreshold = 0.003f;
+    };
+    static_assert(sizeof(AtrousConstants) == 176);
 
     struct CompositeConstants
     {
