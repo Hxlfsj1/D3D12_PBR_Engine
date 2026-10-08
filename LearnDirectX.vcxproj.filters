@@ -136,34 +136,28 @@
     <None Include="Settings\Lighting.json">
       <Filter>Settings</Filter>
     </None>
+    <None Include="Shaders\GeometryCommon.hlsli">
+      <Filter>Shaders</Filter>
+    </None>
+    <None Include="Shaders\ColorCommon.hlsli">
+      <Filter>Shaders</Filter>
+    </None>
     <None Include="Shaders\SSGICommon.hlsli">
       <Filter>Shaders</Filter>
     </None>
-    <None Include="Shaders\SSGIPyramid.hlsl">
+    <None Include="Shaders\Shaders_For_SSGI.hlsl">
       <Filter>Shaders</Filter>
     </None>
-    <None Include="Shaders\SSGITrace.hlsl">
+    <None Include="Shaders\Shaders_For_SSGI_Spatial.hlsl">
       <Filter>Shaders</Filter>
     </None>
-    <None Include="Shaders\SSGIReconstruct.hlsl">
-      <Filter>Shaders</Filter>
-    </None>
-    <None Include="Shaders\SSGITemporal.hlsl">
-      <Filter>Shaders</Filter>
-    </None>
-    <None Include="Shaders\SSGIHistoryClamp.hlsl">
-      <Filter>Shaders</Filter>
-    </None>
-    <None Include="Shaders\SSGIAtrous.hlsl">
+    <None Include="Shaders\Shaders_For_SSGI_Temporal.hlsl">
       <Filter>Shaders</Filter>
     </None>
     <None Include="ThirdParty\NVIDIA\NRD\RelaxDiffuse.hlsli">
       <Filter>Shaders</Filter>
     </None>
     <None Include="ThirdParty\NVIDIA\NRD\RelaxAtrous.hlsli">
-      <Filter>Shaders</Filter>
-    </None>
-    <None Include="Shaders\SSGIComposite.hlsl">
       <Filter>Shaders</Filter>
     </None>
     <None Include="Settings\Pipeline.json">
@@ -192,27 +186,9 @@
     <ClInclude Include="Graphics\PipelineManager.h">
       <Filter>Graphics</Filter>
     </ClInclude>
-    <ClInclude Include="Graphics\SSGIPipeline.h">
-      <Filter>Graphics</Filter>
-    </ClInclude>
     <ClInclude Include="Resources\BlueNoiseTexture.h"><Filter>Resources</Filter></ClInclude>
     <ClInclude Include="ThirdParty\NVIDIA\STBN\STBNConfig.h"><Filter>ThirdParty</Filter></ClInclude>
-    <ClInclude Include="Graphics\SSGIHistory.h">
-      <Filter>Graphics</Filter>
-    </ClInclude>
-    <ClInclude Include="Passes\SSGITemporalPass.h">
-      <Filter>Passes</Filter>
-    </ClInclude>
-    <ClInclude Include="Passes\SSGIAtrousPass.h">
-      <Filter>Passes</Filter>
-    </ClInclude>
-    <ClInclude Include="Passes\SSGICompositePass.h">
-      <Filter>Passes</Filter>
-    </ClInclude>
     <ClInclude Include="Passes\SSGIPass.h">
-      <Filter>Passes</Filter>
-    </ClInclude>
-    <ClInclude Include="Passes\SSGIConstants.h">
       <Filter>Passes</Filter>
     </ClInclude>
     <ClInclude Include="Graphics\RenderDevice.h">

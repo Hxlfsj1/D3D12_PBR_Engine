@@ -104,12 +104,6 @@
     <ClInclude Include="Passes\GBufferPass.h" />
     <ClInclude Include="Passes\HBAOPass.h" />
     <ClInclude Include="Passes\SSGIPass.h" />
-    <ClInclude Include="Passes\SSGIConstants.h" />
-    <ClInclude Include="Graphics\SSGIPipeline.h" />
-    <ClInclude Include="Graphics\SSGIHistory.h" />
-    <ClInclude Include="Passes\SSGITemporalPass.h" />
-    <ClInclude Include="Passes\SSGIAtrousPass.h" />
-    <ClInclude Include="Passes\SSGICompositePass.h" />
     <ClInclude Include="Passes\MotionVectorPass.h" />
     <ClInclude Include="Passes\DLSSPass.h" />
     <ClInclude Include="Resources\IBLBaker.h" />
@@ -159,21 +153,19 @@
   </ItemGroup>
   <ItemGroup>
     <None Include="Settings\Lighting.json" />
+    <None Include="Shaders\GeometryCommon.hlsli" />
+    <None Include="Shaders\ColorCommon.hlsli" />
     <None Include="Shaders\SSGICommon.hlsli" />
     <None Include="Shaders\BlueNoise.hlsli" />
     <None Include="ThirdParty\NVIDIA\STBN\stbn_vec2_128x128x64.rg8" />
     <None Include="ThirdParty\NVIDIA\STBN\License.txt" />
     <None Include="ThirdParty\NVIDIA\STBN\README.md" />
     <None Include="ThirdParty\NVIDIA\STBN\decode.py" />
-    <None Include="Shaders\SSGIPyramid.hlsl" />
-    <None Include="Shaders\SSGITrace.hlsl" />
-    <None Include="Shaders\SSGIReconstruct.hlsl" />
-    <None Include="Shaders\SSGITemporal.hlsl" />
-    <None Include="Shaders\SSGIHistoryClamp.hlsl" />
-    <None Include="Shaders\SSGIAtrous.hlsl" />
+    <None Include="Shaders\Shaders_For_SSGI.hlsl" />
+    <None Include="Shaders\Shaders_For_SSGI_Spatial.hlsl" />
+    <None Include="Shaders\Shaders_For_SSGI_Temporal.hlsl" />
     <None Include="ThirdParty\NVIDIA\NRD\RelaxDiffuse.hlsli" />
     <None Include="ThirdParty\NVIDIA\NRD\RelaxAtrous.hlsli" />
-    <None Include="Shaders\SSGIComposite.hlsl" />
     <None Include="Shaders\EditorSelection.hlsl" />
     <None Include="Settings\Pipeline.json" />
     <None Include="Settings\Scene.json" />

@@ -238,10 +238,30 @@ Visual Studio 调试时，应把 Working Directory 设置为 `$(ProjectDir)`。�
 
 | 键 | 类型/可选值 | 当前值 | 说明 |
 | --- | --- | --- | --- |
-| `use_deferred` | boolean | `true` | `true` 使用 Deferred，`false` 使用 Forward/PBR。 |
-| `use_z_prepass` | boolean | `false` | 请求 Z Prepass；TSR 模式下当前会禁用。 |
-| `anti_aliasing` | `None` / `TAA` / `TSR` / `SMAA` / `DLSS` | `SMAA` | 互斥的抗锯齿或重建模式。 |
-| `dlss_quality` | `DLAA` / `Quality` / `Balanced` / `Performance` / `UltraPerformance` | `Quality` | 仅 DLSS 模式使用；不支持时初始化失败。 |
+| `rendering.use_deferred` | boolean | `true` | `true` 使用 Deferred，`false` 使用 Forward/PBR。 |
+| `rendering.use_z_prepass` | boolean | `false` | 请求 Z Prepass；TSR 模式下当前会禁用。 |
+| `DLSS SR.anti_aliasing` | `None` / `TAA` / `TSR` / `SMAA` / `DLSS` | `DLSS` | 互斥的抗锯齿或重建模式。 |
+| `DLSS SR.dlss_quality` | `DLAA` / `Quality` / `Balanced` / `Performance` / `UltraPerformance` | `Quality` | 仅 DLSS 模式使用；不支持时初始化失败。 |
+
+`hbao` 对象控制屏幕空间环境遮蔽（当前在 Deferred 路径使用）：
+
+| 键 | 类型 | 默认值 | 说明 |
+| --- | --- | --- | --- |
+| `hbao.enabled` | boolean | `true` | 关闭时跳过计算、空间滤波、时域滤波及几何历史复制，保留材质 AO。 |
+| `hbao.intensity` | number | `2.0` | 非负遮蔽强度；设为 0 不会跳过计算。 |
+| `hbao.radius` | number | `1.0` | 正数，场景单位下的遮蔽半径。 |
+| `hbao.quality` | integer | `1` | 只接受 1～4；缺失时保持原来的 4 × 4 采样预算。 |
+
+| `quality` | 方向 × 每方向步数 | 每像素最大深度采样数 |
+| --- | --- | --- |
+| 1 | 4 × 4 | 16 |
+| 2 | 6 × 6 | 36 |
+| 3 | 8 × 6 | 48 |
+| 4 | 12 × 8 | 96 |
+
+四档都保留距离抖动，避免固定采样距离在角落形成明暗条带。1 档保留已经验证的距离抖动采样分布；2～4 档每个方向先采约 1、2 个像素的近处，再通过带距离抖动的平方分布覆盖剩余范围，让近处更密集。近处采样受搜索范围约束。切换质量不改变搜索范围、遮蔽半径、强度或滤波参数，仍沿用原来的 UV 半径估算及限幅。
+
+采样数仅表示预算上限，不能据此直接推算 GPU 耗时或整帧性能比例。Bias 和降噪参数继续由实现固定；修改 JSON 后重新启动生效。
 
 TAA 和 TSR 共用 jitter 逻辑及一套双缓冲 temporal history，但拥有各自的 pass、shader、PSO、Root Signature 和常量。DLSS 使用独立 NGX 状态、jitter、历史有效性和输出资源。SMAA 在 tone mapping 后执行边缘检测、权重计算和 neighborhood blending。
 
@@ -249,9 +269,10 @@ TAA 和 TSR 共用 jitter 逻辑及一套双缓冲 temporal history，但拥有�
 
 | 键 | 类型 | 当前值 | 说明 |
 | --- | --- | --- | --- |
-| `light_dir` | `float[3]` | `[0.5, -0.5, 1.0]` | Directional light 方向。 |
-| `light_color` | `float[3]` | `[5.0, 5.0, 5.0]` | 光照颜色/强度。 |
-| `sun_angular_radius_degrees` | number | `0.266` | PCSS 使用的太阳角半径，影响软阴影半影大小。 |
+| `direct light.light_dir` | `float[3]` | `[0.5, -0.5, 1.0]` | Directional light 方向。 |
+| `direct light.light_color` | `float[3]` | `[4.0, 4.0, 4.0]` | 光照颜色/强度。 |
+| `direct light.sun_angular_radius_degrees` | number | `0.266` | PCSS 使用的太阳角半径，影响软阴影半影大小。 |
+| `environment.intensity` | number | `0.1` | 同时控制 SH 漫反射和环境高光强度；必须为有限非负数。 |
 
 ### `Settings/Scene.json`
 

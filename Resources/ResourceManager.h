@@ -676,6 +676,57 @@ public:
         return true;
     }
 
+    struct SSGIHistoryTextures
+    {
+        // gi.a = history length; fastGI.a = slow-history luminance second moment.
+        Microsoft::WRL::ComPtr<ID3D12Resource> gi;
+        Microsoft::WRL::ComPtr<ID3D12Resource> fastGI;
+        Microsoft::WRL::ComPtr<ID3D12Resource> depth;
+        Microsoft::WRL::ComPtr<ID3D12Resource> normal;
+    };
+
+    // Initialize/reinitialize only while the GPU is idle, as with other history resources.
+    bool InitSSGIHistoryResources(RenderDevice* dc, UINT width, UINT height)
+    {
+        m_ssgiCurrentHistoryIdx = 0;
+        auto create = [&](DXGI_FORMAT format, Microsoft::WRL::ComPtr<ID3D12Resource>& texture) {
+            texture.Reset();
+            auto desc = CD3DX12_RESOURCE_DESC::Tex2D(
+                format, (width + 1) / 2, (height + 1) / 2, 1, 1, 1, 0, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
+            auto heap = CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_DEFAULT);
+            HRESULT hr = dc->GetDevice()->CreateCommittedResource(
+                &heap, D3D12_HEAP_FLAG_NONE, &desc, D3D12_RESOURCE_STATE_COMMON, nullptr, IID_PPV_ARGS(&texture));
+            if (FAILED(hr))
+            {
+                ErrorLog::HRESULT("ResourceManager: SSGI history allocation failed.", hr);
+            }
+            return SUCCEEDED(hr);
+        };
+        for (auto& set : m_ssgiHistoryTextures)
+        {
+            if (!create(RenderFormats::IndirectLighting, set.gi) ||
+                !create(RenderFormats::IndirectLighting, set.fastGI) || !create(RenderFormats::DepthSRV, set.depth) ||
+                !create(RenderFormats::GBufferNormal, set.normal))
+            {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    const SSGIHistoryTextures& GetSSGIHistoryTextures(int index) const
+    {
+        return m_ssgiHistoryTextures[index];
+    }
+    int GetSSGICurrentHistoryIdx() const
+    {
+        return m_ssgiCurrentHistoryIdx;
+    }
+    void FlipSSGIHistoryIndex()
+    {
+        m_ssgiCurrentHistoryIdx = 1 - m_ssgiCurrentHistoryIdx;
+    }
+
     bool InitTemporalHistoryResources(RenderDevice* dc, int width, int height)
     {
         if (dc == nullptr || dc->GetDevice() == nullptr || width <= 0 || height <= 0)
@@ -1263,6 +1314,8 @@ public:
         return iblEnvCubeIdx;
     }
 
+    ID3D12Resource* GetWhiteTexture() const { return dummyAlbedo.Get(); }
+
     UINT GetDummyAlbedoIdx()
     {
         return dummyAlbedoIdx;
@@ -1529,6 +1582,8 @@ private:
     ComPtr<ID3D12Resource> texBRDFLUT;
 
     ComPtr<ID3D12Resource> m_smaaAreaTexture;
+    SSGIHistoryTextures m_ssgiHistoryTextures[2];
+    int m_ssgiCurrentHistoryIdx = 0;
     BlueNoiseTexture m_blueNoise;
     ComPtr<ID3D12Resource> m_smaaAreaUpload;
     ComPtr<ID3D12Resource> m_smaaSearchTexture;

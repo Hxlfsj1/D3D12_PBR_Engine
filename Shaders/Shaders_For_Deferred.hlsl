@@ -46,6 +46,7 @@ struct VS_OUTPUT
 };
 
 #include "FullscreenTriangle.hlsli"
+#include "GeometryCommon.hlsli"
 
 // Draw a bufferless fullscreen triangle
 VS_OUTPUT VSMain(uint vertexID : SV_VertexID)
@@ -99,11 +100,7 @@ PS_OUTPUT PSMain(VS_OUTPUT input)
     float metallic = ormSample.b;
 
     // Reconstruct world position from NDC coordinates and depth
-    float x = input.texCoord.x * 2.0f - 1.0f;
-    float y = 1.0f - input.texCoord.y * 2.0f;
-    float4 clipSpacePos = float4(x, y, depth, 1.0f);
-    float4 worldPosH = mul(clipSpacePos, invViewProj);
-    float3 worldPos = worldPosH.xyz / worldPosH.w;
+    float3 worldPos = ReconstructPosition(input.texCoord, depth, invViewProj);
 
     // Match cascade selection to the camera-space depth ranges used to build the frusta.
     float viewDepth = dot(worldPos - camPos, cameraForward);

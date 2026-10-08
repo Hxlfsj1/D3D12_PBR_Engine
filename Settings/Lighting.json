@@ -1,5 +1,10 @@
 {
-  "light_dir": [ 0.5, -0.5, 1.0 ],
-  "light_color": [ 4.0, 4.0, 4.0 ],
-  "sun_angular_radius_degrees": 0.266
+  "direct light": {
+    "light_dir": [ 0.5, -0.5, 1.0 ],
+    "light_color": [ 4.0, 4.0, 4.0 ],
+    "sun_angular_radius_degrees": 0.266
+  },
+  "environment": {
+    "intensity": 0.1
+  }
 }

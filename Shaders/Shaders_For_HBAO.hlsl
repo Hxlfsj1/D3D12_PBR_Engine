@@ -5,11 +5,12 @@ cbuffer HBAOConstants : register(b0)
     float4x4 viewMat;
     float radius;
     float bias;
-    float power;
+    float intensity;
     float resolutionX;
     float resolutionY;
     uint temporalFrameIndex;
-    uint2 pad;
+    uint quality;
+    uint pad;
 };
 
 cbuffer BindlessIndices : register(b1)
@@ -25,6 +26,8 @@ SamplerState sLinear : register(s1);
 
 #include "MathCommon.hlsli"
 #include "MaterialCommon.hlsli"
+#include "GeometryCommon.hlsli"
+#include "BlueNoise.hlsli"
 
 static const float HBAO_BACKGROUND_DEPTH = 0.999999f;
 
@@ -50,27 +53,13 @@ VS_OUTPUT VSMain(uint vertexID : SV_VertexID)
     return output;
 }
 
-/*
-Reconstruct view space position from NDC coordinates and depth
-
-We compute in View Space for two reasons:
-First, it's completely sufficient since AO doesn't rely on world-space lights.
-Second, it saves 16 expensive inverse view matrix multiplications per pixel during ray marching.
-*/
-float3 ReconstructViewPos(float2 uv, float depth)
-{
-    float x = uv.x * 2.0f - 1.0f;
-    float y = (1.0f - uv.y) * 2.0f - 1.0f;
-    float4 clipSpace = float4(x, y, depth, 1.0f);
-    float4 viewSpace = mul(clipSpace, invProjMat);
-
-    return viewSpace.xyz / viewSpace.w;
-}
-
 float4 PSMain_HBAO(VS_OUTPUT input) : SV_TARGET
 {
+    int2 resolution = int2(resolutionX, resolutionY);
+    int2 centerPixel = int2(input.pos.xy);
+    float2 centerUV = (float2(centerPixel) + 0.5f) / float2(resolution);
     Texture2D tDepth = ResourceDescriptorHeap[texIdx0];
-    float centerDepth = tDepth.SampleLevel(sPoint, input.uv, 0).r;
+    float centerDepth = tDepth.Load(int3(centerPixel, 0)).r;
     if (IsBackgroundDepth(centerDepth))
     {
         return float4(1.0f, 1.0f, 1.0f, 1.0f);
@@ -78,10 +67,11 @@ float4 PSMain_HBAO(VS_OUTPUT input) : SV_TARGET
 
     // Unpack normal data in G-buffer
     Texture2D tNormal = ResourceDescriptorHeap[texIdx1];
-    float3 worldNormal = normalize(DecodeGBufferNormal(tNormal.SampleLevel(sPoint, input.uv, 0).xyz));
+    float3 worldNormal = normalize(DecodeGBufferNormal(tNormal.Load(int3(centerPixel, 0)).xyz));
     float3 viewNormal = normalize(mul(worldNormal, (float3x3) viewMat));
 
-    float3 P = ReconstructViewPos(input.uv, centerDepth);
+    float3 P = ReconstructPosition(centerUV, centerDepth, invProjMat);
+    Texture2DArray<uint2> blueNoise = ResourceDescriptorHeap[texIdx2];
 
     // Rotate the sampling pattern every frame so temporal accumulation can
     // average independent HBAO estimates instead of repeatedly blending the
@@ -89,36 +79,77 @@ float4 PSMain_HBAO(VS_OUTPUT input) : SV_TARGET
     float2 temporalNoiseOffset = float2(0.754877666f, 0.569840296f) * (float)(temporalFrameIndex & 7u);
     float randomAngle = Rand(input.uv + temporalNoiseOffset) * 3.1415926f * 2.0f;
 
-    // Define ray marching parameters
-    int numDirs = 4;
-    int numSteps = 4;
+    int numDirs = quality == 1u ? 4 : quality == 2u ? 6 : quality == 3u ? 8 : 12;
+    int numSteps = quality == 1u ? 4 : quality < 4u ? 6 : 8;
+    // Constant spacing preserves quality 1's existing sampling rays.
+    float angularStep = quality == 1u ? (2.0f * 3.1415926f / 4.0f) :
+        quality == 2u ? (2.0f * 3.1415926f / 6.0f) :
+        quality == 3u ? (2.0f * 3.1415926f / 8.0f) :
+        (2.0f * 3.1415926f / 12.0f);
 
     float ao = 0.0f;
 
-    // Calculate and clamp the UV step size (Approximate perspective division with radius / P.z to reduce cost)
-    float stepSizeUV = (radius / P.z) / (float) numSteps;
+    // Keep the original UV estimate and limits. Quality changes sampling density,
+    // not the search envelope; even at the limits it matches quality 1's range.
+    float stepSizeUV = (radius / P.z) / 4.0f;
     stepSizeUV = clamp(stepSizeUV, 0.001f, 0.05f);
+    float searchRadiusUV = stepSizeUV * 4.0f;
 
     for (int i = 0; i < numDirs; ++i)
     {
-        float angle = randomAngle + (float) i * (2.0f * 3.1415926f / (float) numDirs);
+        float angle = randomAngle + (float) i * angularStep;
         float2 dir = float2(cos(angle), sin(angle));
+        float distanceJitter = LoadSTBN2D(blueNoise, uint2(centerPixel),
+            temporalFrameIndex, uint(i) + 1u).y;
+        float pixelsPerUV = length(dir * float2(resolution));
+        float nearRangeUV = min(2.0f / pixelsPerUV, searchRadiusUV);
+        int2 previousSamplePixel = centerPixel;
 
         // Apply angle bias to prevent surface acne
         float maxAngle = bias;
 
         for (int j = 1; j <= numSteps; ++j)
         {
-            float2 offsetUV = input.uv + dir * (stepSizeUV * (float) j);
+            float rayUV;
+            if (quality == 1u)
+            {
+                // Preserve the current jitter-only baseline exactly.
+                rayUV = stepSizeUV * (float(j) - distanceJitter);
+            }
+            else if (j <= 2)
+            {
+                // Move 1 and 2 pixels along the original UV ray, retaining its
+                // aspect behavior rather than introducing a new projection.
+                rayUV = min(float(j) / pixelsPerUV, searchRadiusUV);
+            }
+            else
+            {
+                if (searchRadiusUV <= nearRangeUV)
+                    break;
+                // Ordered jittered strata; extra density near the receiver.
+                float t = (float(j - 2) - distanceJitter) / float(numSteps - 2);
+                rayUV = nearRangeUV + (searchRadiusUV - nearRangeUV) * t * t;
+            }
+            float2 offsetUV = input.uv + dir * rayUV;
 
             if (offsetUV.x < 0.0f || offsetUV.x > 1.0f || offsetUV.y < 0.0f || offsetUV.y > 1.0f)
                 continue;
 
-            float sampleDepth = tDepth.SampleLevel(sPoint, offsetUV, 0).r;
+            // Keep point-sampling's texel choice, but reconstruct on that
+            // texel's ray instead of the original unsnapped ray. The mismatch
+            // is especially visible on surfaces viewed at a grazing angle.
+            int2 samplePixel = clamp(int2(floor(offsetUV * float2(resolution))),
+                int2(0, 0), resolution - 1);
+            if (all(samplePixel == centerPixel) ||
+                (quality > 1u && all(samplePixel == previousSamplePixel)))
+                continue;
+            previousSamplePixel = samplePixel;
+            float2 sampleUV = (float2(samplePixel) + 0.5f) / float2(resolution);
+            float sampleDepth = tDepth.Load(int3(samplePixel, 0)).r;
             if (IsBackgroundDepth(sampleDepth))
                 continue;
 
-            float3 S = ReconstructViewPos(offsetUV, sampleDepth);
+            float3 S = ReconstructPosition(sampleUV, sampleDepth, invProjMat);
             float3 V = S - P;
             float dist = length(V);
 
@@ -137,7 +168,7 @@ float4 PSMain_HBAO(VS_OUTPUT input) : SV_TARGET
         }
     }
 
-    ao = 1.0f - saturate((ao / (float) numDirs) * power);
+    ao = 1.0f - saturate((ao / (float) numDirs) * intensity);
     return float4(ao, ao, ao, 1.0f);
 }
 

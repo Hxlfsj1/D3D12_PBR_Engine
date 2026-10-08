@@ -15,8 +15,10 @@ YCoCg neighborhood box, center expansion, bounded history acceleration, and
 noise-aware partial reset. The accumulation weights follow RELAX. This software
 contains source code provided by NVIDIA Corporation. The NVIDIA RTX SDKs license
 is retained in `LICENSE.txt`; the original source copyright notice is retained.
-Color conversion and luminance functions match NVIDIA MathLib v11 `ml.hlsli`;
-its copyright/permission notice is retained in `MathLib-LICENSE.txt`.
+Color conversion and luminance functions match NVIDIA MathLib v11 `ml.hlsli`.
+RGB/YCoCg conversion is shared with TAA/TSR through `Shaders/ColorCommon.hlsli`;
+the adapter includes that project helper. The copyright/permission notice is
+retained in both that header and `MathLib-LICENSE.txt`.
 
 ## Project integration choices
 
@@ -56,7 +58,7 @@ confidence input and SDK resource abstraction are not imported.
 
 ## Two-pass spatial filtering
 
-`Shaders/SSGIAtrous.hlsl` and `RelaxAtrous.hlsli` adapt RELAX's first and subsequent
+`Shaders/Shaders_For_SSGI_Spatial.hlsl` and `RelaxAtrous.hlsli` adapt RELAX's first and subsequent
 diffuse A-trous stages. Two passes run at half resolution with steps 1 and 2. These
 steps change tap spacing on the same image; they do not construct or sample a new
 Hi-Z hierarchy. Both variants use a 12x12 shared tile for an 8x8 workgroup.

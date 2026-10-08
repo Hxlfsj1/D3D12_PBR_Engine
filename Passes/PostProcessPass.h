@@ -25,7 +25,6 @@ public:
         const D3D12_RECT& scissorRect,
         D3D12_CPU_DESCRIPTOR_HANDLE outputRtv,
         UINT inputSrvIdx,
-        bool visualizeScalar,
         bool enableSharpen)
     {
         cmdList->OMSetRenderTargets(1, &outputRtv, FALSE, nullptr);
@@ -44,8 +43,7 @@ public:
 
         UINT postProcessConstants[PipelineManager::PostProcessBinding::ConstantCount] =
         {
-            inputSrvIdx,
-            visualizeScalar ? 1u : 0u
+            inputSrvIdx
         };
         cmdList->SetGraphicsRoot32BitConstants(PipelineManager::PostProcessBinding::Constants, PipelineManager::PostProcessBinding::ConstantCount, postProcessConstants, 0);
 
@@ -62,7 +60,6 @@ public:
         int width,
         int height,
         RDGTextureHandle inputTexture,
-        bool visualizeScalar = false,
         bool enableSharpen = false)
     {
         if (resourceManager == nullptr ||
@@ -121,7 +118,6 @@ public:
                     scissorRect,
                     outputRtv.cpuHandle,
                     inputSrv.descriptorIndex,
-                    visualizeScalar,
                     enableSharpen);
             });
 
@@ -137,7 +133,6 @@ public:
         const D3D12_VIEWPORT& viewport,
         const D3D12_RECT& scissorRect,
         RDGTextureHandle inputTexture = {},
-        bool visualizeScalar = false,
         bool enableSharpen = false,
         D3D12_RESOURCE_STATES backBufferInitialState = D3D12_RESOURCE_STATE_RENDER_TARGET,
         D3D12_RESOURCE_STATES backBufferFinalState = D3D12_RESOURCE_STATE_RENDER_TARGET)
@@ -184,7 +179,6 @@ public:
                     scissorRect,
                     backBufferRtv.cpuHandle,
                     inputSrv.descriptorIndex,
-                    visualizeScalar,
                     enableSharpen);
             });
     }
@@ -198,7 +192,6 @@ public:
         const D3D12_VIEWPORT& viewport,
         const D3D12_RECT& scissorRect,
         RDGTextureHandle inputTexture = {},
-        bool visualizeScalar = false,
         bool enableSharpen = false)
     {
         return AddToGraph(
@@ -210,7 +203,6 @@ public:
             viewport,
             scissorRect,
             inputTexture,
-            visualizeScalar,
             enableSharpen,
             D3D12_RESOURCE_STATE_PRESENT,
             D3D12_RESOURCE_STATE_PRESENT);

@@ -1,19 +1,8 @@
 SamplerState sPoint : register(s0);
 SamplerState sLinear : register(s1);
 
-static const float3x3 RGB_2_YCoCg = float3x3
-(
-    0.25, 0.5, 0.25,
-    0.5, 0.0, -0.5,
-   -0.25, 0.5, -0.25
-);
-
-static const float3x3 YCoCg_2_RGB = float3x3
-(
-    1.0, 1.0, -1.0,
-    1.0, 0.0, 1.0,
-    1.0, -1.0, -1.0
-);
+#include "ColorCommon.hlsli"
+#include "GeometryCommon.hlsli"
 
 float CatmullRomWeight(float x)
 {
@@ -86,7 +75,7 @@ void AccumulateNeighborhoodStatistics(
     inout float3 yCoCgSum,
     inout float3 yCoCgSquareSum)
 {
-    float3 colorYCoCg = mul(RGB_2_YCoCg, color);
+    float3 colorYCoCg = RGBToYCoCg(color);
     colorSum += color;
     yCoCgSum += colorYCoCg;
     yCoCgSquareSum += colorYCoCg * colorYCoCg;
@@ -143,13 +132,7 @@ float2 ReprojectHistoryUV(
     float4x4 currentInvViewProj,
     float4x4 previousViewProj)
 {
-    float2 currentNDC = float2(
-        closestDepth.uv.x * 2.0f - 1.0f,
-        1.0f - closestDepth.uv.y * 2.0f);
-    float4 currentClipPos = float4(currentNDC, closestDepth.depth, 1.0f);
-
-    float4 worldPosH = mul(currentClipPos, currentInvViewProj);
-    float3 worldPos = worldPosH.xyz / worldPosH.w;
+    float3 worldPos = ReconstructPosition(closestDepth.uv, closestDepth.depth, currentInvViewProj);
 
     float4 previousClipPos = mul(float4(worldPos, 1.0f), previousViewProj);
     float2 previousNDC = previousClipPos.xy / previousClipPos.w;
@@ -172,9 +155,9 @@ float3 ClampHistoryColor(float3 historyColor, CurrentNeighborhood neighborhood)
 {
     float3 boxMin = neighborhood.meanYCoCg - 1.25f * neighborhood.sigmaYCoCg;
     float3 boxMax = neighborhood.meanYCoCg + 1.25f * neighborhood.sigmaYCoCg;
-    float3 historyYCoCg = mul(RGB_2_YCoCg, historyColor);
+    float3 historyYCoCg = RGBToYCoCg(historyColor);
     float3 clampedHistoryYCoCg = clamp(historyYCoCg, boxMin, boxMax);
-    return mul(YCoCg_2_RGB, clampedHistoryYCoCg);
+    return YCoCgToRGB(clampedHistoryYCoCg);
 }
 
 bool IsUVInsideViewport(float2 uv)

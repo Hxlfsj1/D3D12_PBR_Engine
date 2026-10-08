@@ -8,6 +8,7 @@
 
 #include "stdafx.h"
 #include "RenderDevice.h"
+#include "RenderStructs.h"
 #include "PBR_Shader.h"
 #include <wrl/client.h>
 #include <vector>
@@ -43,7 +44,7 @@ public:
     struct PostProcessBinding
     {
         enum Slot : UINT { Constants, Count };
-        static constexpr UINT ConstantCount = 2;
+        static constexpr UINT ConstantCount = 1;
     };
 
     struct SMAABinding
@@ -57,23 +58,7 @@ public:
         enum Slot : UINT { Constants, Count };
     };
 
-    struct Formats
-    {
-        static constexpr DXGI_FORMAT SceneColor = DXGI_FORMAT_R16G16B16A16_FLOAT;
-        static constexpr DXGI_FORMAT DepthResource = DXGI_FORMAT_R32_TYPELESS;
-        static constexpr DXGI_FORMAT DepthDSV = DXGI_FORMAT_D32_FLOAT;
-        static constexpr DXGI_FORMAT DepthSRV = DXGI_FORMAT_R32_FLOAT;
-        static constexpr DXGI_FORMAT GBufferAlbedo = DXGI_FORMAT_R8G8B8A8_UNORM;
-        static constexpr DXGI_FORMAT GBufferNormal = DXGI_FORMAT_R16G16B16A16_FLOAT;
-        static constexpr DXGI_FORMAT GBufferORM = DXGI_FORMAT_R8G8B8A8_UNORM;
-        static constexpr DXGI_FORMAT GBufferEmissive = DXGI_FORMAT_R16G16B16A16_FLOAT;
-        static constexpr DXGI_FORMAT ScalarSignal = DXGI_FORMAT_R16_FLOAT;
-        static constexpr DXGI_FORMAT MotionVector = DXGI_FORMAT_R16G16_FLOAT;
-        static constexpr DXGI_FORMAT PostProcess = DXGI_FORMAT_R8G8B8A8_UNORM;
-        static constexpr DXGI_FORMAT SMAAEdges = DXGI_FORMAT_R8G8_UNORM;
-        static constexpr DXGI_FORMAT SMAAWeights = DXGI_FORMAT_R8G8B8A8_UNORM;
-        static constexpr DXGI_FORMAT SMAAOutput = PostProcess;
-    };
+    using Formats = RenderFormats;
 
     PipelineManager()
     {}
@@ -140,6 +125,44 @@ public:
         }
 
         return true;
+    }
+
+    bool InitializeSSGI(RenderDevice* dc)
+    {
+        return BuildSSGIPipeline(dc);
+    }
+
+    ID3D12RootSignature* GetSSGIRootSignature()
+    {
+        return ssgiRootSignature.Get();
+    }
+    ID3D12PipelineState* GetSSGIPyramidPSO()
+    {
+        return ssgiPyramidPSO.Get();
+    }
+    ID3D12PipelineState* GetSSGITracePSO()
+    {
+        return ssgiTracePSO.Get();
+    }
+    ID3D12PipelineState* GetSSGIReconstructPSO()
+    {
+        return ssgiReconstructPSO.Get();
+    }
+    ID3D12PipelineState* GetSSGITemporalPSO()
+    {
+        return ssgiTemporalPSO.Get();
+    }
+    ID3D12PipelineState* GetSSGIHistoryClampPSO()
+    {
+        return ssgiHistoryClampPSO.Get();
+    }
+    ID3D12PipelineState* GetSSGICompositePSO()
+    {
+        return ssgiCompositePSO.Get();
+    }
+    ID3D12PipelineState* GetSSGIAtrousPSO(bool first)
+    {
+        return first ? ssgiAtrousFirstPSO.Get() : ssgiAtrousPSO.Get();
     }
 
     // Choose one from three to use
@@ -997,6 +1020,98 @@ private:
         return true;
     }
 
+    bool BuildSSGIPipeline(RenderDevice* dc)
+    {
+        auto* device = dc->GetDevice();
+        CD3DX12_ROOT_PARAMETER parameter;
+        parameter.InitAsConstantBufferView(0);
+        CD3DX12_ROOT_SIGNATURE_DESC desc(ConstantBufferBinding::Count, &parameter, 0, nullptr,
+                                         D3D12_ROOT_SIGNATURE_FLAG_CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED);
+        Microsoft::WRL::ComPtr<ID3DBlob> blob;
+        HRESULT hr = D3D12SerializeRootSignature(&desc, D3D_ROOT_SIGNATURE_VERSION_1, &blob, nullptr);
+        if (SUCCEEDED(hr))
+        {
+            hr = device->CreateRootSignature(0, blob->GetBufferPointer(), blob->GetBufferSize(),
+                                             IID_PPV_ARGS(&ssgiRootSignature));
+        }
+        if (FAILED(hr))
+        {
+            ErrorLog::HRESULT("SSGI: root signature creation failed.", hr);
+            return false;
+        }
+        return BuildSSGIComputePipeline(device, L"Shaders/Shaders_For_SSGI.hlsl", L"CSMain_Pyramid", ssgiPyramidPSO,
+                                        {L"SSGI_PASS_PYRAMID=1"}) &&
+               BuildSSGIComputePipeline(device, L"Shaders/Shaders_For_SSGI.hlsl", L"CSMain_Trace", ssgiTracePSO,
+                                        {L"SSGI_PASS_TRACE=1"}) &&
+               BuildSSGIComputePipeline(device, L"Shaders/Shaders_For_SSGI_Spatial.hlsl", L"CSMain_Reconstruct",
+                                        ssgiReconstructPSO, {L"SSGI_PASS_RECONSTRUCT=1"}) &&
+               BuildSSGIComputePipeline(device, L"Shaders/Shaders_For_SSGI_Temporal.hlsl", L"CSMain_Temporal",
+                                        ssgiTemporalPSO, {L"SSGI_PASS_TEMPORAL=1"}) &&
+               BuildSSGIComputePipeline(device, L"Shaders/Shaders_For_SSGI_Temporal.hlsl", L"CSMain_HistoryClamp",
+                                        ssgiHistoryClampPSO, {L"SSGI_PASS_HISTORYCLAMP=1"}) &&
+               BuildSSGIComputePipeline(device, L"Shaders/Shaders_For_SSGI_Spatial.hlsl", L"CSMain_Atrous",
+                                        ssgiAtrousFirstPSO, {L"SSGI_PASS_ATROUS=1", L"SSGI_ATROUS_FIRST=1"}) &&
+               BuildSSGIComputePipeline(device, L"Shaders/Shaders_For_SSGI_Spatial.hlsl", L"CSMain_Atrous",
+                                        ssgiAtrousPSO, {L"SSGI_PASS_ATROUS=1"}) &&
+               BuildSSGICompositePipeline(device);
+    }
+
+    bool BuildSSGICompositePipeline(ID3D12Device* device)
+    {
+        auto vs = ShaderCompiler::CompileFromFile(L"Shaders/Shaders_For_SSGI.hlsl", L"VSMain", L"vs_6_6",
+                                                  {L"SSGI_PASS_COMPOSITE=1"});
+        auto ps = ShaderCompiler::CompileFromFile(L"Shaders/Shaders_For_SSGI.hlsl", L"PSMain", L"ps_6_6",
+                                                  {L"SSGI_PASS_COMPOSITE=1"});
+        if (!vs || !ps)
+        {
+            return false;
+        }
+        D3D12_GRAPHICS_PIPELINE_STATE_DESC desc = {};
+        desc.pRootSignature = ssgiRootSignature.Get();
+        desc.VS = {vs->GetBufferPointer(), vs->GetBufferSize()};
+        desc.PS = {ps->GetBufferPointer(), ps->GetBufferSize()};
+        desc.RasterizerState = CD3DX12_RASTERIZER_DESC(D3D12_DEFAULT);
+        desc.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
+        desc.BlendState = CD3DX12_BLEND_DESC(D3D12_DEFAULT);
+        auto& blend = desc.BlendState.RenderTarget[0];
+        blend.BlendEnable = TRUE;
+        blend.SrcBlend = D3D12_BLEND_ONE;
+        blend.DestBlend = D3D12_BLEND_ONE;
+        blend.SrcBlendAlpha = D3D12_BLEND_ZERO;
+        blend.DestBlendAlpha = D3D12_BLEND_ONE;
+        desc.SampleMask = UINT_MAX;
+        desc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+        desc.NumRenderTargets = 1;
+        desc.RTVFormats[0] = Formats::SceneColor;
+        desc.SampleDesc.Count = 1;
+        HRESULT hr = device->CreateGraphicsPipelineState(&desc, IID_PPV_ARGS(&ssgiCompositePSO));
+        if (FAILED(hr))
+        {
+            ErrorLog::HRESULT("SSGI: composite PSO creation failed.", hr);
+        }
+        return SUCCEEDED(hr);
+    }
+
+    bool BuildSSGIComputePipeline(ID3D12Device* device, const wchar_t* path, const wchar_t* entry,
+                                  Microsoft::WRL::ComPtr<ID3D12PipelineState>& output,
+                                  const std::vector<std::wstring>& defines = {})
+    {
+        auto shader = ShaderCompiler::CompileFromFile(path, entry, L"cs_6_6", defines);
+        if (!shader)
+        {
+            return false;
+        }
+        D3D12_COMPUTE_PIPELINE_STATE_DESC desc = {};
+        desc.pRootSignature = ssgiRootSignature.Get();
+        desc.CS = {shader->GetBufferPointer(), shader->GetBufferSize()};
+        HRESULT hr = device->CreateComputePipelineState(&desc, IID_PPV_ARGS(&output));
+        if (FAILED(hr))
+        {
+            ErrorLog::HRESULT("SSGI: compute PSO creation failed.", hr);
+        }
+        return SUCCEEDED(hr);
+    }
+
     bool BuildHBAOPipeline(RenderDevice* dc)
     {
         D3D12_ROOT_PARAMETER rootParameters[HBAOBinding::Count];
@@ -1586,6 +1701,16 @@ private:
     ComPtr<ID3D12RootSignature> deferredRootSignature;
     ComPtr<ID3D12PipelineState> deferredPSO;
     ComPtr<ID3D12PipelineState> deferredBouncePSO;
+
+    ComPtr<ID3D12RootSignature> ssgiRootSignature;
+    ComPtr<ID3D12PipelineState> ssgiPyramidPSO;
+    ComPtr<ID3D12PipelineState> ssgiTracePSO;
+    ComPtr<ID3D12PipelineState> ssgiReconstructPSO;
+    ComPtr<ID3D12PipelineState> ssgiTemporalPSO;
+    ComPtr<ID3D12PipelineState> ssgiHistoryClampPSO;
+    ComPtr<ID3D12PipelineState> ssgiAtrousFirstPSO;
+    ComPtr<ID3D12PipelineState> ssgiAtrousPSO;
+    ComPtr<ID3D12PipelineState> ssgiCompositePSO;
 
     ComPtr<ID3D12RootSignature> hbaoRootSignature;
     ComPtr<ID3D12PipelineState> hbaoPSO;

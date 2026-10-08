@@ -45,6 +45,7 @@
 # Temporary files
 /tmp/
 /Captures/
+/Logs/
 *.tmp
 *.temp
 

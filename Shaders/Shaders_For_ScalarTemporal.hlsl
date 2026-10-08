@@ -41,6 +41,7 @@ SamplerState sLinear : register(s1);
 
 #include "FullscreenTriangle.hlsli"
 #include "MaterialCommon.hlsli"
+#include "GeometryCommon.hlsli"
 
 static const float BACKGROUND_DEPTH = 0.999999f;
 
@@ -120,11 +121,7 @@ Reprojection ReprojectClosestDepth(ClosestDepthSample closestDepth, float2 curre
     result.expectedPreviousDepth = 1.0f;
     result.valid = false;
 
-    float2 currentNDC = float2(
-        closestDepth.uv.x * 2.0f - 1.0f,
-        1.0f - closestDepth.uv.y * 2.0f);
-    float4 currentClip = float4(currentNDC, closestDepth.depth, 1.0f);
-    float4 worldPositionH = mul(currentClip, currJitteredInvViewProj);
+    float4 worldPositionH = ReconstructPositionH(closestDepth.uv, closestDepth.depth, currJitteredInvViewProj);
 
     if (abs(worldPositionH.w) < 1.0e-6f)
     {

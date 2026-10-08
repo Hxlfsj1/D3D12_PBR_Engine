@@ -17,9 +17,6 @@
 #include "HBAOPass.h"
 #include "DeferredLightingPass.h"
 #include "SSGIPass.h"
-#include "SSGITemporalPass.h"
-#include "SSGIAtrousPass.h"
-#include "SSGICompositePass.h"
 #include "MotionVectorPass.h"
 #include "TAAPass.h"
 #include "TSRPass.h"
@@ -403,12 +400,14 @@ bool D3D12App::InitD3D()
         return false;
     }
     if (m_settingsManager.pipeline.useDeferred && m_settingsManager.ssgi.enabled &&
-        (!m_ssgiPipeline.Initialize(m_deviceContext.GetDevice()) ||
-         !m_ssgiHistory.Initialize(m_deviceContext.GetDevice(), SceneWidth, SceneHeight)))
+        (!m_pipelineManager.InitializeSSGI(&m_deviceContext) ||
+         !m_resourceManager.InitSSGIHistoryResources(&m_deviceContext, SceneWidth, SceneHeight)))
     {
         ErrorLog::Write("Application: SSGI pipeline initialization failed.");
         return false;
     }
+    DirectX::XMStoreFloat4x4(&m_ssgiHistory.previousViewProj, DirectX::XMMatrixIdentity());
+    m_ssgiHistory.previousInvViewProj = m_ssgiHistory.previousViewProj;
     if (m_antiAliasingMode == AntiAliasingMode::TAA &&
         !m_pipelineManager.InitializeTAA(&m_deviceContext))
     {
@@ -481,7 +480,7 @@ bool D3D12App::InitD3D()
         return false;
     }
 
-    if (m_settingsManager.pipeline.useDeferred && m_settingsManager.ssgi.enabled &&
+    if (m_settingsManager.pipeline.useDeferred &&
         !m_resourceManager.InitializeBlueNoiseTexture(&m_deviceContext))
     {
         ErrorLog::Write("Application: blue-noise texture initialization failed.");
@@ -498,6 +497,61 @@ bool D3D12App::InitD3D()
     return true;
 }
 
+void D3D12App::InvalidateTemporalHistories()
+{
+    m_temporalHistoryValid = false;
+    m_hbaoHistoryValid = false;
+    m_dlssHistoryValid = false;
+    m_ssgiHistory.valid = false;
+}
+
+void D3D12App::UpdateTemporalHistoryValidity()
+{
+    // Preserve the SSGI camera-cut policy; other effects keep their own rejection rules.
+    if (!m_ssgiHistory.valid)
+    {
+        return;
+    }
+    float distance =
+        XMVectorGetX(XMVector3Length(XMLoadFloat3(&camera.Position) - XMLoadFloat3(&m_ssgiHistory.previousPosition)));
+    float agreement =
+        XMVectorGetX(XMVector3Dot(XMLoadFloat3(&camera.Front), XMLoadFloat3(&m_ssgiHistory.previousForward)));
+    if (distance > 5.0f || agreement < 0.5f || std::abs(camera.Zoom - m_ssgiHistory.previousFov) > 0.001f ||
+        deltaTime > 0.25f)
+    {
+        m_ssgiHistory.valid = false;
+    }
+}
+
+void D3D12App::CommitTemporalHistories(bool temporalWritten, bool hbaoWritten, bool dlssWritten, bool ssgiWritten)
+{
+    // Advance only histories written by a command list that has actually been submitted.
+    if (temporalWritten)
+    {
+        m_resourceManager.FlipTemporalHistoryIndex();
+        m_temporalHistoryValid = true;
+    }
+    if (hbaoWritten)
+    {
+        m_resourceManager.FlipHBAOHistoryIndex();
+        m_hbaoHistoryValid = true;
+    }
+    if (dlssWritten)
+    {
+        m_dlssHistoryValid = true;
+    }
+    if (ssgiWritten)
+    {
+        m_resourceManager.FlipSSGIHistoryIndex();
+        m_ssgiHistory.previousViewProj = m_currJitteredViewProjGpu;
+        m_ssgiHistory.previousInvViewProj = m_currJitteredInvViewProjGpu;
+        m_ssgiHistory.previousPosition = camera.Position;
+        m_ssgiHistory.previousForward = camera.Front;
+        m_ssgiHistory.previousFov = camera.Zoom;
+        m_ssgiHistory.valid = true;
+    }
+}
+
 // Data is streamed directly from the Upload Heap to the GPU, utilizing a Ring Buffer mechanism (with a count of 3 to align with the Triple Buffering scheme)
 void D3D12App::Update()
 {
@@ -508,10 +562,7 @@ void D3D12App::Update()
     // history because the current motion vectors only describe camera motion.
     if (std::any_of(instances.begin(), instances.end(), [](const ModelInstance& instance) { return instance.isDirty; }))
     {
-        m_temporalHistoryValid = false;
-        m_hbaoHistoryValid = false;
-        m_dlssHistoryValid = false;
-        m_ssgiHistory.Invalidate();
+        InvalidateTemporalHistories();
     }
 
     // ====================================================================================================
@@ -535,8 +586,7 @@ void D3D12App::Update()
             L"    |    FPS: " + fpsStr +
             L"    |    ms/frame: " + mspfStr +
             L"    |    Visible: " + std::to_wstring(m_visibleInstanceCount) + L"/" + std::to_wstring(instances.size()) +
-            L"    |    Frustum: " + std::to_wstring(m_frustumInstanceCount) +
-            L"    |    Hz: 300";
+            L"    |    Frustum: " + std::to_wstring(m_frustumInstanceCount);
 
         SetWindowText(hwnd, windowText.c_str());
 
@@ -549,8 +599,7 @@ void D3D12App::Update()
         (ImGui::GetCurrentContext() == nullptr ||
             (!ImGui::GetIO().WantCaptureKeyboard && !ImGui::GetIO().WantCaptureMouse && !ImGui::GetIO().AppFocusLost));
     m_inputManager.Update(deltaTime, camera, allowCameraNavigation);
-    m_ssgiHistory.RejectCameraCut(camera.Position, camera.Front, camera.Zoom);
-    if (deltaTime > 0.25f) m_ssgiHistory.Invalidate();
+    UpdateTemporalHistoryValidity();
 
     // ====================================================================================================
     // Calculate V * P matrix
@@ -664,7 +713,7 @@ void D3D12App::Update()
     }
     passCb.cameraForward = camera.Front;
     passCb.lightColor = m_settingsManager.lighting.lightColor;
-    passCb.environmentIntensity = m_settingsManager.pipeline.environmentIntensity;
+    passCb.environmentIntensity = m_settingsManager.lighting.environmentIntensity;
 
     ShadowPass::FramePreparationInput shadowInput = {};
     shadowInput.camera = &camera;
@@ -919,6 +968,9 @@ bool D3D12App::EndFrame()
 void D3D12App::Render()
 {
     bool ssgiHistoryWritten = false;
+    bool temporalHistoryWritten = false;
+    bool hbaoHistoryWritten = false;
+    bool dlssHistoryWritten = false;
     // Normal composition: add SSGI to scene lighting, then render sky/transparency.
     const bool useZPrepass =
         m_settingsManager.pipeline.useZPrepass &&
@@ -1314,7 +1366,6 @@ void D3D12App::Render()
                     Width,
                     Height,
                     forwardFinalColor,
-                    false,
                     false);
             if (!toneMapOutput.texture.IsValid() ||
                 !toneMapOutput.pass.IsValid())
@@ -1370,7 +1421,6 @@ void D3D12App::Render()
                 viewport,
                 scissorRect,
                 forwardFinalColor,
-                false,
                 enablePostProcessSharpen);
             if (!postProcessPass.IsValid())
             {
@@ -1406,13 +1456,12 @@ void D3D12App::Render()
                 return;
             }
 
-            m_dlssHistoryValid = true;
+            dlssHistoryWritten = true;
         }
 
         if (temporalHistoryWrittenByForwardGraph)
         {
-            m_resourceManager.FlipTemporalHistoryIndex();
-            m_temporalHistoryValid = true;
+            temporalHistoryWritten = true;
         }
     }
     else
@@ -1536,527 +1585,512 @@ void D3D12App::Render()
         }
         deferredGraph.AddPassDependencies(motionOutput.pass, { gbufferOutput.pass });
 
-        HBAOPass::Output hbaoOutput = HBAOPass::AddToGraph(
+        RDGTextureHandle hbaoForLighting;
+        RDGPassHandle hbaoProducer;
+        if (m_settingsManager.hbao.enabled)
+        {
+            HBAOPass::Output hbaoOutput = HBAOPass::AddToGraph(
+                deferredGraph,
+                &m_resourceManager,
+                &m_pipelineManager,
+                m_currViewGpu,
+                m_currJitteredProjGpu,
+                m_currJitteredInvProjGpu,
+                SceneWidth,
+                SceneHeight,
+                frameIndex,
+                m_hbaoTemporalFrameIndex++,
+                m_settingsManager.hbao,
+                { gbufferOutput.depth, gbufferOutput.normal });
+            if (!hbaoOutput.blurredTexture.IsValid() ||
+                !hbaoOutput.rawPass.IsValid() ||
+                !hbaoOutput.blurPass.IsValid())
+            {
+                OutputDebugStringA(
+                    "Error: Deferred HBAO RDG construction failed; rendering stopped.\n");
+                Running = false;
+                EndFrame();
+                return;
+            }
+            deferredGraph.AddPassDependencies(hbaoOutput.rawPass, { gbufferOutput.pass });
+            deferredGraph.AddPassDependencies(hbaoOutput.blurPass, { hbaoOutput.rawPass });
+
+            hbaoForLighting = hbaoOutput.blurredTexture;
+            hbaoProducer = hbaoOutput.blurPass;
+            {
+                const int hbaoHistoryIndex = m_resourceManager.GetHBAOCurrentHistoryIdx();
+                RDGTextureHandle currentHBAOHistory = deferredGraph.RegisterExternalTexture(
+                    m_resourceManager.GetHBAOHistoryRT(hbaoHistoryIndex),
+                    D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+                    D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+                    "HBAOCurrentHistory");
+                RDGTextureHandle previousHBAOHistory = deferredGraph.RegisterExternalTexture(
+                    m_resourceManager.GetHBAOHistoryRT(1 - hbaoHistoryIndex),
+                    D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+                    D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+                    "HBAOPreviousHistory");
+                RDGTextureHandle currentHBAODepthHistory = deferredGraph.RegisterExternalTexture(
+                    m_resourceManager.GetHBAODepthHistoryRT(hbaoHistoryIndex),
+                    D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+                    D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+                    "HBAOCurrentDepthHistory");
+                RDGTextureHandle previousHBAODepthHistory = deferredGraph.RegisterExternalTexture(
+                    m_resourceManager.GetHBAODepthHistoryRT(1 - hbaoHistoryIndex),
+                    D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+                    D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+                    "HBAOPreviousDepthHistory");
+                RDGTextureHandle currentHBAONormalHistory = deferredGraph.RegisterExternalTexture(
+                    m_resourceManager.GetHBAONormalHistoryRT(hbaoHistoryIndex),
+                    D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+                    D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+                    "HBAOCurrentNormalHistory");
+                RDGTextureHandle previousHBAONormalHistory = deferredGraph.RegisterExternalTexture(
+                    m_resourceManager.GetHBAONormalHistoryRT(1 - hbaoHistoryIndex),
+                    D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+                    D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+                    "HBAOPreviousNormalHistory");
+
+                ScalarTemporalFilterPass::Input hbaoTemporalInput = {};
+                hbaoTemporalInput.currentSignal = hbaoOutput.blurredTexture;
+                hbaoTemporalInput.previousHistory = previousHBAOHistory;
+                hbaoTemporalInput.historyOutput = currentHBAOHistory;
+                hbaoTemporalInput.depth = gbufferOutput.depth;
+                hbaoTemporalInput.motion = motionOutput.motionTexture;
+                hbaoTemporalInput.normal = gbufferOutput.normal;
+                hbaoTemporalInput.previousDepth = previousHBAODepthHistory;
+                hbaoTemporalInput.previousNormal = previousHBAONormalHistory;
+
+                ScalarTemporalFilterPass::Output hbaoTemporalOutput =
+                    ScalarTemporalFilterPass::AddToGraph(
+                        deferredGraph,
+                        &m_deviceContext,
+                        &m_resourceManager,
+                        &m_pipelineManager,
+                        m_currJitteredInvViewProjGpu,
+                        m_prevUnjitteredViewProjGpu,
+                        DirectX::XMFLOAT2(m_currJitterPixelX, m_currJitterPixelY),
+                        frameIndex,
+                        SceneWidth,
+                        SceneHeight,
+                        m_hbaoHistoryValid,
+                        ScalarTemporalFilterPass::GetAmbientOcclusionSettings(deltaTime),
+                        hbaoTemporalInput);
+
+                if (!hbaoTemporalOutput.historyTexture.IsValid() ||
+                    !hbaoTemporalOutput.pass.IsValid())
+                {
+                    OutputDebugStringA(
+                        "Error: Deferred temporal HBAO RDG construction failed; rendering stopped.\n");
+                    Running = false;
+                    EndFrame();
+                    return;
+                }
+
+                {
+                    deferredGraph.AddPassDependencies(
+                        hbaoTemporalOutput.pass,
+                        { hbaoOutput.blurPass, motionOutput.pass });
+
+                    deferredGraph.MarkTextureAsOutput(currentHBAODepthHistory);
+                    deferredGraph.MarkTextureAsOutput(currentHBAONormalHistory);
+
+                    RDGPassParameters geometryHistoryCopyParameters;
+                    geometryHistoryCopyParameters.ReadCopySrc(gbufferOutput.depth);
+                    geometryHistoryCopyParameters.ReadCopySrc(gbufferOutput.normal);
+                    geometryHistoryCopyParameters.WriteCopyDst(currentHBAODepthHistory);
+                    geometryHistoryCopyParameters.WriteCopyDst(currentHBAONormalHistory);
+
+                    ID3D12Resource* sceneDepthResource =
+                        deferredGraph.GetTextureResource(gbufferOutput.depth);
+                    ID3D12Resource* sceneNormalResource =
+                        deferredGraph.GetTextureResource(gbufferOutput.normal);
+                    ID3D12Resource* depthHistoryResource =
+                        deferredGraph.GetTextureResource(currentHBAODepthHistory);
+                    ID3D12Resource* normalHistoryResource =
+                        deferredGraph.GetTextureResource(currentHBAONormalHistory);
+                    if (sceneDepthResource == nullptr ||
+                        sceneNormalResource == nullptr ||
+                        depthHistoryResource == nullptr ||
+                        normalHistoryResource == nullptr)
+                    {
+                        OutputDebugStringA(
+                            "Error: Deferred HBAO geometry-history resources are invalid; rendering stopped.\n");
+                        Running = false;
+                        EndFrame();
+                        return;
+                    }
+
+                    RDGPassHandle geometryHistoryCopyPass = deferredGraph.AddPass(
+                        "HBAOGeometryHistoryCopy",
+                        ERDGPassFlags::Copy,
+                        geometryHistoryCopyParameters,
+                        [=](ID3D12GraphicsCommandList* cmdList)
+                        {
+                            D3D12_TEXTURE_COPY_LOCATION sourceDepth = {};
+                            sourceDepth.pResource = sceneDepthResource;
+                            sourceDepth.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+                            sourceDepth.SubresourceIndex = 0;
+
+                            D3D12_TEXTURE_COPY_LOCATION destinationDepth = {};
+                            destinationDepth.pResource = depthHistoryResource;
+                            destinationDepth.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+                            destinationDepth.SubresourceIndex = 0;
+
+                            cmdList->CopyTextureRegion(
+                                &destinationDepth,
+                                0,
+                                0,
+                                0,
+                                &sourceDepth,
+                                nullptr);
+
+                            D3D12_TEXTURE_COPY_LOCATION sourceNormal = {};
+                            sourceNormal.pResource = sceneNormalResource;
+                            sourceNormal.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+                            sourceNormal.SubresourceIndex = 0;
+
+                            D3D12_TEXTURE_COPY_LOCATION destinationNormal = {};
+                            destinationNormal.pResource = normalHistoryResource;
+                            destinationNormal.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+                            destinationNormal.SubresourceIndex = 0;
+
+                            cmdList->CopyTextureRegion(
+                                &destinationNormal,
+                                0,
+                                0,
+                                0,
+                                &sourceNormal,
+                            nullptr);
+                        });
+                    if (!geometryHistoryCopyPass.IsValid())
+                    {
+                        OutputDebugStringA(
+                            "Error: Deferred HBAO geometry-history copy RDG construction failed; rendering stopped.\n");
+                        Running = false;
+                        EndFrame();
+                        return;
+                    }
+                    deferredGraph.AddPassDependencies(
+                        geometryHistoryCopyPass,
+                        { hbaoTemporalOutput.pass });
+
+                    hbaoForLighting = hbaoTemporalOutput.historyTexture;
+                    hbaoProducer = hbaoTemporalOutput.pass;
+                    hbaoTemporalHandledByDeferredGraph = true;
+                }
+            }
+        }
+        else
+        {
+            // White is the multiplicative identity for screen-space AO; material AO remains active.
+            hbaoForLighting = deferredGraph.RegisterExternalTexture(
+                m_resourceManager.GetWhiteTexture(),
+                D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+                D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, "HBAO.DisabledWhite");
+            m_hbaoHistoryValid = false;
+        }
+
+        DeferredLightingPass::Input deferredInput = {};
+        deferredInput.gbufferAlbedo = gbufferOutput.albedo;
+        deferredInput.gbufferNormal = gbufferOutput.normal;
+        deferredInput.gbufferORM = gbufferOutput.orm;
+        deferredInput.gbufferEmissive = gbufferOutput.emissive;
+        deferredInput.depth = gbufferOutput.depth;
+        deferredInput.hbaoBlurred = hbaoForLighting;
+        deferredInput.shadowMap = shadowOutput.shadowMapSrv;
+
+        DeferredLightingPass::Output deferredOutput = DeferredLightingPass::AddToGraph(
             deferredGraph,
             &m_resourceManager,
             &m_pipelineManager,
-            m_currViewGpu,
-            m_currJitteredProjGpu,
-            m_currJitteredInvProjGpu,
+            m_currJitteredInvViewProjGpu,
             SceneWidth,
             SceneHeight,
             frameIndex,
-            m_hbaoTemporalFrameIndex++,
-            { gbufferOutput.depth, gbufferOutput.normal });
-        if (!hbaoOutput.blurredTexture.IsValid() ||
-            !hbaoOutput.rawPass.IsValid() ||
-            !hbaoOutput.blurPass.IsValid())
+            deferredInput,
+            m_settingsManager.ssgi.enabled);
+        if (!deferredOutput.sceneColor.IsValid() || !deferredOutput.pass.IsValid())
         {
             OutputDebugStringA(
-                "Error: Deferred HBAO RDG construction failed; rendering stopped.\n");
+                "Error: Deferred lighting RDG construction failed; rendering stopped.\n");
             Running = false;
             EndFrame();
             return;
         }
-        deferredGraph.AddPassDependencies(hbaoOutput.rawPass, { gbufferOutput.pass });
-        deferredGraph.AddPassDependencies(hbaoOutput.blurPass, { hbaoOutput.rawPass });
-
-        RDGTextureHandle hbaoForLighting = hbaoOutput.blurredTexture;
-        RDGPassHandle hbaoProducer = hbaoOutput.blurPass;
+        deferredGraph.AddPassDependencies(deferredOutput.pass, { shadowOutput.pass });
+        if (hbaoProducer.IsValid())
         {
-            const int hbaoHistoryIndex = m_resourceManager.GetHBAOCurrentHistoryIdx();
-            RDGTextureHandle currentHBAOHistory = deferredGraph.RegisterExternalTexture(
-                m_resourceManager.GetHBAOHistoryRT(hbaoHistoryIndex),
-                D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
-                D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
-                "HBAOCurrentHistory");
-            RDGTextureHandle previousHBAOHistory = deferredGraph.RegisterExternalTexture(
-                m_resourceManager.GetHBAOHistoryRT(1 - hbaoHistoryIndex),
-                D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
-                D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
-                "HBAOPreviousHistory");
-            RDGTextureHandle currentHBAODepthHistory = deferredGraph.RegisterExternalTexture(
-                m_resourceManager.GetHBAODepthHistoryRT(hbaoHistoryIndex),
-                D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
-                D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
-                "HBAOCurrentDepthHistory");
-            RDGTextureHandle previousHBAODepthHistory = deferredGraph.RegisterExternalTexture(
-                m_resourceManager.GetHBAODepthHistoryRT(1 - hbaoHistoryIndex),
-                D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
-                D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
-                "HBAOPreviousDepthHistory");
-            RDGTextureHandle currentHBAONormalHistory = deferredGraph.RegisterExternalTexture(
-                m_resourceManager.GetHBAONormalHistoryRT(hbaoHistoryIndex),
-                D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
-                D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
-                "HBAOCurrentNormalHistory");
-            RDGTextureHandle previousHBAONormalHistory = deferredGraph.RegisterExternalTexture(
-                m_resourceManager.GetHBAONormalHistoryRT(1 - hbaoHistoryIndex),
-                D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
-                D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
-                "HBAOPreviousNormalHistory");
+            deferredGraph.AddPassDependencies(deferredOutput.pass, { hbaoProducer });
+        }
+        RDGPassHandle sceneColorProducer = deferredOutput.pass;
 
-            ScalarTemporalFilterPass::Input hbaoTemporalInput = {};
-            hbaoTemporalInput.currentSignal = hbaoOutput.blurredTexture;
-            hbaoTemporalInput.previousHistory = previousHBAOHistory;
-            hbaoTemporalInput.historyOutput = currentHBAOHistory;
-            hbaoTemporalInput.depth = gbufferOutput.depth;
-            hbaoTemporalInput.motion = motionOutput.motionTexture;
-            hbaoTemporalInput.normal = gbufferOutput.normal;
-            hbaoTemporalInput.previousDepth = previousHBAODepthHistory;
-            hbaoTemporalInput.previousNormal = previousHBAONormalHistory;
+        if (m_settingsManager.ssgi.enabled)
+        {
+            SSGIPass::Input ssgiInput = { deferredOutput.sceneColor, gbufferOutput.depth,
+                gbufferOutput.normal, gbufferOutput.orm, gbufferOutput.albedo, deferredOutput.bounceSource };
+            auto ssgiOutput = SSGIPass::AddToGraph(deferredGraph, &m_resourceManager,
+                &m_pipelineManager, m_ssgiHistory, m_currViewGpu, m_currJitteredProjGpu,
+                m_currJitteredInvProjGpu, m_currJitteredInvViewProjGpu,
+                SceneWidth, SceneHeight, frameIndex, m_ssgiFrameIndex++, m_settingsManager.ssgi, ssgiInput);
+            if (!ssgiOutput.sceneColor.IsValid() || !ssgiOutput.pass.IsValid())
+            {
+                ErrorLog::Write("SSGI: RDG construction failed; rendering stopped.");
+                Running = false;
+                EndFrame();
+                return;
+            }
+            sceneColorProducer = ssgiOutput.pass;
+            ssgiHistoryWritten = true;
+        }
 
-            ScalarTemporalFilterPass::Output hbaoTemporalOutput =
-                ScalarTemporalFilterPass::AddToGraph(
+        {
+            RDGPassHandle skyboxPass = SkyboxPass::AddToGraph(
+                deferredGraph,
+                &m_deviceContext,
+                &m_resourceManager,
+                &m_pipelineManager,
+                camera,
+                sceneViewport,
+                sceneScissorRect,
+                SceneWidth,
+                SceneHeight,
+                { deferredOutput.sceneColor, gbufferOutput.depth });
+            if (!skyboxPass.IsValid())
+            {
+                OutputDebugStringA(
+                    "Error: Deferred skybox RDG construction failed; rendering stopped.\n");
+                Running = false;
+                EndFrame();
+                return;
+            }
+            deferredGraph.AddPassDependencies(skyboxPass, { sceneColorProducer });
+            sceneColorProducer = skyboxPass;
+
+            RDGPassHandle transparentPass = PBRPass::AddTransparentToGraph(
+                deferredGraph,
+                &m_deviceContext,
+                &m_resourceManager,
+                &m_pipelineManager,
+                frameIndex,
+                sceneViewport,
+                sceneScissorRect,
+                g_visibleInstances,
+                transparentStartIndex,
+                { deferredOutput.sceneColor, gbufferOutput.depth, shadowOutput.shadowMapSrv });
+            if (!transparentPass.IsValid())
+            {
+                OutputDebugStringA(
+                    "Error: Deferred transparent RDG construction failed; rendering stopped.\n");
+                Running = false;
+                EndFrame();
+                return;
+            }
+            sceneColorProducer = transparentPass;
+        }
+
+        RDGTextureHandle deferredFinalColor = deferredOutput.sceneColor;
+        RDGPassHandle deferredFinalColorProducer = sceneColorProducer;
+        if (m_antiAliasingMode == AntiAliasingMode::TAA ||
+            m_antiAliasingMode == AntiAliasingMode::TSR ||
+            m_antiAliasingMode == AntiAliasingMode::DLSS)
+        {
+            if (m_antiAliasingMode == AntiAliasingMode::TAA)
+            {
+                TAAPass::Output taaOutput = TAAPass::AddToGraph(
                     deferredGraph,
                     &m_deviceContext,
                     &m_resourceManager,
                     &m_pipelineManager,
                     m_currJitteredInvViewProjGpu,
                     m_prevUnjitteredViewProjGpu,
-                    DirectX::XMFLOAT2(m_currJitterPixelX, m_currJitterPixelY),
+                    m_currJitterNdcX,
+                    m_currJitterNdcY,
                     frameIndex,
-                    SceneWidth,
-                    SceneHeight,
-                    m_hbaoHistoryValid,
-                    ScalarTemporalFilterPass::GetAmbientOcclusionSettings(deltaTime),
-                    hbaoTemporalInput);
-
-            if (!hbaoTemporalOutput.historyTexture.IsValid() ||
-                !hbaoTemporalOutput.pass.IsValid())
-            {
-                OutputDebugStringA(
-                    "Error: Deferred temporal HBAO RDG construction failed; rendering stopped.\n");
-                Running = false;
-                EndFrame();
-                return;
-            }
-
-            {
-                deferredGraph.AddPassDependencies(
-                    hbaoTemporalOutput.pass,
-                    { hbaoOutput.blurPass, motionOutput.pass });
-
-                deferredGraph.MarkTextureAsOutput(currentHBAODepthHistory);
-                deferredGraph.MarkTextureAsOutput(currentHBAONormalHistory);
-
-                RDGPassParameters geometryHistoryCopyParameters;
-                geometryHistoryCopyParameters.ReadCopySrc(gbufferOutput.depth);
-                geometryHistoryCopyParameters.ReadCopySrc(gbufferOutput.normal);
-                geometryHistoryCopyParameters.WriteCopyDst(currentHBAODepthHistory);
-                geometryHistoryCopyParameters.WriteCopyDst(currentHBAONormalHistory);
-
-                ID3D12Resource* sceneDepthResource =
-                    deferredGraph.GetTextureResource(gbufferOutput.depth);
-                ID3D12Resource* sceneNormalResource =
-                    deferredGraph.GetTextureResource(gbufferOutput.normal);
-                ID3D12Resource* depthHistoryResource =
-                    deferredGraph.GetTextureResource(currentHBAODepthHistory);
-                ID3D12Resource* normalHistoryResource =
-                    deferredGraph.GetTextureResource(currentHBAONormalHistory);
-                if (sceneDepthResource == nullptr ||
-                    sceneNormalResource == nullptr ||
-                    depthHistoryResource == nullptr ||
-                    normalHistoryResource == nullptr)
-                {
-                    OutputDebugStringA(
-                        "Error: Deferred HBAO geometry-history resources are invalid; rendering stopped.\n");
-                    Running = false;
-                    EndFrame();
-                    return;
-                }
-
-                RDGPassHandle geometryHistoryCopyPass = deferredGraph.AddPass(
-                    "HBAOGeometryHistoryCopy",
-                    ERDGPassFlags::Copy,
-                    geometryHistoryCopyParameters,
-                    [=](ID3D12GraphicsCommandList* cmdList)
-                    {
-                        D3D12_TEXTURE_COPY_LOCATION sourceDepth = {};
-                        sourceDepth.pResource = sceneDepthResource;
-                        sourceDepth.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
-                        sourceDepth.SubresourceIndex = 0;
-
-                        D3D12_TEXTURE_COPY_LOCATION destinationDepth = {};
-                        destinationDepth.pResource = depthHistoryResource;
-                        destinationDepth.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
-                        destinationDepth.SubresourceIndex = 0;
-
-                        cmdList->CopyTextureRegion(
-                            &destinationDepth,
-                            0,
-                            0,
-                            0,
-                            &sourceDepth,
-                            nullptr);
-
-                        D3D12_TEXTURE_COPY_LOCATION sourceNormal = {};
-                        sourceNormal.pResource = sceneNormalResource;
-                        sourceNormal.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
-                        sourceNormal.SubresourceIndex = 0;
-
-                        D3D12_TEXTURE_COPY_LOCATION destinationNormal = {};
-                        destinationNormal.pResource = normalHistoryResource;
-                        destinationNormal.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
-                        destinationNormal.SubresourceIndex = 0;
-
-                        cmdList->CopyTextureRegion(
-                            &destinationNormal,
-                            0,
-                            0,
-                            0,
-                            &sourceNormal,
-                        nullptr);
-                    });
-                if (!geometryHistoryCopyPass.IsValid())
-                {
-                    OutputDebugStringA(
-                        "Error: Deferred HBAO geometry-history copy RDG construction failed; rendering stopped.\n");
-                    Running = false;
-                    EndFrame();
-                    return;
-                }
-                deferredGraph.AddPassDependencies(
-                    geometryHistoryCopyPass,
-                    { hbaoTemporalOutput.pass });
-
-                hbaoForLighting = hbaoTemporalOutput.historyTexture;
-                hbaoProducer = hbaoTemporalOutput.pass;
-                hbaoTemporalHandledByDeferredGraph = true;
-            }
-        }
-
-        {
-            DeferredLightingPass::Input deferredInput = {};
-            deferredInput.gbufferAlbedo = gbufferOutput.albedo;
-            deferredInput.gbufferNormal = gbufferOutput.normal;
-            deferredInput.gbufferORM = gbufferOutput.orm;
-            deferredInput.gbufferEmissive = gbufferOutput.emissive;
-            deferredInput.depth = gbufferOutput.depth;
-            deferredInput.hbaoBlurred = hbaoForLighting;
-            deferredInput.shadowMap = shadowOutput.shadowMapSrv;
-
-            DeferredLightingPass::Output deferredOutput = DeferredLightingPass::AddToGraph(
-                deferredGraph,
-                &m_resourceManager,
-                &m_pipelineManager,
-                m_currJitteredInvViewProjGpu,
-                SceneWidth,
-                SceneHeight,
-                frameIndex,
-                deferredInput,
-                m_settingsManager.ssgi.enabled);
-            if (!deferredOutput.sceneColor.IsValid() || !deferredOutput.pass.IsValid())
-            {
-                OutputDebugStringA(
-                    "Error: Deferred lighting RDG construction failed; rendering stopped.\n");
-                Running = false;
-                EndFrame();
-                return;
-            }
-            deferredGraph.AddPassDependencies(deferredOutput.pass, { shadowOutput.pass, hbaoProducer });
-            RDGPassHandle sceneColorProducer = deferredOutput.pass;
-
-            if (m_settingsManager.ssgi.enabled)
-            {
-                SSGIPass::Input ssgiInput = { gbufferOutput.depth, gbufferOutput.normal,
-                    gbufferOutput.orm, deferredOutput.bounceSource };
-                auto ssgiOutput = SSGIPass::AddToGraph(deferredGraph, &m_resourceManager,
-                    &m_ssgiPipeline, m_currViewGpu, m_currJitteredProjGpu, m_currJitteredInvProjGpu,
-                    SceneWidth, SceneHeight, frameIndex, m_ssgiFrameIndex++, m_settingsManager.ssgi, ssgiInput);
-                if (!ssgiOutput.reconstructedGI.IsValid() || !ssgiOutput.reconstructionPass.IsValid())
-                {
-                    ErrorLog::Write("SSGI: RDG construction failed; rendering stopped.");
-                    Running = false;
-                    EndFrame();
-                    return;
-                }
-                auto temporal = SSGITemporalPass::AddToGraph(deferredGraph, &m_resourceManager,
-                    &m_ssgiPipeline, m_ssgiHistory, m_currJitteredInvViewProjGpu, frameIndex,
-                    { ssgiOutput.reconstructedGI, gbufferOutput.depth, gbufferOutput.normal, gbufferOutput.orm });
-                if (!temporal.gi.IsValid() || !temporal.pass.IsValid())
-                {
-                    ErrorLog::Write("SSGI: temporal RDG construction failed; rendering stopped.");
-                    Running = false;
-                    EndFrame();
-                    return;
-                }
-                auto spatial = SSGIAtrousPass::AddToGraph(deferredGraph, &m_resourceManager,
-                    &m_ssgiPipeline, m_currViewGpu, m_currJitteredInvProjGpu, SceneWidth, SceneHeight,
-                    frameIndex, { temporal.moments, temporal.gi, gbufferOutput.depth, gbufferOutput.normal });
-                if (!spatial.gi.IsValid() || !spatial.pass.IsValid())
-                {
-                    ErrorLog::Write("SSGI: A-trous RDG construction failed; rendering stopped.");
-                    Running = false;
-                    EndFrame();
-                    return;
-                }
-                auto composite = SSGICompositePass::AddToGraph(deferredGraph, &m_resourceManager,
-                    &m_ssgiPipeline, m_currViewGpu, m_currJitteredInvProjGpu, SceneWidth, SceneHeight,
-                    frameIndex, { deferredOutput.sceneColor, spatial.gi, gbufferOutput.depth,
-                        gbufferOutput.normal, gbufferOutput.orm, gbufferOutput.albedo }, m_settingsManager.ssgi.intensity);
-                if (!composite.IsValid())
-                {
-                    ErrorLog::Write("SSGI: composite RDG construction failed; rendering stopped.");
-                    Running = false;
-                    EndFrame();
-                    return;
-                }
-                sceneColorProducer = composite;
-                ssgiHistoryWritten = true;
-            }
-
-            {
-                RDGPassHandle skyboxPass = SkyboxPass::AddToGraph(
-                    deferredGraph,
-                    &m_deviceContext,
-                    &m_resourceManager,
-                    &m_pipelineManager,
-                    camera,
-                    sceneViewport,
-                    sceneScissorRect,
-                    SceneWidth,
-                    SceneHeight,
-                    { deferredOutput.sceneColor, gbufferOutput.depth });
-                if (!skyboxPass.IsValid())
-                {
-                    OutputDebugStringA(
-                        "Error: Deferred skybox RDG construction failed; rendering stopped.\n");
-                    Running = false;
-                    EndFrame();
-                    return;
-                }
-                deferredGraph.AddPassDependencies(skyboxPass, { sceneColorProducer });
-                sceneColorProducer = skyboxPass;
-
-                RDGPassHandle transparentPass = PBRPass::AddTransparentToGraph(
-                    deferredGraph,
-                    &m_deviceContext,
-                    &m_resourceManager,
-                    &m_pipelineManager,
-                    frameIndex,
-                    sceneViewport,
-                    sceneScissorRect,
-                    g_visibleInstances,
-                    transparentStartIndex,
-                    { deferredOutput.sceneColor, gbufferOutput.depth, shadowOutput.shadowMapSrv });
-                if (!transparentPass.IsValid())
-                {
-                    OutputDebugStringA(
-                        "Error: Deferred transparent RDG construction failed; rendering stopped.\n");
-                    Running = false;
-                    EndFrame();
-                    return;
-                }
-                sceneColorProducer = transparentPass;
-            }
-
-            RDGTextureHandle deferredFinalColor = deferredOutput.sceneColor;
-            RDGPassHandle deferredFinalColorProducer = sceneColorProducer;
-            if (m_antiAliasingMode == AntiAliasingMode::TAA ||
-                m_antiAliasingMode == AntiAliasingMode::TSR ||
-                m_antiAliasingMode == AntiAliasingMode::DLSS)
-            {
-                if (m_antiAliasingMode == AntiAliasingMode::TAA)
-                {
-                    TAAPass::Output taaOutput = TAAPass::AddToGraph(
-                        deferredGraph,
-                        &m_deviceContext,
-                        &m_resourceManager,
-                        &m_pipelineManager,
-                        m_currJitteredInvViewProjGpu,
-                        m_prevUnjitteredViewProjGpu,
-                        m_currJitterNdcX,
-                        m_currJitterNdcY,
-                        frameIndex,
-                        Width,
-                        Height,
-                        m_temporalHistoryValid,
-                        { deferredOutput.sceneColor, gbufferOutput.depth, motionOutput.motionTexture });
-
-                    if (!taaOutput.historyTexture.IsValid() || !taaOutput.pass.IsValid())
-                    {
-                        OutputDebugStringA(
-                            "Error: Deferred TAA RDG construction failed; rendering stopped instead of degrading.\n");
-                        Running = false;
-                        EndFrame();
-                        return;
-                    }
-
-                    deferredGraph.AddPassDependencies(
-                        taaOutput.pass,
-                        { sceneColorProducer, motionOutput.pass });
-                    deferredFinalColor = taaOutput.historyTexture;
-                    deferredFinalColorProducer = taaOutput.pass;
-                    temporalHistoryWrittenByDeferredGraph = true;
-                }
-                else if (m_antiAliasingMode == AntiAliasingMode::TSR)
-                {
-                    TSRPass::Output tsrOutput = TSRPass::AddToGraph(
-                        deferredGraph,
-                        &m_deviceContext,
-                        &m_resourceManager,
-                        &m_pipelineManager,
-                        m_currJitteredInvViewProjGpu,
-                        m_prevUnjitteredViewProjGpu,
-                        m_currJitterNdcX,
-                        m_currJitterNdcY,
-                        frameIndex,
-                        SceneWidth,
-                        SceneHeight,
-                        Width,
-                        Height,
-                        m_temporalHistoryValid,
-                        { deferredOutput.sceneColor, gbufferOutput.depth, motionOutput.motionTexture });
-
-                    if (!tsrOutput.historyTexture.IsValid() || !tsrOutput.pass.IsValid())
-                    {
-                        OutputDebugStringA(
-                            "Error: Deferred TSR RDG construction failed; rendering stopped instead of degrading.\n");
-                        Running = false;
-                        EndFrame();
-                        return;
-                    }
-
-                    deferredGraph.AddPassDependencies(
-                        tsrOutput.pass,
-                        { sceneColorProducer, motionOutput.pass });
-                    deferredFinalColor = tsrOutput.historyTexture;
-                    deferredFinalColorProducer = tsrOutput.pass;
-                    temporalHistoryWrittenByDeferredGraph = true;
-                }
-                else
-                {
-                    DLSSPass::Output dlssOutput = DLSSPass::AddToGraph(
-                        deferredGraph,
-                        &m_dlssManager,
-                        &m_resourceManager,
-                        m_currJitterPixelX,
-                        m_currJitterPixelY,
-                        (std::max)(deltaTime * 1000.0f, 0.0f),
-                        !m_dlssHistoryValid,
-                        { deferredOutput.sceneColor, gbufferOutput.depth, motionOutput.motionTexture },
-                        [this](ID3D12GraphicsCommandList* commandList)
-                        {
-                            // The post-process root signature declares
-                            // CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED, so the heap must be bound first
-                            ID3D12DescriptorHeap* heaps[] =
-                            {
-                                m_resourceManager.GetMainDescriptorHeap()
-                            };
-                            commandList->SetDescriptorHeaps(1, heaps);
-
-                            commandList->SetGraphicsRootSignature(
-                                m_pipelineManager.GetPostProcessRootSignature());
-                            commandList->SetPipelineState(
-                                m_pipelineManager.GetPostProcessPSO(false));
-                            commandList->RSSetViewports(1, &viewport);
-                            commandList->RSSetScissorRects(1, &scissorRect);
-                            commandList->IASetPrimitiveTopology(
-                                D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-                        });
-
-                    if (!dlssOutput.outputTexture.IsValid() || !dlssOutput.pass.IsValid())
-                    {
-                        OutputDebugStringA(
-                            "Error: Deferred DLSS RDG construction failed; rendering stopped instead of degrading.\n");
-                        Running = false;
-                        EndFrame();
-                        return;
-                    }
-
-                    deferredGraph.AddPassDependencies(
-                        dlssOutput.pass,
-                        { sceneColorProducer, motionOutput.pass });
-                    deferredFinalColor = dlssOutput.outputTexture;
-                    deferredFinalColorProducer = dlssOutput.pass;
-                    dlssEvaluatedByDeferredGraph = true;
-                }
-            }
-
-            if (m_antiAliasingMode == AntiAliasingMode::SMAA)
-            {
-                PostProcessPass::TextureOutput toneMapOutput =
-                    PostProcessPass::AddToTextureGraph(
-                        deferredGraph,
-                        &m_resourceManager,
-                        &m_pipelineManager,
-                        frameIndex,
-                        viewport,
-                        scissorRect,
-                        Width,
-                        Height,
-                        deferredFinalColor,
-                        false,
-                        false);
-                if (!toneMapOutput.texture.IsValid() ||
-                    !toneMapOutput.pass.IsValid())
-                {
-                    OutputDebugStringA(
-                        "Error: Deferred SMAA tone-map RDG construction failed; rendering stopped instead of degrading.\n");
-                    Running = false;
-                    EndFrame();
-                    return;
-                }
-                deferredGraph.AddPassDependency(
-                    toneMapOutput.pass,
-                    deferredFinalColorProducer);
-
-                RDGTextureHandle backBuffer =
-                    deferredGraph.RegisterExternalTextureOutput(
-                        m_deviceContext.GetRenderTarget(frameIndex),
-                        D3D12_RESOURCE_STATE_PRESENT,
-                        D3D12_RESOURCE_STATE_PRESENT,
-                        "BackBuffer");
-
-                SMAAPass::Input smaaInput = {};
-                smaaInput.color = toneMapOutput.texture;
-                smaaInput.output = backBuffer;
-                SMAAPass::Output smaaOutput = SMAAPass::AddToGraph(
-                    deferredGraph,
-                    &m_resourceManager,
-                    &m_pipelineManager,
                     Width,
                     Height,
-                    smaaInput);
-                if (!smaaOutput.color.IsValid() ||
-                    !smaaOutput.neighborhoodPass.IsValid())
+                    m_temporalHistoryValid,
+                    { deferredOutput.sceneColor, gbufferOutput.depth, motionOutput.motionTexture });
+
+                if (!taaOutput.historyTexture.IsValid() || !taaOutput.pass.IsValid())
                 {
                     OutputDebugStringA(
-                        "Error: Deferred SMAA RDG construction failed; rendering stopped instead of degrading.\n");
+                        "Error: Deferred TAA RDG construction failed; rendering stopped instead of degrading.\n");
                     Running = false;
                     EndFrame();
                     return;
                 }
-                deferredGraph.AddPassDependency(
-                    smaaOutput.edgePass,
-                    toneMapOutput.pass);
+
+                deferredGraph.AddPassDependencies(
+                    taaOutput.pass,
+                    { sceneColorProducer, motionOutput.pass });
+                deferredFinalColor = taaOutput.historyTexture;
+                deferredFinalColorProducer = taaOutput.pass;
+                temporalHistoryWrittenByDeferredGraph = true;
+            }
+            else if (m_antiAliasingMode == AntiAliasingMode::TSR)
+            {
+                TSRPass::Output tsrOutput = TSRPass::AddToGraph(
+                    deferredGraph,
+                    &m_deviceContext,
+                    &m_resourceManager,
+                    &m_pipelineManager,
+                    m_currJitteredInvViewProjGpu,
+                    m_prevUnjitteredViewProjGpu,
+                    m_currJitterNdcX,
+                    m_currJitterNdcY,
+                    frameIndex,
+                    SceneWidth,
+                    SceneHeight,
+                    Width,
+                    Height,
+                    m_temporalHistoryValid,
+                    { deferredOutput.sceneColor, gbufferOutput.depth, motionOutput.motionTexture });
+
+                if (!tsrOutput.historyTexture.IsValid() || !tsrOutput.pass.IsValid())
+                {
+                    OutputDebugStringA(
+                        "Error: Deferred TSR RDG construction failed; rendering stopped instead of degrading.\n");
+                    Running = false;
+                    EndFrame();
+                    return;
+                }
+
+                deferredGraph.AddPassDependencies(
+                    tsrOutput.pass,
+                    { sceneColorProducer, motionOutput.pass });
+                deferredFinalColor = tsrOutput.historyTexture;
+                deferredFinalColorProducer = tsrOutput.pass;
+                temporalHistoryWrittenByDeferredGraph = true;
             }
             else
             {
-                RDGPassHandle postProcessPass = PostProcessPass::AddFinalToGraph(
+                DLSSPass::Output dlssOutput = DLSSPass::AddToGraph(
                     deferredGraph,
-                    &m_deviceContext,
+                    &m_dlssManager,
+                    &m_resourceManager,
+                    m_currJitterPixelX,
+                    m_currJitterPixelY,
+                    (std::max)(deltaTime * 1000.0f, 0.0f),
+                    !m_dlssHistoryValid,
+                    { deferredOutput.sceneColor, gbufferOutput.depth, motionOutput.motionTexture },
+                    [this](ID3D12GraphicsCommandList* commandList)
+                    {
+                        // The post-process root signature declares
+                        // CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED, so the heap must be bound first
+                        ID3D12DescriptorHeap* heaps[] =
+                        {
+                            m_resourceManager.GetMainDescriptorHeap()
+                        };
+                        commandList->SetDescriptorHeaps(1, heaps);
+
+                        commandList->SetGraphicsRootSignature(
+                            m_pipelineManager.GetPostProcessRootSignature());
+                        commandList->SetPipelineState(
+                            m_pipelineManager.GetPostProcessPSO(false));
+                        commandList->RSSetViewports(1, &viewport);
+                        commandList->RSSetScissorRects(1, &scissorRect);
+                        commandList->IASetPrimitiveTopology(
+                            D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+                    });
+
+                if (!dlssOutput.outputTexture.IsValid() || !dlssOutput.pass.IsValid())
+                {
+                    OutputDebugStringA(
+                        "Error: Deferred DLSS RDG construction failed; rendering stopped instead of degrading.\n");
+                    Running = false;
+                    EndFrame();
+                    return;
+                }
+
+                deferredGraph.AddPassDependencies(
+                    dlssOutput.pass,
+                    { sceneColorProducer, motionOutput.pass });
+                deferredFinalColor = dlssOutput.outputTexture;
+                deferredFinalColorProducer = dlssOutput.pass;
+                dlssEvaluatedByDeferredGraph = true;
+            }
+        }
+
+        if (m_antiAliasingMode == AntiAliasingMode::SMAA)
+        {
+            PostProcessPass::TextureOutput toneMapOutput =
+                PostProcessPass::AddToTextureGraph(
+                    deferredGraph,
                     &m_resourceManager,
                     &m_pipelineManager,
                     frameIndex,
                     viewport,
                     scissorRect,
+                    Width,
+                    Height,
                     deferredFinalColor,
-                    false,
-                    enablePostProcessSharpen);
-                if (!postProcessPass.IsValid())
-                {
-                    OutputDebugStringA(
-                        "Error: Deferred post-process RDG construction failed; rendering stopped instead of degrading.\n");
-                    Running = false;
-                    EndFrame();
-                    return;
-                }
-                deferredGraph.AddPassDependencies(
-                    postProcessPass,
-                    { deferredFinalColorProducer });
+                    false);
+            if (!toneMapOutput.texture.IsValid() ||
+                !toneMapOutput.pass.IsValid())
+            {
+                OutputDebugStringA(
+                    "Error: Deferred SMAA tone-map RDG construction failed; rendering stopped instead of degrading.\n");
+                Running = false;
+                EndFrame();
+                return;
             }
+            deferredGraph.AddPassDependency(
+                toneMapOutput.pass,
+                deferredFinalColorProducer);
+
+            RDGTextureHandle backBuffer =
+                deferredGraph.RegisterExternalTextureOutput(
+                    m_deviceContext.GetRenderTarget(frameIndex),
+                    D3D12_RESOURCE_STATE_PRESENT,
+                    D3D12_RESOURCE_STATE_PRESENT,
+                    "BackBuffer");
+
+            SMAAPass::Input smaaInput = {};
+            smaaInput.color = toneMapOutput.texture;
+            smaaInput.output = backBuffer;
+            SMAAPass::Output smaaOutput = SMAAPass::AddToGraph(
+                deferredGraph,
+                &m_resourceManager,
+                &m_pipelineManager,
+                Width,
+                Height,
+                smaaInput);
+            if (!smaaOutput.color.IsValid() ||
+                !smaaOutput.neighborhoodPass.IsValid())
+            {
+                OutputDebugStringA(
+                    "Error: Deferred SMAA RDG construction failed; rendering stopped instead of degrading.\n");
+                Running = false;
+                EndFrame();
+                return;
+            }
+            deferredGraph.AddPassDependency(
+                smaaOutput.edgePass,
+                toneMapOutput.pass);
+        }
+        else
+        {
+            RDGPassHandle postProcessPass = PostProcessPass::AddFinalToGraph(
+                deferredGraph,
+                &m_deviceContext,
+                &m_resourceManager,
+                &m_pipelineManager,
+                frameIndex,
+                viewport,
+                scissorRect,
+                deferredFinalColor,
+                enablePostProcessSharpen);
+            if (!postProcessPass.IsValid())
+            {
+                OutputDebugStringA(
+                    "Error: Deferred post-process RDG construction failed; rendering stopped instead of degrading.\n");
+                Running = false;
+                EndFrame();
+                return;
+            }
+            deferredGraph.AddPassDependencies(
+                postProcessPass,
+                { deferredFinalColorProducer });
         }
 
         // Execute the entire graph after all passes have been added
@@ -2081,19 +2115,17 @@ void D3D12App::Render()
                 return;
             }
 
-            m_dlssHistoryValid = true;
+            dlssHistoryWritten = true;
         }
 
         if (hbaoTemporalHandledByDeferredGraph)
         {
-            m_resourceManager.FlipHBAOHistoryIndex();
-            m_hbaoHistoryValid = true;
+            hbaoHistoryWritten = true;
         }
 
         if (temporalHistoryWrittenByDeferredGraph)
         {
-            m_resourceManager.FlipTemporalHistoryIndex();
-            m_temporalHistoryValid = true;
+            temporalHistoryWritten = true;
         }
     }
 
@@ -2109,9 +2141,7 @@ void D3D12App::Render()
     ID3D12CommandList* lists[] = { m_deviceContext.GetCommandList() };
     // Submit recorded rendering commands to the GPU for execution
     m_deviceContext.GetCommandQueue()->ExecuteCommandLists(1, lists);
-    if (ssgiHistoryWritten)
-        m_ssgiHistory.Commit(m_currJitteredViewProjGpu, m_currJitteredInvViewProjGpu,
-            camera.Position, camera.Front, camera.Zoom);
+    CommitTemporalHistories(temporalHistoryWritten, hbaoHistoryWritten, dlssHistoryWritten, ssgiHistoryWritten);
     // Insert a signal into the queue to track GPU progress
     HRESULT hr = m_deviceContext.GetCommandQueue()->Signal(
         m_deviceContext.GetFence(frameIndex),

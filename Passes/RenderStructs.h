@@ -3,6 +3,38 @@
 
 #include "stdafx.h"
 
+struct RenderFormats
+{
+    static constexpr DXGI_FORMAT SceneColor = DXGI_FORMAT_R16G16B16A16_FLOAT;
+    static constexpr DXGI_FORMAT DepthResource = DXGI_FORMAT_R32_TYPELESS;
+    static constexpr DXGI_FORMAT DepthDSV = DXGI_FORMAT_D32_FLOAT;
+    static constexpr DXGI_FORMAT DepthSRV = DXGI_FORMAT_R32_FLOAT;
+    static constexpr DXGI_FORMAT GBufferAlbedo = DXGI_FORMAT_R8G8B8A8_UNORM;
+    static constexpr DXGI_FORMAT GBufferNormal = DXGI_FORMAT_R16G16B16A16_FLOAT;
+    static constexpr DXGI_FORMAT GBufferORM = DXGI_FORMAT_R8G8B8A8_UNORM;
+    static constexpr DXGI_FORMAT GBufferEmissive = DXGI_FORMAT_R16G16B16A16_FLOAT;
+    static constexpr DXGI_FORMAT ScalarSignal = DXGI_FORMAT_R16_FLOAT;
+    static constexpr DXGI_FORMAT MotionVector = DXGI_FORMAT_R16G16_FLOAT;
+    static constexpr DXGI_FORMAT PostProcess = DXGI_FORMAT_R8G8B8A8_UNORM;
+    static constexpr DXGI_FORMAT SMAAEdges = DXGI_FORMAT_R8G8_UNORM;
+    static constexpr DXGI_FORMAT SMAAWeights = DXGI_FORMAT_R8G8B8A8_UNORM;
+    static constexpr DXGI_FORMAT SMAAOutput = PostProcess;
+    static constexpr DXGI_FORMAT IndirectLighting = DXGI_FORMAT_R16G16B16A16_FLOAT;
+    static constexpr DXGI_FORMAT LuminanceMoments = DXGI_FORMAT_R16G16B16A16_FLOAT;
+    static constexpr DXGI_FORMAT DepthBounds = DXGI_FORMAT_R32G32_FLOAT;
+};
+
+// CPU history metadata. Matrices correspond to the last submitted SSGI history.
+struct SSGIHistoryState
+{
+    bool valid = false;
+    DirectX::XMFLOAT4X4 previousViewProj = {};
+    DirectX::XMFLOAT4X4 previousInvViewProj = {};
+    DirectX::XMFLOAT3 previousPosition = {};
+    DirectX::XMFLOAT3 previousForward = {};
+    float previousFov = 0;
+};
+
 constexpr UINT NUM_CASCADES = 4;
 
 constexpr UINT64 AlignConstantBufferSize(UINT64 byteSize)
@@ -80,12 +112,13 @@ struct alignas(D3D12_CONSTANT_BUFFER_DATA_PLACEMENT_ALIGNMENT) HBAOConstants
 
     float radius;
     float bias;
-    float power;
+    float intensity;
     float resolutionX;
 
     float resolutionY;
     UINT temporalFrameIndex;
-    UINT padTo256[10];
+    UINT quality;
+    UINT padTo256[9];
 };
 
 struct alignas(D3D12_CONSTANT_BUFFER_DATA_PLACEMENT_ALIGNMENT) MotionVectorConstants

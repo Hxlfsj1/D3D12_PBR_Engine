@@ -19,8 +19,6 @@
 #include "ResourceManager.h"
 #include "InputManager.h"
 #include "PipelineManager.h"
-#include "SSGIPipeline.h"
-#include "SSGIHistory.h"
 #include "RenderStructs.h"
 #include "EditorSelectionRenderer.h"
 #include "EditorGizmo.h"
@@ -50,6 +48,9 @@ private:
 
     // Internal routines invoked per frame during runtime
     void Update();
+    void InvalidateTemporalHistories();
+    void UpdateTemporalHistoryValidity();
+    void CommitTemporalHistories(bool temporalWritten, bool hbaoWritten, bool dlssWritten, bool ssgiWritten);
 
     // Render passes
     bool BeginFrame();
@@ -99,8 +100,7 @@ private:
     ResourceManager m_resourceManager;
     InputManager m_inputManager;
     PipelineManager m_pipelineManager;
-    SSGIPipeline m_ssgiPipeline;
-    SSGIHistory m_ssgiHistory;
+    SSGIHistoryState m_ssgiHistory;
     SettingsManager m_settingsManager;
     EditorSelection m_editorSelection;
     EditorHistory m_editorHistory;

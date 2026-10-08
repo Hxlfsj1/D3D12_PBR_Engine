@@ -77,6 +77,52 @@ odd image sizes remain aligned. Different ray mips use nonuniform descriptor ind
 Each bindless pass binds the intended descriptor heap before its root signature and
 arguments. SSGI history remains independent of HBAO and anti-aliasing.
 
+## C++ organization
+
+`Passes/SSGIPass.h` owns the GPU constant layouts and one `AddToGraph` entry point.
+Algorithm parameters are assigned at their call sites, not duplicated as layout
+member defaults. Shared depth/normal/ORM/albedo views are created once per graph;
+each stage still declares its own RDG read/write dependencies. All transient UAV
+textures use `CreateUAVTexture`; the dedicated depth SRV remains R32_FLOAT.
+
+`Graphics/PipelineManager.h` owns SSGI PSOs and its root signature, using the existing
+`ConstantBufferBinding`. Initialization remains conditional on deferred SSGI being
+enabled. `RenderFormats` in `Passes/RenderStructs.h` is the shared format contract;
+`PipelineManager::Formats` aliases it for existing consumers.
+
+`ResourceManager` owns SSGI history textures and their ping-pong index, like HBAO/TAA.
+`SSGIHistoryState` contains only CPU metadata. Application history invalidation and
+post-submission commit use common entry points. Histories advance only if written
+by the submitted frame; failed/unsubmitted frames do not advance HBAO/TAA either.
+SSGI retains its own jittered matrices, camera-cut thresholds and independent
+validity. Its matrices must not be replaced by the unjittered motion-vector history.
+
+## Shader organization
+
+The Shaders directory contains three SSGI shader source files:
+- `Shaders_For_SSGI.hlsl`: Pyramid, Trace and Composite.
+- `Shaders_For_SSGI_Spatial.hlsl`: Reconstruct and Atrous.
+- `Shaders_For_SSGI_Temporal.hlsl`: Temporal and HistoryClamp.
+
+Compilation selects a stage using `SSGI_PASS_<STAGE>` and its explicit entry point
+(`CSMain_<Stage>`, or `VSMain`/`PSMain` for Composite). Atrous retains the
+`SSGI_ATROUS_FIRST` variant. Stage-specific declarations are isolated at compile
+time; GPU passes, dispatches and constant layouts are unchanged.
+
+`SSGICommon.hlsli` is the fourth SSGI-specific file and contains view-normal decoding,
+constant-depth pixel footprint, symmetric plane distance and the shared
+Reconstruct/Composite bilateral weighting formula. Position reconstruction lives in
+`GeometryCommon.hlsli`, shared with HBAO, Deferred and temporal reconstruction.
+The supplied inverse matrix determines whether positions are in view or world space.
+`ColorCommon.hlsli` supplies RGB/YCoCg conversion for RELAX and TAA/TSR; it introduces
+no samplers or history state. Callers retain their homogeneous-w validity checks.
+Each pass retains its own tolerance, rejection thresholds and spatial kernel;
+NRD A-trous weights and temporal accumulation rules remain separate.
+Normal decoding uses the shared `MaterialCommon.hlsli` contract, as HBAO does.
+Each stage has a named `SSGI<Stage>Constants` buffer, with field order/layout matching
+`Passes/SSGIPass.h`. The two production NRD helper includes remain separately
+under `ThirdParty/NVIDIA/NRD`, with their licenses and source references.
+
 ## Limits
 
 Single-layer screen information cannot represent off-screen or hidden surfaces. Small
@@ -101,16 +147,15 @@ normalization, odd sizes, black hits, finite radii, and the emission cap/visible
 separation. Debug and Release builds are checked during cleanup.
 
 The final cleanup also removes the unused `tmp/nrd-reference` comparison sources.
-Production NRD/STBN helpers, assets and licenses remain, along with previous reports.
+Production NRD/STBN helpers, assets and licenses remain.
 The T-key spatial-filter comparison switch is gone; both A-trous passes are enabled
 whenever the configured SSGI pipeline runs. No test-only shader variants remain.
 
 ## Completed static-camera investigation
 
-The temporary A/B/C capture has been removed from the running pipeline. Existing
-`Logs/SSGI-Temporal-*` reports are retained as evidence for the old algorithm;
-they do not measure the new RELAX-based path. In the completed 256-frame quality-1
-capture, disabling the old brightness clamp and its history reduction lowered
+The temporary A/B/C capture and its CSV/text reports have been removed. This
+investigation used the old algorithm and does not measure the new RELAX-based path.
+In the completed 256-frame quality-1 capture, disabling the old brightness clamp and its history reduction lowered
 fixed-screen frame-difference RMS by about 86%, without darkening the output.
 This motivated the fast/slow history replacement. No automatic probe readback or
 extra comparison histories run in the new pipeline.

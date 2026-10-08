@@ -34,7 +34,8 @@ public:
         D3D12_GPU_VIRTUAL_ADDRESS constantsGpuAddress,
         D3D12_CPU_DESCRIPTOR_HANDLE hbaoRtv,
         UINT depthSrvIdx,
-        UINT gbufferNormalSrvIdx)
+        UINT gbufferNormalSrvIdx,
+        UINT blueNoiseSrvIdx)
     {
         cmdList->OMSetRenderTargets(1, &hbaoRtv, FALSE, nullptr);
         const float clearAO[] = { 1.0f, 1.0f, 1.0f, 1.0f };
@@ -53,7 +54,7 @@ public:
 
         cmdList->SetGraphicsRootConstantBufferView(PipelineManager::HBAOBinding::Constants, constantsGpuAddress);
 
-        UINT bindlessIndices1[PipelineManager::HBAOBinding::TextureIndexCount] = { depthSrvIdx, gbufferNormalSrvIdx, 0, 0 };
+        UINT bindlessIndices1[PipelineManager::HBAOBinding::TextureIndexCount] = { depthSrvIdx, gbufferNormalSrvIdx, blueNoiseSrvIdx, 0 };
         cmdList->SetGraphicsRoot32BitConstants(PipelineManager::HBAOBinding::TextureIndices, PipelineManager::HBAOBinding::TextureIndexCount, bindlessIndices1, 0);
 
         cmdList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
@@ -107,6 +108,7 @@ public:
         int height,
         int frameIndex,
         UINT temporalFrameIndex,
+        const HBAOConfig& config,
         const Input& input)
     {
         if (!input.depth.IsValid() || !input.gbufferNormal.IsValid())
@@ -157,11 +159,25 @@ public:
         RDGTextureRTVHandle hbaoRawRtv = graph.CreateTextureRTVView(hbaoRaw);
         RDGTextureRTVHandle hbaoBlurredRtv = graph.CreateTextureRTVView(hbaoBlurred);
 
+        RDGTextureHandle blueNoiseTexture = graph.RegisterExternalTexture(
+            resourceManager->GetBlueNoiseTexture(),
+            D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
+            D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
+            "BlueNoise.STBN.Vector2");
+        D3D12_SHADER_RESOURCE_VIEW_DESC blueNoiseDesc = {};
+        blueNoiseDesc.Format = DXGI_FORMAT_R8G8_UINT;
+        blueNoiseDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2DARRAY;
+        blueNoiseDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+        blueNoiseDesc.Texture2DArray.MipLevels = 1;
+        blueNoiseDesc.Texture2DArray.ArraySize = STBN_FRAMES;
+        RDGTextureSRVHandle blueNoiseSrv = graph.CreateTextureSRVView(blueNoiseTexture, &blueNoiseDesc);
+
         if (!depthSrv.IsValid() ||
             !gbufferNormalSrv.IsValid() ||
             !hbaoRawSrv.IsValid() ||
             !hbaoRawRtv.IsValid() ||
-            !hbaoBlurredRtv.IsValid())
+            !hbaoBlurredRtv.IsValid() ||
+            !blueNoiseSrv.IsValid())
         {
             ErrorLog::Write("HBAOPass: failed to create one or more AO resource views.");
             return {};
@@ -171,12 +187,13 @@ public:
         hbaoCb.projMat = projMat;
         hbaoCb.invProjMat = invProjMat;
         hbaoCb.viewMat = viewMat;
-        hbaoCb.radius = 1.0f;
+        hbaoCb.radius = config.radius;
         hbaoCb.bias = 0.1f;
-        hbaoCb.power = 2.0f;
+        hbaoCb.intensity = config.intensity;
         hbaoCb.resolutionX = (float)width;
         hbaoCb.resolutionY = (float)height;
         hbaoCb.temporalFrameIndex = temporalFrameIndex;
+        hbaoCb.quality = static_cast<UINT>(config.quality);
 
         const auto allocation = resourceManager->AllocatePassConstants(frameIndex, sizeof(HBAOConstants));
         if (!allocation) return {};
@@ -186,6 +203,7 @@ public:
         RDGPassParameters rawParams;
         rawParams.ReadSRV(depthSrv);
         rawParams.ReadSRV(gbufferNormalSrv);
+        rawParams.ReadSRV(blueNoiseSrv);
         rawParams.WriteRTV(hbaoRawRtv);
 
         RDGPassHandle rawPass = graph.AddPass(
@@ -203,7 +221,8 @@ public:
                     constantsGpuAddress,
                     hbaoRawRtv.cpuHandle,
                     depthSrv.descriptorIndex,
-                    gbufferNormalSrv.descriptorIndex);
+                    gbufferNormalSrv.descriptorIndex,
+                    blueNoiseSrv.descriptorIndex);
             });
 
         RDGPassParameters blurParams;

@@ -1,1 +1,0 @@
-epoch,frame,mode,tile,valid,accepted,no_history,outside,geometry_rejected,clipped,history_le4,history_ge15_5,mean_history_length,raw_luma,spatial_luma,history_luma,output_luma,clip_down_luma,accepted_taps,normal_rejected_taps,plane_rejected_taps,distance_rejected_taps,clip_neighbors,paired,raw_delta_rms,spatial_delta_rms,output_delta_rms,mean_receiver_ray_depth

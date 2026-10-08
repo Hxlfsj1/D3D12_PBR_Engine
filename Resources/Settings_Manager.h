@@ -77,11 +77,18 @@ enum class AntiAliasingMode
 
 struct PipelineConfig
 {
-    float environmentIntensity = 1.0f;
     bool useDeferred = true;
     bool useZPrepass = false;
     AntiAliasingMode antiAliasing = AntiAliasingMode::None;
     DLSSQualityMode dlssQuality = DLSSQualityMode::Quality;
+};
+
+struct HBAOConfig
+{
+    bool enabled = true;
+    float intensity = 2.0f;
+    float radius = 1.0f;
+    int quality = 1;
 };
 
 struct SSGIConfig
@@ -94,6 +101,7 @@ struct SSGIConfig
 
 struct LightingConfig
 {
+    float environmentIntensity = 1.0f;
     DirectX::XMFLOAT3 lightDir = { -0.5f, -1.0f, 0.5f };
     DirectX::XMFLOAT3 lightColor = { 5.0f, 5.0f, 5.0f };
     float sunAngularRadiusDegrees = 0.266f;
@@ -106,6 +114,7 @@ public:
     PipelineConfig pipeline;
     LightingConfig lighting;
     SSGIConfig ssgi;
+    HBAOConfig hbao;
 
     inline static std::string s_skyboxPath = "HDRs/citrus_orchard_road_puresky_4k.hdr";
 
@@ -276,36 +285,38 @@ private:
 
             try
             {
-                pipeline.useDeferred = j.value("use_deferred", pipeline.useDeferred);
-                pipeline.useZPrepass = j.value("use_z_prepass", pipeline.useZPrepass);
+                const auto rendering = j.value("rendering", nlohmann::json::object());
+                const auto reconstruction = j.value("DLSS SR", nlohmann::json::object());
+                pipeline.useDeferred = rendering.value("use_deferred", pipeline.useDeferred);
+                pipeline.useZPrepass = rendering.value("use_z_prepass", pipeline.useZPrepass);
 
-                const std::string antiAliasing = j.value("anti_aliasing", std::string("None"));
-            if (antiAliasing == "TAA")
-            {
-                pipeline.antiAliasing = AntiAliasingMode::TAA;
-            }
-            else if (antiAliasing == "TSR")
-            {
-                pipeline.antiAliasing = AntiAliasingMode::TSR;
-            }
-            else if (antiAliasing == "SMAA")
-            {
-                pipeline.antiAliasing = AntiAliasingMode::SMAA;
-            }
-            else if (antiAliasing == "DLSS")
-            {
-                pipeline.antiAliasing = AntiAliasingMode::DLSS;
-            }
-            else
-            {
-                pipeline.antiAliasing = AntiAliasingMode::None;
-                if (antiAliasing != "None")
+                const std::string antiAliasing = reconstruction.value("anti_aliasing", std::string("None"));
+                if (antiAliasing == "TAA")
                 {
-                    OutputDebugStringA(("Warning: Unknown anti_aliasing value '" + antiAliasing + "'; using None.\n").c_str());
+                    pipeline.antiAliasing = AntiAliasingMode::TAA;
                 }
-            }
+                else if (antiAliasing == "TSR")
+                {
+                    pipeline.antiAliasing = AntiAliasingMode::TSR;
+                }
+                else if (antiAliasing == "SMAA")
+                {
+                    pipeline.antiAliasing = AntiAliasingMode::SMAA;
+                }
+                else if (antiAliasing == "DLSS")
+                {
+                    pipeline.antiAliasing = AntiAliasingMode::DLSS;
+                }
+                else
+                {
+                    pipeline.antiAliasing = AntiAliasingMode::None;
+                    if (antiAliasing != "None")
+                    {
+                        OutputDebugStringA(("Warning: Unknown anti_aliasing value '" + antiAliasing + "'; using None.\n").c_str());
+                    }
+                }
 
-                const std::string dlssQuality = j.value("dlss_quality", std::string("Quality"));
+                const std::string dlssQuality = reconstruction.value("dlss_quality", std::string("Quality"));
                 if (!TryParseDLSSQualityMode(dlssQuality, &pipeline.dlssQuality))
                 {
                     pipeline.dlssQuality = DLSSQualityMode::Quality;
@@ -313,11 +324,22 @@ private:
                         ("Warning: Unknown dlss_quality value '" + dlssQuality + "'; using Quality.\n").c_str());
                 }
 
-                if (j.contains("environment"))
+                if (j.contains("hbao"))
                 {
-                    pipeline.environmentIntensity = j.at("environment").value("intensity", 1.0f);
-                    if (!std::isfinite(pipeline.environmentIntensity) || pipeline.environmentIntensity < 0)
-                        throw std::runtime_error("Environment intensity must be finite and nonnegative.");
+                    const auto& config = j.at("hbao");
+                    hbao.enabled = config.value("enabled", hbao.enabled);
+                    hbao.intensity = config.value("intensity", hbao.intensity);
+                    if (config.contains("quality") &&
+                        (!config.at("quality").is_number_integer() ||
+                            config.at("quality") < 1 || config.at("quality") > 4))
+                        throw std::runtime_error("HBAO quality must be an integer from 1 to 4.");
+                    hbao.quality = config.value("quality", hbao.quality);
+                    hbao.radius = config.value("radius", hbao.radius);
+                    if (!std::isfinite(hbao.intensity) || hbao.intensity < 0 ||
+                        !std::isfinite(hbao.radius) || hbao.radius <= 0)
+                    {
+                        throw std::runtime_error("HBAO requires finite intensity >= 0 and finite radius > 0.");
+                    }
                 }
 
                 if (j.contains("ssgi"))
@@ -371,19 +393,27 @@ private:
 
             try
             {
-                if (j.contains("light_dir"))
+                if (j.contains("environment"))
                 {
-                    lighting.lightDir = j["light_dir"].get<DirectX::XMFLOAT3>();
+                    lighting.environmentIntensity = j.at("environment").value("intensity", 1.0f);
+                    if (!std::isfinite(lighting.environmentIntensity) || lighting.environmentIntensity < 0)
+                        throw std::runtime_error("Environment intensity must be finite and nonnegative.");
                 }
-                if (j.contains("light_color"))
+
+                const auto directLight = j.value("direct light", nlohmann::json::object());
+                if (directLight.contains("light_dir"))
                 {
-                    lighting.lightColor = j["light_color"].get<DirectX::XMFLOAT3>();
+                    lighting.lightDir = directLight["light_dir"].get<DirectX::XMFLOAT3>();
                 }
-                lighting.sunAngularRadiusDegrees = j.value(
+                if (directLight.contains("light_color"))
+                {
+                    lighting.lightColor = directLight["light_color"].get<DirectX::XMFLOAT3>();
+                }
+                lighting.sunAngularRadiusDegrees = directLight.value(
                     "sun_angular_radius_degrees",
                     lighting.sunAngularRadiusDegrees);
             }
-            catch (const nlohmann::json::exception& e)
+            catch (const std::exception& e)
             {
                 ErrorLog::Write(
                     "Settings: lighting JSON contains an invalid field. File: " + filepath +
