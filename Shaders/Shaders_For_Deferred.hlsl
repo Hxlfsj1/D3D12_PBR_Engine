@@ -58,6 +58,7 @@ VS_OUTPUT VSMain(uint vertexID : SV_VertexID)
 }
 
 #include "LightingCommon.hlsli"
+#include "GISourceCommon.hlsli"
 
 #ifndef OUTPUT_BOUNCE_SOURCE
 #define OUTPUT_BOUNCE_SOURCE 0
@@ -166,12 +167,10 @@ PS_OUTPUT PSMain(VS_OUTPUT input)
 
     output.sceneColor = float4(color, 1.0f);
 #if OUTPUT_BOUNCE_SOURCE
-    // Current outgoing diffuse radiance only: no environment, specular, AO or GI feedback.
-    // Limit only GI-source emission. Preserve visible emission and RGB ratios.
-    const float MaxSSGIEmissive = 2.0f;
-    float peakEmission = max(emissiveColor.r, max(emissiveColor.g, emissiveColor.b));
-    float3 giEmissive = emissiveColor * (MaxSSGIEmissive / max(MaxSSGIEmissive, peakEmission));
-    output.bounceSource = float4(directDiffuse + giEmissive, 1.0f);
+    // Match the camera-independent world-hit source contract. SceneColor above
+    // retains its existing view-dependent BRDF and uncapped visible emission.
+    output.bounceSource = float4(GIComputeSourceRadiance(albedo, metallic,
+        radiance, NdotL, shadow, emissiveColor, false), 1.0f);
 #endif
     return output;
 }

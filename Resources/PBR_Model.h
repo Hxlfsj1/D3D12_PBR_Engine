@@ -572,6 +572,12 @@ private:
         {
             ErrorLog::HRESULT("Model: failed to decode an embedded texture.", hr);
         }
+        else
+        {
+            // World GI queries sample the same material textures from compute.
+            upload.Transition(outTex.Resource.Get(), D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+                D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+        }
     }
 
     std::vector<unsigned char> ReadFileToBuffer(const std::string& path)

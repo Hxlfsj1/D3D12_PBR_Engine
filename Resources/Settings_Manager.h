@@ -8,6 +8,7 @@
 #include <string>
 #include <fstream>
 #include <cmath>
+#include <cstdint>
 #include <stdexcept>
 #include <DirectXMath.h>
 #include "json.hpp"
@@ -94,9 +95,37 @@ struct HBAOConfig
 struct SSGIConfig
 {
     bool enabled = false;
+    bool giOnly = false; // Runtime presentation; Debug > Pass controls the editor view.
     float intensity = 1.0f;
     int quality = 1;
     float radius = 2.0f;
+    int traceDownsampleFactor = 2;
+    static constexpr bool IsValidTraceDownsampleFactor(int factor)
+    {
+        return factor == 2 || factor == 4 || factor == 8;
+    }
+};
+
+struct VXGIConfig
+{
+    bool enabled = false;
+    float voxelSize = 0.5f;
+    // 0=off, 1..3=allocation, 4..7=SDF, 8..12=world surface, 13..15=GPU probes.
+    int debugView = 0;
+    float sdfCellSize = 1.0f;
+    int sdfSliceAxis = 2;
+    float sdfSlicePosition = 0.0f;
+    float surfaceMaterialMipLevel = 0.0f;
+    float surfaceRayMinDistance = 0.0001f;
+    float surfaceMaxRayDistance = 1000.0f;
+    // Extra fixed-size probe layers around surface cells; geometry stays unchanged.
+    int probePaddingLayers = 1;
+    int probeProbesPerFrame = 256;
+    int probeClassifyRays = 64;
+    int probeRaysPerUpdate = 64;
+    int probeMaxHistoryUpdates = 32;
+    float probeBackfaceThreshold = 0.25f;
+    float probeFilterNeighborWeight = 0.25f;
 };
 
 struct LightingConfig
@@ -115,6 +144,7 @@ public:
     LightingConfig lighting;
     SSGIConfig ssgi;
     HBAOConfig hbao;
+    VXGIConfig vxgi;
 
     inline static std::string s_skyboxPath = "HDRs/citrus_orchard_road_puresky_4k.hdr";
 
@@ -351,10 +381,89 @@ private:
                         throw std::runtime_error("SSGI quality must be an integer from 1 to 4.");
                     ssgi.quality = config.value("quality", ssgi.quality);
                     ssgi.radius = config.value("radius", ssgi.radius);
+                    if (config.contains("trace_downsample_factor"))
+                    {
+                        const auto& factor = config.at("trace_downsample_factor");
+                        if (!factor.is_number_integer() || (factor != 2 && factor != 4 && factor != 8))
+                            throw std::runtime_error("SSGI trace_downsample_factor must be the integer 2, 4 or 8.");
+                    }
+                    ssgi.traceDownsampleFactor = config.value("trace_downsample_factor", ssgi.traceDownsampleFactor);
                     if (!(std::isfinite(ssgi.radius) && ssgi.radius > 0 &&
                         std::isfinite(ssgi.intensity) && ssgi.intensity >= 0 &&
-                        ssgi.quality >= 1 && ssgi.quality <= 4))
-                        throw std::runtime_error("SSGI requires finite radius > 0, finite intensity >= 0 and quality from 1 to 4.");
+                        ssgi.quality >= 1 && ssgi.quality <= 4 &&
+                        SSGIConfig::IsValidTraceDownsampleFactor(ssgi.traceDownsampleFactor)))
+                        throw std::runtime_error("SSGI requires finite radius > 0, finite intensity >= 0, quality from 1 to 4 and trace_downsample_factor 2, 4 or 8.");
+                }
+
+                if (j.contains("vxgi"))
+                {
+                    const auto& config = j.at("vxgi");
+                    const auto readInteger = [](const nlohmann::json& object, const char* field, int fallback,
+                        int minimum, int maximum) {
+                        if (!object.contains(field)) return fallback;
+                        const auto& value = object.at(field);
+                        const std::string error = std::string("VXGI ") + field + " must be an integer from " +
+                            std::to_string(minimum) + " to " + std::to_string(maximum) + ".";
+                        if (!value.is_number_integer()) throw std::runtime_error(error);
+                        if (value.is_number_unsigned())
+                        {
+                            const auto integer = value.get<uint64_t>();
+                            if (integer < static_cast<uint64_t>(minimum) || integer > static_cast<uint64_t>(maximum))
+                                throw std::runtime_error(error);
+                            return static_cast<int>(integer);
+                        }
+                        const auto integer = value.get<int64_t>();
+                        if (integer < minimum || integer > maximum) throw std::runtime_error(error);
+                        return static_cast<int>(integer);
+                    };
+                    vxgi.enabled = config.value("enabled", vxgi.enabled);
+                    vxgi.voxelSize = config.value("voxel_size", vxgi.voxelSize);
+                    vxgi.debugView = readInteger(config, "debug_view", vxgi.debugView, 0, 20);
+                    if (config.contains("probes"))
+                    {
+                        const auto& probes = config.at("probes");
+                        if (!probes.is_object()) throw std::runtime_error("VXGI probes must be an object.");
+                        vxgi.probePaddingLayers = readInteger(probes, "padding_layers", vxgi.probePaddingLayers, 0, 2);
+                        vxgi.probeProbesPerFrame = readInteger(probes, "probes_per_frame", vxgi.probeProbesPerFrame, 1, 4096);
+                        vxgi.probeClassifyRays = readInteger(probes, "classify_rays", vxgi.probeClassifyRays, 8, 256);
+                        vxgi.probeRaysPerUpdate = readInteger(probes, "rays_per_update", vxgi.probeRaysPerUpdate, 8, 256);
+                        vxgi.probeMaxHistoryUpdates = readInteger(probes, "max_history_updates", vxgi.probeMaxHistoryUpdates, 1, 256);
+                        if (probes.contains("backface_threshold") && !probes.at("backface_threshold").is_number())
+                            throw std::runtime_error("VXGI probes.backface_threshold must be a finite number from 0 to 1.");
+                        vxgi.probeBackfaceThreshold = probes.value("backface_threshold", vxgi.probeBackfaceThreshold);
+                        if (probes.contains("filter_neighbor_weight") && !probes.at("filter_neighbor_weight").is_number())
+                            throw std::runtime_error("VXGI probes.filter_neighbor_weight must be a finite number from 0 to 1.");
+                        vxgi.probeFilterNeighborWeight = probes.value("filter_neighbor_weight", vxgi.probeFilterNeighborWeight);
+                    }
+                    if (config.contains("surface"))
+                    {
+                        const auto& surface = config.at("surface");
+                        vxgi.surfaceMaterialMipLevel = surface.value("material_mip_level", vxgi.surfaceMaterialMipLevel);
+                        vxgi.surfaceRayMinDistance = surface.value("ray_min_distance", vxgi.surfaceRayMinDistance);
+                        vxgi.surfaceMaxRayDistance = surface.value("max_ray_distance", vxgi.surfaceMaxRayDistance);
+                    }
+                    if (config.contains("sdf"))
+                    {
+                        const auto& sdf = config.at("sdf");
+                        vxgi.sdfCellSize = sdf.value("cell_size", vxgi.sdfCellSize);
+                        vxgi.sdfSliceAxis = readInteger(sdf, "slice_axis", vxgi.sdfSliceAxis, 0, 2);
+                        vxgi.sdfSlicePosition = sdf.value("slice_position", vxgi.sdfSlicePosition);
+                    }
+                    if (!std::isfinite(vxgi.voxelSize) || vxgi.voxelSize <= 0 ||
+                        vxgi.debugView < 0 || vxgi.debugView > 20 ||
+                        vxgi.probePaddingLayers < 0 || vxgi.probePaddingLayers > 2 ||
+                        vxgi.probeProbesPerFrame < 1 || vxgi.probeProbesPerFrame > 4096 ||
+                        vxgi.probeMaxHistoryUpdates < 1 || vxgi.probeMaxHistoryUpdates > 256 ||
+                        vxgi.probeClassifyRays < 8 || vxgi.probeClassifyRays > 256 || vxgi.probeClassifyRays % 2 != 0 ||
+                        vxgi.probeRaysPerUpdate < 8 || vxgi.probeRaysPerUpdate > 256 || vxgi.probeRaysPerUpdate % 2 != 0 ||
+                        !std::isfinite(vxgi.probeBackfaceThreshold) || vxgi.probeBackfaceThreshold < 0 || vxgi.probeBackfaceThreshold > 1 ||
+                        !std::isfinite(vxgi.probeFilterNeighborWeight) || vxgi.probeFilterNeighborWeight < 0 || vxgi.probeFilterNeighborWeight > 1 ||
+                        !std::isfinite(vxgi.surfaceMaterialMipLevel) || vxgi.surfaceMaterialMipLevel < 0 ||
+                        !std::isfinite(vxgi.surfaceRayMinDistance) || vxgi.surfaceRayMinDistance <= 0 ||
+                        !std::isfinite(vxgi.surfaceMaxRayDistance) || vxgi.surfaceMaxRayDistance <= vxgi.surfaceRayMinDistance ||
+                        !std::isfinite(vxgi.sdfCellSize) || vxgi.sdfCellSize <= 0 ||
+                        vxgi.sdfSliceAxis < 0 || vxgi.sdfSliceAxis > 2 || !std::isfinite(vxgi.sdfSlicePosition))
+                        throw std::runtime_error("VXGI requires positive voxel/SDF sizes, probes.padding_layers 0..2, probes_per_frame 1..4096, max_history_updates 1..256, debug_view 0..20, even probe ray counts 8..256, finite backface_threshold/filter_neighbor_weight 0..1, valid slices, nonnegative surface mip, and max_ray_distance > ray_min_distance > 0 (all finite).");
                 }
             }
             catch (const std::exception& e)

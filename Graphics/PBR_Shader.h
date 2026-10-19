@@ -20,7 +20,8 @@ public:
         std::wstring fileName,
         std::wstring entryPoint,
         std::wstring target,
-        const std::vector<std::wstring>& defines = {})
+        const std::vector<std::wstring>& defines = {},
+        bool optimizeInDebug = false)
     {
         Microsoft::WRL::ComPtr<IDxcUtils> pUtils;
         HRESULT hr = DxcCreateInstance(CLSID_DxcUtils, IID_PPV_ARGS(&pUtils));
@@ -78,7 +79,11 @@ public:
 
 #if defined(DEBUG) || defined(_DEBUG)
         arguments.push_back(DXC_ARG_DEBUG);
-        arguments.push_back(DXC_ARG_SKIP_OPTIMIZATIONS);
+        // GI traversal needs optimization even when the host application is
+        // Debug; keep shader symbols for diagnostics without running it at -Od.
+        arguments.push_back(optimizeInDebug ? L"-O3" : DXC_ARG_SKIP_OPTIMIZATIONS);
+#else
+        (void)optimizeInDebug;
 #endif
 
         // 4. 执行真正的 DXC 编译

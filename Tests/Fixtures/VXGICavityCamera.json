@@ -1,0 +1,40 @@
+{
+  "name": "car-cavity-block-gi",
+  "scene": "Settings/Scene.json",
+  "eye": [
+    -0.30000001192092896,
+    1.0499999523162842,
+    -1.100000023841858
+  ],
+  "target": [
+    0.31735759973526,
+    -0.7060145139694214,
+    -1.4086787700653076
+  ],
+  "up": [
+    0,
+    1,
+    0
+  ],
+  "vertical_fov_degrees": 45,
+  "near_plane": 0.1,
+  "far_plane": 1000,
+  "capture_resolution": [
+    640,
+    400
+  ],
+  "ssgi_gi_only": true,
+  "world_mode": 2,
+  "probe_voxel_size": 0.5,
+  "probe_padding_layers": 1,
+  "ssgi_radius": 0.5,
+  "purpose": "User-confirmed fixed view of straight-edged block GI on the car cavity floor; preserve this camera for subsequent diagnosis and before/after comparisons.",
+  "reference_report": "tmp/VXGIStage75-cavity-yaw90-down50-640x400-report.json",
+  "reference_image": "tmp/vxgi-stage75-performance/cavity-yaw90-down50-640x400-camera0_mode2.png",
+  "replay_arguments": [
+    "-CameraEye",
+    "-0.3,1.05,-1.1",
+    "-CameraTarget",
+    "0.31735759,-0.70601452,-1.40867879"
+  ]
+}

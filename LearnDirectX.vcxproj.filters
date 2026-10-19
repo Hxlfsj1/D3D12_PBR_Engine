@@ -1,4 +1,4 @@
-﻿<?xml version="1.0" encoding="utf-8"?>
+<?xml version="1.0" encoding="utf-8"?>
 <Project ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
   <ItemGroup>
     <ClInclude Include="Editor\EditorSelection.h"><Filter>Editor</Filter></ClInclude>
@@ -8,7 +8,54 @@
     <ClInclude Include="Editor\EditorTheme.h"><Filter>Editor</Filter></ClInclude>
     <ClInclude Include="Editor\EditorUICenter.h"><Filter>Editor</Filter></ClInclude>
     <ClInclude Include="Editor\EditorSelectionRenderer.h"><Filter>Editor</Filter></ClInclude>
+    <ClInclude Include="Editor\VXGIDebugRenderer.h"><Filter>Editor</Filter></ClInclude>
+    <ClInclude Include="Resources\VXGIWorld.h"><Filter>Resources</Filter></ClInclude>
+    <ClInclude Include="Resources\VXGISDF.h"><Filter>Resources</Filter></ClInclude>
+    <ClInclude Include="Resources\VXGIMeshSDF.h"><Filter>Resources</Filter></ClInclude>
+    <ClInclude Include="Resources\VXGIMeshSDFScene.h"><Filter>Resources</Filter></ClInclude>
+    <ClInclude Include="Resources\VXGIInstanceBVH.h"><Filter>Resources</Filter></ClInclude>
+    <ClInclude Include="Resources\VXGISDFThreshold.h"><Filter>Resources</Filter></ClInclude>
+    <ClInclude Include="Resources\VXGIMeshSDFThreshold.h"><Filter>Resources</Filter></ClInclude>
+    <ClInclude Include="Resources\VXGIMeshSDFGPUData.h"><Filter>Resources</Filter></ClInclude>
+    <ClInclude Include="Resources\VXGITraceAcceleration.h"><Filter>Resources</Filter></ClInclude>
+    <ClInclude Include="Resources\VXGISurface.h"><Filter>Resources</Filter></ClInclude>
+    <ClInclude Include="Editor\VXGISDFDebugRenderer.h"><Filter>Editor</Filter></ClInclude>
     <None Include="Shaders\EditorSelection.hlsl"><Filter>Shaders</Filter></None>
+    <None Include="Shaders\Shaders_For_VXGI_Debug.hlsl"><Filter>Shaders</Filter></None>
+    <None Include="Shaders\VXGISDFCommon.hlsli"><Filter>Shaders</Filter></None>
+    <None Include="Shaders\GISourceCommon.hlsli"><Filter>Shaders</Filter></None>
+    <None Include="Shaders\VXGISurfaceCommon.hlsli"><Filter>Shaders</Filter></None>
+    <None Include="Shaders\VXGISurfaceValidate.hlsl"><Filter>Shaders</Filter></None>
+    <None Include="Shaders\Shaders_For_VXGI_SDF_Debug.hlsl"><Filter>Shaders</Filter></None>
+    <None Include="Shaders\VXGISDFValidate.hlsl"><Filter>Shaders</Filter></None>
+    <None Include="Shaders\VXGISDFThresholdCommon.hlsli"><Filter>Shaders</Filter></None>
+    <None Include="Shaders\VXGIMeshSDFData.hlsli"><Filter>Shaders</Filter></None>
+    <None Include="Shaders\VXGIMeshSDFThresholdCommon.hlsli"><Filter>Shaders</Filter></None>
+    <None Include="Shaders\VXGIProbeData.hlsli"><Filter>Shaders</Filter></None>
+    <None Include="Tests\RunVXGILazyProbeGPUTests.ps1" />
+    <None Include="Tests\VXGILazyProbeGPUTests.cpp" />
+    <None Include="Tests\RunVXGIProbeInvalidationTests.ps1" />
+    <None Include="Tests\VXGIProbeInvalidationTests.cpp" />
+    <None Include="Shaders\VXGIProbeDependency.hlsli" />
+    <None Include="Shaders\VXGIProbeRadianceCommon.hlsli"><Filter>Shaders</Filter></None>
+    <None Include="Shaders\VXGIMeshSDFThresholdValidate.hlsl"><Filter>Shaders</Filter></None>
+    <None Include="Shaders\VXGISDFThresholdValidate.hlsl"><Filter>Shaders</Filter></None>
+    <None Include="Shaders\VXGIProbeCommon.hlsli"><Filter>Shaders</Filter></None>
+    <None Include="Shaders\VXGIProbeQueryCommon.hlsli"><Filter>Shaders</Filter></None>
+    <None Include="Shaders\SSGIHybridCommon.hlsli"><Filter>Shaders</Filter></None>
+    <None Include="Shaders\VXGIHybridValidate.hlsl"><Filter>Shaders</Filter></None>
+    <None Include="Shaders\Shaders_For_VXGI_Probe_Filter.hlsl"><Filter>Shaders</Filter></None>
+    <None Include="Shaders\VXGIProbeQueryValidate.hlsl"><Filter>Shaders</Filter></None>
+    <None Include="Shaders\Shaders_For_VXGI_Probe_Update.hlsl"><Filter>Shaders</Filter></None>
+    <None Include="Shaders\Shaders_For_VXGI_Probe_Debug.hlsl"><Filter>Shaders</Filter></None>
+    <None Include="Shaders\VXGIProbeValidate.hlsl"><Filter>Shaders</Filter></None>
+    <None Include="Shaders\VXGIStage74SupportValidate.hlsl"><Filter>Shaders</Filter></None>
+    <None Include="Shaders\VXGIStage74RasterValidate.hlsl"><Filter>Shaders</Filter></None>
+    <None Include="Shaders\VXGIDenseBVHValidate.hlsl"><Filter>Shaders</Filter></None>
+    <None Include="Tests\SummarizeVXGILazyPerformance.py" />
+    <None Include="Tests\VXGIRenderTailPerformance.cpp" />
+    <None Include="Tests\RunVXGIRenderTailPerformance.ps1" />
+    <None Include="Tests\SummarizeVXGIWorldAB.py" />
   </ItemGroup>
   <ItemGroup>
     <Filter Include="Shaders">
@@ -171,6 +218,10 @@
     <ClInclude Include="Core\D3D12App.h">
       <Filter>Core</Filter>
     </ClInclude>
+    <ClInclude Include="Core\InitializationProgress.h"><Filter>Core</Filter></ClInclude>
+    <ClInclude Include="Core\FrameDiagnostics.h"><Filter>Core</Filter></ClInclude>
+    <ClInclude Include="Core\TraceOutputDiagnostics.h"><Filter>Core</Filter></ClInclude>
+    <ClInclude Include="Core\D3D12ValidationDiagnostics.h"><Filter>Core</Filter></ClInclude>
     <ClInclude Include="Core\ErrorLog.h">
       <Filter>Core</Filter>
     </ClInclude>
@@ -343,5 +394,20 @@
     <ClInclude Include="Editor\EditorUI.h">
       <Filter>Editor</Filter>
     </ClInclude>
+    <ClInclude Include="Editor\EditorCameraSnapshot.h">
+      <Filter>Editor</Filter>
+    </ClInclude>
+    <ClInclude Include="Resources\VXGIGPUScene.h"><Filter>Resources</Filter></ClInclude>
+    <ClInclude Include="Resources\VXGIProbeState.h"><Filter>Resources</Filter></ClInclude>
+    <ClInclude Include="Resources\VXGIProbeCache.h"><Filter>Resources</Filter></ClInclude>
+    <ClInclude Include="Resources\VXGIResources.h"><Filter>Resources</Filter></ClInclude>
+    <ClInclude Include="Resources\VXGIProbeInvalidation.h"><Filter>Resources</Filter></ClInclude>
+    <ClInclude Include="Passes\VXGIProbePass.h"><Filter>Passes</Filter></ClInclude>
+    <ClInclude Include="Passes\VXGIProbeFilterPass.h"><Filter>Passes</Filter></ClInclude>
+    <ClInclude Include="Resources\VXGIProbeTopology.h"><Filter>Resources</Filter></ClInclude>
+    <ClInclude Include="Resources\SSGIHybridState.h"><Filter>Resources</Filter></ClInclude>
+    <ClInclude Include="Resources\RenderDebugPass.h"><Filter>Resources</Filter></ClInclude>
+    <ClInclude Include="Resources\SceneEditState.h"><Filter>Resources</Filter></ClInclude>
+    <ClInclude Include="Editor\VXGIProbeDebugRenderer.h"><Filter>Editor</Filter></ClInclude>
   </ItemGroup>
 </Project>

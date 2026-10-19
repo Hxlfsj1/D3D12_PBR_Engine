@@ -277,9 +277,9 @@ private:
         const float clearValue[] =
         {
             settings.backgroundValue,
-            settings.backgroundValue,
-            settings.backgroundValue,
-            1.0f
+            0.0f,
+            0.0f,
+            0.0f
         };
         cmdList->ClearRenderTargetView(views.outputRtv, clearValue, 0, nullptr);
 

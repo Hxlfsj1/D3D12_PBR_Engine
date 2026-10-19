@@ -243,6 +243,15 @@ Visual Studio 调试时，应把 Working Directory 设置为 `$(ProjectDir)`。�
 | `DLSS SR.anti_aliasing` | `None` / `TAA` / `TSR` / `SMAA` / `DLSS` | `DLSS` | 互斥的抗锯齿或重建模式。 |
 | `DLSS SR.dlss_quality` | `DLAA` / `Quality` / `Balanced` / `Performance` / `UltraPerformance` | `Quality` | 仅 DLSS 模式使用；不支持时初始化失败。 |
 
+GI 配置继续使用同一 `Settings/Pipeline.json`：`ssgi.trace_downsample_factor` 当前为 2（原半分辨率），
+`vxgi.debug_view` 默认为 0。顶部 **Debug → Pass** 选择默认正常合成、关闭 VXGI、仅 SSGI 或仅 GI；
+关闭 VXGI 保留正常合成和 SSGI，只关闭世界探针补充。
+仅 SSGI 关闭世界回退，仅 GI 显示带世界探针补充的纯间接照明，不乘接收表面原色。
+T 快捷键、Details 的旧 source 选择、JSON 的 `gi_only` 和 `vxgi.hybrid.mode` 已移除；启动为默认正常合成。
+世界回退保留原起点、方向和射线长度；世界命中后只读取邻近缓存、插值并求值 SH，
+不发出逐探针遮挡射线，也不在命中点计算直接光或太阳阴影。
+`vxgi.surface.max_ray_distance` 用于缓存更新/诊断，不是 SSGI 回退射线的长度。具体契约与后台报告见 [VXGI.md](VXGI.md)。
+
 `hbao` 对象控制屏幕空间环境遮蔽（当前在 Deferred 路径使用）：
 
 | 键 | 类型 | 默认值 | 说明 |
@@ -262,6 +271,8 @@ Visual Studio 调试时，应把 Working Directory 设置为 `$(ProjectDir)`。�
 四档都保留距离抖动，避免固定采样距离在角落形成明暗条带。1 档保留已经验证的距离抖动采样分布；2～4 档每个方向先采约 1、2 个像素的近处，再通过带距离抖动的平方分布覆盖剩余范围，让近处更密集。近处采样受搜索范围约束。切换质量不改变搜索范围、遮蔽半径、强度或滤波参数，仍沿用原来的 UV 半径估算及限幅。
 
 采样数仅表示预算上限，不能据此直接推算 GPU 耗时或整帧性能比例。Bias 和降噪参数继续由实现固定；修改 JSON 后重新启动生效。
+
+HBAO 的 5 × 5 空间模糊组合像素距离、法线一致性和两端切平面的距离权重。平面误差取两端点到对方切平面距离的最大值，容差为当前深度下一像素空间尺寸的一半（最小 `1e-4` 场景单位），通过软衰减保留斜面上的模糊并抑制跨表面混合。深度、AO 和法线按同一像素读取，位置与法线统一到视空间；共面距离和像素尺寸计算放在 `GeometryCommon.hlsli`，与 SSGI 共用。
 
 TAA 和 TSR 共用 jitter 逻辑及一套双缓冲 temporal history，但拥有各自的 pass、shader、PSO、Root Signature 和常量。DLSS 使用独立 NGX 状态、jitter、历史有效性和输出资源。SMAA 在 tone mapping 后执行边缘检测、权重计算和 neighborhood blending。
 

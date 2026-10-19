@@ -20,16 +20,20 @@ Pre-process IBL maps at initialization
 #define IBL_BAKER_H
 
 #include <cmath>
+#include <memory>
 #include <wrl/client.h>
 #include "stdafx.h"
 #include "PBR_Shader.h"
+#include "InitializationProgress.h"
 
 class IBLBaker
 {
 public:
 
-    void Bake(ID3D12Device* device, ID3D12CommandQueue* commandQueue, const float* data, int w, int h)
+    void Bake(ID3D12Device* device, ID3D12CommandQueue* commandQueue, const float* data, int w, int h,
+        const InitializationProgress& progress = {})
     {
+        ReportInitializationProgress(progress, 0.0f, "Preparing IBL textures and shader pipelines");
         Microsoft::WRL::ComPtr<ID3D12CommandAllocator> allocator;
         HRESULT hr = device->CreateCommandAllocator(
             D3D12_COMMAND_LIST_TYPE_DIRECT,
@@ -58,7 +62,8 @@ public:
             ErrorLog::HRESULT("IBLBaker: failed to create the fence.", hr);
         }
 
-        HANDLE fenceEvent = CreateEvent(nullptr, FALSE, FALSE, nullptr);
+        std::unique_ptr<void, decltype(&CloseHandle)> fenceEvent(
+            CreateEvent(nullptr, FALSE, FALSE, nullptr), &CloseHandle);
         if (fenceEvent == nullptr)
         {
             ErrorLog::Win32("IBLBaker: failed to create the fence event.", GetLastError());
@@ -371,6 +376,7 @@ public:
         DirectX::XMFLOAT3 ups[6] = { {0,1,0}, {0,1,0}, {0,0,-1}, {0,0,1}, {0,1,0}, {0,1,0} };
         DirectX::XMMATRIX proj = DirectX::XMMatrixPerspectiveFovLH(DirectX::XM_PIDIV2, 1.0f, 0.1f, 10.0f);
 
+        ReportInitializationProgress(progress, 0.35f, "Recording IBL environment cubemap");
         ID3D12DescriptorHeap* heaps[] = { localSrvHeap.Get() };
         cmdList->SetDescriptorHeaps(1, heaps);
         cmdList->SetGraphicsRootSignature(rootSig.Get());
@@ -415,6 +421,7 @@ public:
         CD3DX12_GPU_DESCRIPTOR_HANDLE envSrvGpu(localSrvHeap->GetGPUDescriptorHandleForHeapStart(), 1, srvSize);
         cmdList->SetGraphicsRootDescriptorTable(2, envSrvGpu);
 
+        ReportInitializationProgress(progress, 0.45f, "Recording IBL specular prefilter");
         D3D12_RESOURCE_BARRIER b5 = CD3DX12_RESOURCE_BARRIER::Transition(m_prefilterCube.Get(), D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_RENDER_TARGET);
         cmdList->ResourceBarrier(1, &b5);
         cmdList->SetPipelineState(psoPreState.Get());
@@ -444,6 +451,7 @@ public:
         D3D12_RESOURCE_BARRIER b6 = CD3DX12_RESOURCE_BARRIER::Transition(m_prefilterCube.Get(), D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
         cmdList->ResourceBarrier(1, &b6);
 
+        ReportInitializationProgress(progress, 0.60f, "Recording IBL BRDF integration");
         D3D12_RESOURCE_BARRIER b7 = CD3DX12_RESOURCE_BARRIER::Transition(m_brdfLUT.Get(), D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_RENDER_TARGET);
         cmdList->ResourceBarrier(1, &b7);
         cmdList->SetPipelineState(psoBrdfState.Get());
@@ -458,6 +466,7 @@ public:
         D3D12_RESOURCE_BARRIER b8 = CD3DX12_RESOURCE_BARRIER::Transition(m_brdfLUT.Get(), D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
         cmdList->ResourceBarrier(1, &b8);
 
+        ReportInitializationProgress(progress, 0.70f, "Preparing IBL diffuse SH9 integration");
         // SH
         Microsoft::WRL::ComPtr<ID3D12RootSignature> computeRootSig;
         D3D12_ROOT_PARAMETER computeRootParams[3];
@@ -512,23 +521,30 @@ public:
 
         constexpr UINT64 shBufferByteSize = 256;
         D3D12_RESOURCE_DESC uavDesc = CD3DX12_RESOURCE_DESC::Buffer(shBufferByteSize, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
-        hr = device->CreateCommittedResource(&defHeap, D3D12_HEAP_FLAG_NONE, &uavDesc, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, nullptr, IID_PPV_ARGS(&m_shBuffer));
+        hr = device->CreateCommittedResource(&defHeap, D3D12_HEAP_FLAG_NONE, &uavDesc, D3D12_RESOURCE_STATE_COMMON, nullptr, IID_PPV_ARGS(&m_shBuffer));
         if (FAILED(hr))
         {
             ErrorLog::HRESULT("IBLBaker: failed to create the spherical-harmonics buffer.", hr);
         }
 
-        cmdList->SetPipelineState(computePSO.Get());
-        cmdList->SetComputeRootSignature(computeRootSig.Get());
-
         ID3D12DescriptorHeap* computeHeaps[] = { localSrvHeap.Get() };
         cmdList->SetDescriptorHeaps(1, computeHeaps);
+        cmdList->SetPipelineState(computePSO.Get());
+        cmdList->SetComputeRootSignature(computeRootSig.Get());
         cmdList->SetComputeRootDescriptorTable(1, localSrvHeap->GetGPUDescriptorHandleForHeapStart());
 
         UINT constants[2] = { (UINT)w, (UINT)h };
         cmdList->SetComputeRoot32BitConstants(0, 2, constants, 0);
         cmdList->SetComputeRootUnorderedAccessView(2, m_shBuffer->GetGPUVirtualAddress());
 
+        const auto commonToUav = CD3DX12_RESOURCE_BARRIER::Transition(m_shBuffer.Get(),
+            D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+        cmdList->ResourceBarrier(1, &commonToUav);
+        // The equirectangular HDR was read by pixel shaders during cube baking.
+        // Its final SH integration is a compute read of that same SRV.
+        const auto hdrToCompute = CD3DX12_RESOURCE_BARRIER::Transition(texHDR.Get(),
+            D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+        cmdList->ResourceBarrier(1, &hdrToCompute);
         cmdList->Dispatch(1, 1, 1);
 
         D3D12_RESOURCE_BARRIER uavToCbv = CD3DX12_RESOURCE_BARRIER::Transition(m_shBuffer.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER);
@@ -540,6 +556,9 @@ public:
             ErrorLog::HRESULT("IBLBaker: failed to close the bake command list.", hr);
         }
         ID3D12CommandList* lists[] = { cmdList.Get() };
+        // Report before submission: closing the loading window may cancel this
+        // callback, so local bake resources must not already be in GPU use.
+        ReportInitializationProgress(progress, 0.90f, "Baking IBL cubemaps, BRDF and SH9 on the GPU");
         commandQueue->ExecuteCommandLists(1, lists);
         hr = commandQueue->Signal(fence.Get(), fenceValue);
         if (FAILED(hr))
@@ -549,15 +568,16 @@ public:
 
         if (fence->GetCompletedValue() < fenceValue)
         {
-            hr = fence->SetEventOnCompletion(fenceValue, fenceEvent);
+            hr = fence->SetEventOnCompletion(fenceValue, fenceEvent.get());
             if (FAILED(hr))
             {
                 ErrorLog::HRESULT("IBLBaker: failed to wait for the bake fence.", hr);
             }
-            WaitForSingleObject(fenceEvent, INFINITE);
+            WaitForSingleObject(fenceEvent.get(), INFINITE);
         }
 
-        CloseHandle(fenceEvent);
+        fenceEvent.reset();
+        ReportInitializationProgress(progress, 1.0f, "IBL GPU bake complete");
     }
 
     Microsoft::WRL::ComPtr<ID3D12Resource> GetEnvCube() { return m_envCube; }

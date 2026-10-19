@@ -38,7 +38,7 @@ public:
         UINT blueNoiseSrvIdx)
     {
         cmdList->OMSetRenderTargets(1, &hbaoRtv, FALSE, nullptr);
-        const float clearAO[] = { 1.0f, 1.0f, 1.0f, 1.0f };
+        const float clearAO[] = { 1.0f, 0.0f, 0.0f, 0.0f };
         cmdList->ClearRenderTargetView(hbaoRtv, clearAO, 0, nullptr);
 
         D3D12_VIEWPORT viewport = { 0.0f, 0.0f, (float)width, (float)height, 0.0f, 1.0f };
@@ -74,7 +74,7 @@ public:
         D3D12_GPU_VIRTUAL_ADDRESS constantsGpuAddress)
     {
         cmdList->OMSetRenderTargets(1, &blurRtv, FALSE, nullptr);
-        const float clearAO[] = { 1.0f, 1.0f, 1.0f, 1.0f };
+        const float clearAO[] = { 1.0f, 0.0f, 0.0f, 0.0f };
         cmdList->ClearRenderTargetView(blurRtv, clearAO, 0, nullptr);
 
         D3D12_VIEWPORT viewport = { 0.0f, 0.0f, (float)width, (float)height, 0.0f, 1.0f };

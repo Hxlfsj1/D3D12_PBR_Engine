@@ -9,12 +9,37 @@
   },
   "ssgi": {
     "enabled": true,
+    "trace_downsample_factor": 2,
     "intensity": 1,
     "quality": 1,
     "radius": 0.5
   },
+  "vxgi": {
+    "enabled": true,
+    "voxel_size": 0.5,
+    "debug_view": 0,
+    "probes": {
+      "padding_layers": 1,
+      "probes_per_frame": 256,
+      "classify_rays": 64,
+      "rays_per_update": 64,
+      "max_history_updates": 32,
+      "backface_threshold": 0.25,
+      "filter_neighbor_weight": 0.25
+    },
+    "sdf": {
+      "cell_size": 0.25,
+      "slice_axis": 2,
+      "slice_position": 0.0
+    },
+    "surface": {
+      "material_mip_level": 0.0,
+      "ray_min_distance": 0.0001,
+      "max_ray_distance": 128.0
+    }
+  },
   "hbao": {
-    "enabled": false,
+    "enabled": true,
     "intensity": 2.0,
     "quality": 1,
     "radius": 0.5

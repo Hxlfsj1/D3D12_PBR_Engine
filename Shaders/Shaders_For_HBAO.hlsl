@@ -172,56 +172,62 @@ float4 PSMain_HBAO(VS_OUTPUT input) : SV_TARGET
     return float4(ao, ao, ao, 1.0f);
 }
 
-/*
-Bilateral filtering defines a valid blending scope:
-neighboring pixels with large depth/normal deltas (discontinuities) get near-zero weights, minimizes their AO contribution,
-ensuring we only average across geometrically similar areas and ignore completely distinct surfaces
-*/
+// Bilateral filtering combines screen distance, normal agreement and symmetric
+// tangent-plane distance, preserving sloped surfaces and geometry boundaries.
 float4 PSMain_Blur(VS_OUTPUT input) : SV_TARGET
 {
     Texture2D tRawHBAO = ResourceDescriptorHeap[texIdx0];
     Texture2D tDepth = ResourceDescriptorHeap[texIdx1];
     Texture2D tNormal = ResourceDescriptorHeap[texIdx2];
 
-    float centerDepth = tDepth.SampleLevel(sPoint, input.uv, 0).r;
+    int2 resolution = int2(resolutionX, resolutionY);
+    int2 centerPixel = int2(input.pos.xy);
+    float2 centerUV = (float2(centerPixel) + 0.5f) / float2(resolution);
+    float centerDepth = tDepth.Load(int3(centerPixel, 0)).r;
     if (IsBackgroundDepth(centerDepth))
     {
         return float4(1.0f, 1.0f, 1.0f, 1.0f);
     }
 
-    float3 centerNormal = normalize(DecodeGBufferNormal(tNormal.SampleLevel(sPoint, input.uv, 0).xyz));
+    float3 centerNormal = normalize(mul(
+        DecodeGBufferNormal(tNormal.Load(int3(centerPixel, 0)).xyz), (float3x3) viewMat));
+    float3 centerPosition = ReconstructPosition(centerUV, centerDepth, invProjMat);
+    // A soft half-pixel tolerance accounts for finite precision and shading
+    // normals. Constant-depth spacing avoids relaxing rejection at grazing angles.
+    float planeTolerance = max(0.5f * SameDepthPixelFootprint(
+        centerUV, centerDepth, centerPosition, uint2(resolution), invProjMat), 1e-4f);
 
     float result = 0.0f;
     float weightSum = 0.0f;
-    // Calculate texel size based on screen resolution
-    float2 texelSize = float2(1.0f / resolutionX, 1.0f / resolutionY);
-
     for (int x = -2; x <= 2; ++x)
     {
         for (int y = -2; y <= 2; ++y)
         {
-            // Fetch sample data
-            float2 offset = float2((float) x, (float) y) * texelSize;
-            float2 sampleUV = input.uv + offset;
-            if (sampleUV.x < 0.0f || sampleUV.x > 1.0f || sampleUV.y < 0.0f || sampleUV.y > 1.0f)
+            int2 samplePixel = centerPixel + int2(x, y);
+            if (any(samplePixel < 0) || any(samplePixel >= resolution))
                 continue;
 
-            float sampleDepth = tDepth.SampleLevel(sPoint, sampleUV, 0).r;
+            float sampleDepth = tDepth.Load(int3(samplePixel, 0)).r;
             if (IsBackgroundDepth(sampleDepth))
                 continue;
 
-            float sampleAO = tRawHBAO.SampleLevel(sLinear, sampleUV, 0).r;
-            float3 sampleNormal = normalize(DecodeGBufferNormal(tNormal.SampleLevel(sPoint, sampleUV, 0).xyz));
+            float sampleAO = tRawHBAO.Load(int3(samplePixel, 0)).r;
+            float3 sampleNormal = normalize(mul(
+                DecodeGBufferNormal(tNormal.Load(int3(samplePixel, 0)).xyz), (float3x3) viewMat));
+            float2 sampleUV = (float2(samplePixel) + 0.5f) / float2(resolution);
+            float3 samplePosition = ReconstructPosition(sampleUV, sampleDepth, invProjMat);
 
             // Spatial weight (Distance falloff)
             float spatialWeight = exp(-(x * x + y * y) / 4.0f);
-            // Depth weight (Edge preservation)
-            float depthWeight = exp(-abs(centerDepth - sampleDepth) * 100.0f);
+            // Symmetric point-to-plane error replaces nonlinear device-depth differences.
+            float planeError = SymmetricPlaneDistance(
+                samplePosition - centerPosition, centerNormal, sampleNormal) / planeTolerance;
+            float planeWeight = exp(-planeError * planeError);
             // Normal weight (Angle-based rejection)
             float normalWeight = pow(max(dot(centerNormal, sampleNormal), 0.0f), 16.0f);
 
             // Combine weights to compute the final bilateral weight
-            float weight = spatialWeight * depthWeight * normalWeight;
+            float weight = spatialWeight * planeWeight * normalWeight;
 
             result += sampleAO * weight;
             weightSum += weight;

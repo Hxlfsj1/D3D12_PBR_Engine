@@ -10,6 +10,8 @@
 #include "RenderStructs.h"
 #include "RDGResourceLease.h"
 #include "BlueNoiseTexture.h"
+#include "VXGIResources.h"
+#include "InitializationProgress.h"
 
 #include <map>
 #include <vector>
@@ -73,8 +75,10 @@ public:
     // 3. IBL slots (pre-allocate)
     // 4. Constant buffers
     // 5. Sky box' s box
-    bool LoadAssets(RenderDevice* dc, const std::vector<InstanceDesc>& sceneConfig, int frameBufferCount)
+    bool LoadAssets(RenderDevice* dc, const std::vector<InstanceDesc>& sceneConfig, int frameBufferCount,
+        const InitializationProgress& progress = {})
     {
+        ReportInitializationProgress(progress, 0.0f, "Creating scene resource heaps and default textures");
         D3D12_DESCRIPTOR_HEAP_DESC srvHeapDesc = {};
         srvHeapDesc.NumDescriptors = MaxSrvUavDescriptors;
         srvHeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
@@ -127,8 +131,15 @@ public:
         DirectX::ResourceUploadBatch resourceUpload(dc->GetDevice());
         resourceUpload.Begin();
 
+        size_t loadedInstances = 0;
         for (const auto& desc : sceneConfig)
         {
+            const size_t separator = desc.modelPath.find_last_of("/\\");
+            const std::string filename = desc.modelPath.substr(separator == std::string::npos ? 0 : separator + 1);
+            const float instanceProgress = static_cast<float>(loadedInstances) /
+                static_cast<float>((std::max)(size_t{1}, sceneConfig.size()));
+            ReportInitializationProgress(progress, 0.05f + 0.65f * instanceProgress,
+                "Loading model and textures: " + filename);
             // If the model data is not found in the dictionary, fetch it from the hard drive
             // This ensures a single copy of the model data while allowing for multiple unique transformations, which is the essence of instancing
             if (myModels.find(desc.modelPath) == myModels.end())
@@ -140,21 +151,27 @@ public:
             instance.editorId = m_nextEditorId++;
             // Display the source filename (including extension), independent of the
             // legacy scene label. Handle both separators without changing UTF-8 bytes.
-            const size_t separator = desc.modelPath.find_last_of("/\\");
-            instance.name = desc.modelPath.substr(separator == std::string::npos ? 0 : separator + 1);
+            instance.name = filename;
             instance.pModel = myModels[desc.modelPath].get();
             instance.translation = desc.pos;
             instance.rotation = desc.rot;
             instance.scale = desc.scale;
             instance.isTransparent = desc.isTransparent;
             instance.isCutout = desc.isCutout;
+            instance.customMaterialID = desc.materialOverrideIndex;
 
             m_sceneInstances.push_back(instance);
+            ++loadedInstances;
+            ReportInitializationProgress(progress, 0.05f + 0.65f *
+                static_cast<float>(loadedInstances) / static_cast<float>((std::max)(size_t{1}, sceneConfig.size())),
+                "Loaded model and textures: " + filename);
         }
 
+        ReportInitializationProgress(progress, 0.70f, "Uploading scene textures to the GPU");
         auto uploadFinished = resourceUpload.End(dc->GetCommandQueue());
         uploadFinished.wait();
 
+        ReportInitializationProgress(progress, 0.80f, "Creating scene texture views and frame buffers");
         for (auto& pair : myModels)
         {
             for (auto& tex : pair.second->textures_loaded)
@@ -256,6 +273,7 @@ public:
 
         skyboxVBV = { skyboxVB->GetGPUVirtualAddress(), sizeof(cubeVerts), 12 };
 
+        ReportInitializationProgress(progress, 0.95f, "Finishing scene geometry upload");
         hr = dc->GetCommandList()->Close();
         if (FAILED(hr))
         {
@@ -293,45 +311,81 @@ public:
                 return a.pModel < b.pModel;
             });
 
+        ReportInitializationProgress(progress, 1.0f, "Scene models and textures ready");
         return true;
     }
 
-    void BuildGlobalMaterialPool(RenderDevice* dc)
+    // IDs remain stable after startup. Material factor/texture edits update both
+    // screen and world queries; immutable texture pixels require explicit asset reload.
+    std::vector<MaterialData> CaptureGlobalMaterials(bool assignIDs)
     {
-        dc->GetCommandAllocator(0)->Reset();
-        dc->GetCommandList()->Reset(dc->GetCommandAllocator(0), nullptr);
-
-        std::vector<MaterialData> globalMaterials;
-        auto cmdList = dc->GetCommandList();
-
+        std::vector<MaterialData> records(assignIDs ? 0 : m_globalMaterials.size());
         for (auto& pair : myModels)
-        {
             for (auto& mesh : pair.second->meshes)
             {
                 MaterialData mat = {};
                 mat.albedoIdx = dummyAlbedoIdx;
                 mat.normalIdx = dummyNormalIdx;
                 mat.ormIdx = dummyORMIdx;
-                mat.emissiveIdx = dummyAlbedoIdx; // White identity texture supports factor-only emission.
+                mat.emissiveIdx = dummyAlbedoIdx;
                 mat.emissiveFactor = mesh.emissiveFactor;
                 mat.baseColorFactor = mesh.baseColorFactor;
                 mat.isUnlit = mesh.isUnlit;
-
-                for (auto& tex : mesh.textures)
+                for (const auto& tex : mesh.textures)
                 {
+                    const auto found = textureSrvIndices.find(tex.Resource.Get());
+                    if (found == textureSrvIndices.end()) continue;
                     switch (tex.type)
                     {
-                    case TextureType::Albedo: mat.albedoIdx = textureSrvIndices[tex.Resource.Get()]; break;
-                    case TextureType::Normal: mat.normalIdx = textureSrvIndices[tex.Resource.Get()]; break;
-                    case TextureType::ORM: mat.ormIdx = textureSrvIndices[tex.Resource.Get()]; break;
-                    case TextureType::Emissive: mat.emissiveIdx = textureSrvIndices[tex.Resource.Get()]; break;
+                    case TextureType::Albedo: mat.albedoIdx = found->second; break;
+                    case TextureType::Normal: mat.normalIdx = found->second; break;
+                    case TextureType::ORM: mat.ormIdx = found->second; break;
+                    case TextureType::Emissive: mat.emissiveIdx = found->second; break;
                     }
                 }
-
-                mesh.materialID = static_cast<UINT>(globalMaterials.size());
-                globalMaterials.push_back(mat);
+                if (assignIDs)
+                {
+                    mesh.materialID = static_cast<UINT>(records.size());
+                    records.push_back(mat);
+                }
+                else if (mesh.materialID < records.size()) records[mesh.materialID] = mat;
             }
+        return records;
+    }
+
+    bool RefreshGlobalMaterials(RenderDevice* dc)
+    {
+        const auto next = CaptureGlobalMaterials(false);
+        for (const auto& instance : m_sceneInstances)
+            if (instance.customMaterialID != UINT32_MAX && instance.customMaterialID >= next.size())
+            {
+                ErrorLog::Write("ResourceManager: instance material override is outside the global pool.");
+                return false;
+            }
+        static_assert(sizeof(MaterialData) == 48);
+        if (next.size() == m_globalMaterials.size() &&
+            (next.empty() || std::memcmp(next.data(), m_globalMaterials.data(), next.size() * sizeof(MaterialData)) == 0)) return true;
+        // Rare material edits use synchronous upload. Every frame must finish
+        // before the shared pool/allocator can be rewritten or replaced.
+        for (UINT i = 0; i < m_srvFrameBufferCount; ++i)
+        {
+            const int slot = static_cast<int>(i);
+            dc->WaitForPreviousFrame(slot);
+            const auto completed = dc->GetFence(slot)->GetCompletedValue();
+            if (completed == UINT64_MAX || completed < dc->GetFenceValue(slot)) return false;
         }
+        return BuildGlobalMaterialPool(dc, false);
+    }
+
+    bool BuildGlobalMaterialPool(RenderDevice* dc, bool assignIDs = true)
+    {
+        dc->GetCommandAllocator(0)->Reset();
+        dc->GetCommandList()->Reset(dc->GetCommandAllocator(0), nullptr);
+
+        std::vector<MaterialData> globalMaterials = CaptureGlobalMaterials(assignIDs);
+        for (const auto& instance : m_sceneInstances)
+            if (instance.customMaterialID != UINT32_MAX && instance.customMaterialID >= globalMaterials.size()) return false;
+        auto cmdList = dc->GetCommandList();
 
         UINT bufferSize = static_cast<UINT>(globalMaterials.size() * sizeof(MaterialData));
 
@@ -347,6 +401,7 @@ public:
         if (FAILED(hr))
         {
             ErrorLog::HRESULT("ResourceManager: failed to create the material buffer.", hr);
+            return false;
         }
 
         auto heapPropsUpload = CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_UPLOAD);
@@ -360,6 +415,7 @@ public:
         if (FAILED(hr))
         {
             ErrorLog::HRESULT("ResourceManager: failed to create the material upload buffer.", hr);
+            return false;
         }
 
         D3D12_SUBRESOURCE_DATA subData = {};
@@ -373,15 +429,18 @@ public:
         if (UpdateSubresources(cmdList, m_materialBuffer.Get(), m_materialUploadBuffer.Get(), 0, 0, 1, &subData) == 0)
         {
             ErrorLog::Write("ResourceManager: failed to upload the global material buffer.");
+            return false;
         }
 
-        auto transition2 = CD3DX12_RESOURCE_BARRIER::Transition(m_materialBuffer.Get(), D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+        auto transition2 = CD3DX12_RESOURCE_BARRIER::Transition(m_materialBuffer.Get(), D3D12_RESOURCE_STATE_COPY_DEST,
+            D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
         cmdList->ResourceBarrier(1, &transition2);
 
         hr = cmdList->Close();
         if (FAILED(hr))
         {
             ErrorLog::HRESULT("ResourceManager: failed to close the material upload command list.", hr);
+            return false;
         }
         ID3D12CommandList* lists[] = { cmdList };
         dc->GetCommandQueue()->ExecuteCommandLists(1, lists);
@@ -394,6 +453,7 @@ public:
         if (FAILED(hr))
         {
             ErrorLog::HRESULT("ResourceManager: failed to signal the material upload fence.", hr);
+            return false;
         }
 
         if (dc->GetFence(frameIndex)->GetCompletedValue() < dc->GetFenceValue(frameIndex))
@@ -404,9 +464,13 @@ public:
             if (FAILED(hr))
             {
                 ErrorLog::HRESULT("ResourceManager: failed to wait for the material upload fence.", hr);
+                return false;
             }
             WaitForSingleObject(dc->GetFenceEvent(), INFINITE);
         }
+        m_globalMaterials = std::move(globalMaterials);
+        ++m_materialRevision;
+        return true;
     }
 
     // What is loaded :
@@ -414,10 +478,12 @@ public:
     // 2. An irradiance map for diffuse
     // 3. A filtered environment map for specular
     // 4. A BRDF LUT for specular
-    bool InitIBL(RenderDevice* dc, const char* currentHDRPath)
+    bool InitIBL(RenderDevice* dc, const char* currentHDRPath, const InitializationProgress& progress = {})
     {
+        ReportInitializationProgress(progress, 0.0f, "Loading HDR environment image");
         int w, h, c;
-        float* data = stbi_loadf(currentHDRPath, &w, &h, &c, 4);
+        std::unique_ptr<float, decltype(&stbi_image_free)> data(
+            stbi_loadf(currentHDRPath, &w, &h, &c, 4), &stbi_image_free);
 
         if (!data)
         {
@@ -429,7 +495,11 @@ public:
         }
 
         IBLBaker baker;
-        baker.Bake(dc->GetDevice(), dc->GetCommandQueue(), data, w, h);
+        const InitializationProgress bakeProgress = [&progress](float fraction, const std::string& status)
+        {
+            ReportInitializationProgress(progress, 0.10f + 0.85f * fraction, status);
+        };
+        baker.Bake(dc->GetDevice(), dc->GetCommandQueue(), data.get(), w, h, bakeProgress);
 
         texEnvCube = baker.GetEnvCube();
         texPrefilterCube = baker.GetPrefilterCube();
@@ -439,7 +509,6 @@ public:
         if (!texEnvCube || !texPrefilterCube || !texBRDFLUT || !shBuffer)
         {
             ErrorLog::Write("ResourceManager: IBL baker did not produce all required outputs.");
-            stbi_image_free(data);
             return false;
         }
 
@@ -470,8 +539,9 @@ public:
         CD3DX12_CPU_DESCRIPTOR_HANDLE hBrdf(mainDescriptorHeap->GetCPUDescriptorHandleForHeapStart(), iblBRDFIdx, srvDescriptorSize);
         dc->GetDevice()->CreateShaderResourceView(texBRDFLUT.Get(), &lsD, hBrdf);
 
-        stbi_image_free(data);
+        data.reset();
 
+        ReportInitializationProgress(progress, 1.0f, "IBL environment and SH9 ready");
         return true;
     }
 
@@ -524,9 +594,21 @@ public:
             ErrorLog::Write("ResourceManager: failed to upload a dummy texture.");
         }
 
-        auto barrier = CD3DX12_RESOURCE_BARRIER::Transition(outTex.Get(), D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+        auto barrier = CD3DX12_RESOURCE_BARRIER::Transition(outTex.Get(), D3D12_RESOURCE_STATE_COPY_DEST,
+            D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
         cmdList->ResourceBarrier(1, &barrier);
     }
+
+    // Like IBL, publish the initial scene cache only after GPU baking completes.
+    bool InitVXGI(RenderDevice* dc, const VXGIConfig& config, const LightingConfig& lighting, UINT frameCount,
+        const InitializationProgress& progress = {})
+    {
+        return dc && m_vxgi.Initialize(*dc, frameCount, m_sceneInstances, m_globalMaterials,
+            config, lighting, mainDescriptorHeap.Get(), m_materialBuffer.Get(), progress);
+    }
+
+    VXGIResources& GetVXGI() { return m_vxgi; }
+    const VXGIResources& GetVXGI() const { return m_vxgi; }
 
     bool InitShadowResources(RenderDevice* dc)
     {
@@ -686,13 +768,17 @@ public:
     };
 
     // Initialize/reinitialize only while the GPU is idle, as with other history resources.
-    bool InitSSGIHistoryResources(RenderDevice* dc, UINT width, UINT height)
+    bool InitSSGIHistoryResources(RenderDevice* dc, UINT width, UINT height, UINT traceDownsampleFactor = 2)
     {
+        if (!dc || !dc->GetDevice() || width == 0 || height == 0 ||
+            !SSGIConfig::IsValidTraceDownsampleFactor(static_cast<int>(traceDownsampleFactor))) return false;
+        const UINT traceWidth = (width - 1) / traceDownsampleFactor + 1;
+        const UINT traceHeight = (height - 1) / traceDownsampleFactor + 1;
         m_ssgiCurrentHistoryIdx = 0;
         auto create = [&](DXGI_FORMAT format, Microsoft::WRL::ComPtr<ID3D12Resource>& texture) {
             texture.Reset();
             auto desc = CD3DX12_RESOURCE_DESC::Tex2D(
-                format, (width + 1) / 2, (height + 1) / 2, 1, 1, 1, 0, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
+                format, traceWidth, traceHeight, 1, 1, 1, 0, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
             auto heap = CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_DEFAULT);
             HRESULT hr = dc->GetDevice()->CreateCommittedResource(
                 &heap, D3D12_HEAP_FLAG_NONE, &desc, D3D12_RESOURCE_STATE_COMMON, nullptr, IID_PPV_ARGS(&texture));
@@ -1264,6 +1350,9 @@ public:
             }
             if (SUCCEEDED(hr))
             {
+                const auto debugName = L"PassConstants.Slot" + std::to_wstring(frameIndex) +
+                    L".Page" + std::to_wstring(frame.activePage);
+                page.resource->SetName(debugName.c_str());
                 const D3D12_RANGE noCpuReads = { 0, 0 };
                 hr = page.resource->Map(0, &noCpuReads, reinterpret_cast<void**>(&page.cpuAddress));
             }
@@ -1370,8 +1459,11 @@ public:
 
     D3D12_GPU_VIRTUAL_ADDRESS GetMaterialBufferGPUAddress()
     {
-        return m_materialBuffer->GetGPUVirtualAddress();
+        return m_materialBuffer ? m_materialBuffer->GetGPUVirtualAddress() : 0;
     }
+    ID3D12Resource* GetMaterialBuffer() const { return m_materialBuffer.Get(); }
+    const std::vector<MaterialData>& GetGlobalMaterials() const { return m_globalMaterials; }
+    uint64_t GetMaterialRevision() const { return m_materialRevision; }
 
     ID3D12Resource* GetTemporalHistoryRT(int idx)
     {
@@ -1570,6 +1662,7 @@ private:
     // A map for storing model data
     std::unordered_map<std::string, std::unique_ptr<Model>> myModels;
     std::vector<ModelInstance> m_sceneInstances;
+    VXGIResources m_vxgi;
     UINT m_nextEditorId = 1;
     std::map<ID3D12Resource*, UINT> textureSrvIndices;
 
@@ -1637,6 +1730,8 @@ private:
 
     ComPtr<ID3D12Resource> m_materialBuffer;
     ComPtr<ID3D12Resource> m_materialUploadBuffer;
+    std::vector<MaterialData> m_globalMaterials;
+    uint64_t m_materialRevision = 0;
 
     Microsoft::WRL::ComPtr<ID3D12Resource> m_temporalHistoryRT[2];
     int m_temporalCurrentHistoryIdx = 0;

@@ -52,6 +52,7 @@ void CSMain_Pyramid(uint3 id : SV_DispatchThreadID)
 
 #include "SSGICommon.hlsli"
 #include "BlueNoise.hlsli"
+#include "SSGIHybridCommon.hlsli"
 
 cbuffer SSGITraceConstants : register(b0)
 {
@@ -74,9 +75,46 @@ cbuffer SSGITraceConstants : register(b0)
     float padding2;
     uint rayCount;
     uint maxIterations;
-    uint2 padding3;
+    uint albedoTextureIdx;
+    uint traceDownsampleFactor;
     uint4 levels[7]; // Keep in sync with SSGIMaxLevels.
+    float4x4 invViewMat;
+    float4x4 invViewProjMat;
+    SSGIHybridParameters hybrid;
 };
+
+StructuredBuffer<float> hybridNodes : register(t0);
+#ifndef VXGI_SSGI_THRESHOLD
+StructuredBuffer<uint> hybridOffsets : register(t1);
+StructuredBuffer<uint> hybridReferences : register(t2);
+StructuredBuffer<VXGISDFTriangle> hybridTriangles : register(t3);
+StructuredBuffer<VXGIMaterialData> hybridMaterials : register(t4);
+StructuredBuffer<float3> hybridCenters : register(t5);
+#endif
+StructuredBuffer<VXGIProbeCellEntry> hybridLookup : register(t6);
+StructuredBuffer<VXGIProbeRecord> hybridRawRecords : register(t7);
+#ifndef VXGI_SSGI_THRESHOLD
+SamplerState hybridMaterialSampler : register(s0);
+#endif
+
+#ifdef SSGI_MODE_FROM_SRV
+ByteAddressBuffer traceModeConstants : register(t4, space1);
+#endif
+
+uint SSGIWorldMode()
+{
+#ifdef SSGI_MODE_FROM_SRV
+    // Temporary compromise, not a proven optimal design: read only worldMode
+    // through an SRV alias to avoid the observed CBV startup slow state
+    // (~3.5 ms vs ~0.75 ms Trace on the tested NVIDIA setup, with matching output).
+    // The root cause remains unconfirmed; retain this until a measured fix exists.
+    // Same allocation as b0; the byte offset is checked against the CPU layout.
+    // Investigation and limitations: VXGI.md, including the PIX diagnostic record.
+    return traceModeConstants.Load(604);
+#else
+    return hybrid.worldMode;
+#endif
+}
 
 float3 Project(float3 p)
 {
@@ -129,21 +167,53 @@ bool DepthInterval(float startZ, float deltaZ, float2 bounds, float t, float exi
     return entryT <= min(exitT, max(a, b));
 }
 
-// Stackless hierarchical grid traversal, ordinary Z. Mip 0 is the full-resolution depth;
-// mip 1..LevelCount map to Levels[0..LevelCount-1] (2x2 through 128x128 pixel cells).
-float4 TraceRay(uint2 receiver, float3 origin, float3 direction)
+// This is the finite segment already used by screen tracing. Viewport clipping
+// only limits the screen traversal; it never changes this segment's 3D extent.
+float SSGIViewRayLength(float3 origin, float3 direction)
 {
-    Texture2D<float> depth = ResourceDescriptorHeap[depthTextureIdx];
-    Texture2D<float4> normals = ResourceDescriptorHeap[normalTextureIdx];
-    Texture2D<float4> source = ResourceDescriptorHeap[sourceTextureIdx];
     float rayLength = radius;
     float nearZ = ReconstructPosition(0.5.xx, 0, invProjMat).z;
     if (direction.z < 0)
     {
         rayLength = min(rayLength, max(0, (origin.z - nearZ * 1.01) / -direction.z));
     }
+    return rayLength;
+}
+
+// Transform the original biased SSGI origin and finite direction vector. The
+// normalized world ray and its length describe the same two endpoints; no
+// receiver re-anchoring, added offset or scene-sized range is introduced.
+bool SSGIWorldRaySegment(float3 viewOrigin, float3 viewDirection,
+    out float3 worldOrigin, out float3 unitWorldDirection, out float worldRayLength)
+{
+    worldOrigin = 0.0;
+    unitWorldDirection = 0.0;
+    worldRayLength = 0.0;
+    if (!all(isfinite(viewOrigin)) || !all(isfinite(viewDirection))) return false;
+    float viewRayLength = SSGIViewRayLength(viewOrigin, viewDirection);
+    float3 transformedDirection = mul(float4(viewDirection, 0.0), invViewMat).xyz;
+    worldOrigin = mul(float4(viewOrigin, 1.0), invViewMat).xyz;
+    if (!all(isfinite(worldOrigin)) || !SSGINormalizeDirection(transformedDirection, unitWorldDirection)
+        || !isfinite(viewRayLength) || viewRayLength <= 0.0) return false;
+    worldRayLength = viewRayLength * length(transformedDirection);
+    return isfinite(worldRayLength) && worldRayLength > 0.0;
+}
+
+// Stackless hierarchical grid traversal, ordinary Z. Mip 0 is the full-resolution depth;
+// mip 1..LevelCount map to Levels[0..LevelCount-1] (2x2 through 128x128 pixel cells).
+SSGIScreenRayResult TraceScreenRay(uint2 receiver, float3 origin, float3 direction)
+{
+    SSGIScreenRayResult result = (SSGIScreenRayResult)0;
+    result.status = SSGI_SCREEN_INVALID;
+    if (any(sceneSize == 0) || any(receiver >= sceneSize) || !all(isfinite(origin))
+        || !all(isfinite(direction)) || dot(direction, direction) <= 0.0
+        || !isfinite(radius) || radius <= 0.0 || levelCount > 7) return result;
+    Texture2D<float> depth = ResourceDescriptorHeap[depthTextureIdx];
+    Texture2D<float4> normals = ResourceDescriptorHeap[normalTextureIdx];
+    float rayLength = SSGIViewRayLength(origin, direction);
     float3 start = Project(origin);
     float3 delta = Project(origin + direction * rayLength) - start;
+    if (!all(isfinite(start)) || !all(isfinite(delta)) || !isfinite(rayLength)) return result;
     float endT = 1;
 
     [unroll]
@@ -160,7 +230,8 @@ float4 TraceRay(uint2 receiver, float3 origin, float3 direction)
     }
     if (any(start.xy < 0) || any(start.xy >= 1) || endT <= 0)
     {
-        return 0;
+        result.status = SSGI_SCREEN_OUT_OF_SCREEN;
+        return result;
     }
 
     float2 startPixels = start.xy * sceneSize;
@@ -178,7 +249,8 @@ float4 TraceRay(uint2 receiver, float3 origin, float3 direction)
         int2 gridSize = int2((sceneSize + cellSize - 1) / cellSize);
         if (any(cell < 0) || any(cell >= gridSize))
         {
-            break;
+            result.status = SSGI_SCREEN_OUT_OF_SCREEN;
+            return result;
         }
         float exitT = CellExit(startPixels, deltaPixels, cell, mip, endT);
         float2 bounds;
@@ -216,9 +288,14 @@ float4 TraceRay(uint2 receiver, float3 origin, float3 direction)
             float3 hitNormal = SSGIDecodeViewNormal(normals.Load(int3(cell, 0)).xyz, viewMat);
             if (distance(hit, origin) <= radius && dot(hitNormal, direction) < 0)
             {
-                // Traversal mip controls geometry only. Fetch color at the confirmed fine hit.
-                float3 radiance = source.Load(int3(cell, 0)).rgb;
-                return float4(radiance, 1); // Black geometry still terminates the ray.
+                result.hitPixel = uint2(cell);
+                result.viewPoint = ReconstructPosition((cell + 0.5) / sceneSize,
+                    depth.Load(int3(cell, 0)), invProjMat);
+                result.rayPoint = hit;
+                result.distance = distance(hit, origin);
+                result.status = SSGI_SCREEN_HIT;
+                result.confidence = 1.0;
+                return result;
             }
         }
 
@@ -226,7 +303,75 @@ float4 TraceRay(uint2 receiver, float3 origin, float3 direction)
         t = exitT;
         mip = min(mip + 1, levelCount);
     }
-    return 0; // Screen/radius/iteration limit: no sky fallback and no GI feedback.
+    result.status = iteration >= maxIterations && t < endT ? SSGI_SCREEN_ITERATION_LIMIT
+        : endT < 1.0 ? SSGI_SCREEN_OUT_OF_SCREEN : SSGI_SCREEN_RADIUS_LIMIT;
+    return result;
+}
+
+// Legacy screen-only path retains the same biased origin, hit acceptance and
+// fine-pixel source fetch. Black/unlit source radiance still terminates a hit.
+float4 TraceRay(uint2 receiver, float3 origin, float3 direction)
+{
+    SSGIScreenRayResult screen = TraceScreenRay(receiver, origin, direction);
+    if (screen.status != SSGI_SCREEN_HIT) return 0.0;
+    Texture2D<float4> source = ResourceDescriptorHeap[sourceTextureIdx];
+    return float4(source.Load(int3(screen.hitPixel, 0)).rgb, 1.0);
+}
+
+// This per-ray helper is also called directly by headless validation. A valid
+// screen hit ALWAYS returns the original SSGI source, including black hits.
+SSGIHybridRayResult TraceHybridRay(uint2 receiver, float3 viewOrigin, float3 viewDirection)
+{
+    SSGIHybridRayResult result = (SSGIHybridRayResult)0;
+    result.triangleIndex = VXGI_PROBE_MISSING_INDEX;
+    result.worldTraceStatus = 0xffffffffu;
+    result.status = SSGI_SCREEN_INVALID;
+    SSGIScreenRayResult screen = TraceScreenRay(receiver, viewOrigin, viewDirection);
+#ifdef SSGI_RAY_ROUTING_DIAGNOSTICS
+    SSGIRoutingScreenStatus(screen.status);
+#endif
+    result.status = screen.status;
+    result.distance = screen.distance;
+    result.confidence = screen.confidence;
+    if (screen.status == SSGI_SCREEN_HIT)
+    {
+        Texture2D<float4> source = ResourceDescriptorHeap[sourceTextureIdx];
+        result.hit = 1;
+        result.backend = SSGI_BACKEND_SCREEN;
+        result.radiance = source.Load(int3(screen.hitPixel, 0)).rgb;
+        result.sourceValid = all(isfinite(result.radiance)) ? 1u : 0u;
+        if (result.sourceValid == 0) result.radiance = 0.0;
+        return result;
+    }
+    if (SSGIWorldMode() == 0)
+    {
+#ifdef SSGI_RAY_ROUTING_DIAGNOSTICS
+        SSGIRoutingDisabled();
+#endif
+        return result;
+    }
+#ifdef SSGI_RAY_ROUTING_DIAGNOSTICS
+    SSGIRoutingFallback();
+#endif
+    float3 worldOrigin;
+    float3 unitWorldDirection;
+    float worldRayLength;
+    if (!SSGIWorldRaySegment(viewOrigin, viewDirection, worldOrigin, unitWorldDirection, worldRayLength))
+    {
+#ifdef SSGI_RAY_ROUTING_DIAGNOSTICS
+        SSGIRoutingInvalidSegment();
+#endif
+        result.status = SSGI_SCREEN_INVALID;
+        result.worldTraceStatus = 2;
+        return result;
+    }
+    return SSGIWorldRaySource(worldOrigin, unitWorldDirection, worldRayLength, hybrid, hybridNodes,
+#ifndef VXGI_SSGI_THRESHOLD
+        hybridOffsets, hybridReferences, hybridTriangles, hybridMaterials,
+        hybridLookup, hybridRawRecords, hybridMaterialSampler);
+#else
+        hybridLookup, hybridRawRecords);
+#endif
 }
 
 [numthreads(8, 8, 1)]
@@ -240,7 +385,8 @@ void CSMain_Trace(uint3 id : SV_DispatchThreadID)
     Texture2D<float> depth = ResourceDescriptorHeap[depthTextureIdx];
     Texture2D<float4> normals = ResourceDescriptorHeap[normalTextureIdx];
     Texture2D<float4> orm = ResourceDescriptorHeap[ormTextureIdx];
-    uint2 pixel = id.xy * 2;
+    uint factor = max(traceDownsampleFactor, 2u);
+    uint2 pixel = id.xy * factor;
     float z = depth.Load(int3(pixel, 0));
     output[id.xy] = 0;
     if (z >= 1 || orm.Load(int3(pixel, 0)).a < 0.5)
@@ -252,12 +398,18 @@ void CSMain_Trace(uint3 id : SV_DispatchThreadID)
     float3 n = SSGIDecodeViewNormal(normals.Load(int3(pixel, 0)).xyz, viewMat);
     Texture2DArray<uint2> blueNoise = ResourceDescriptorHeap[blueNoiseTextureIdx];
     float4 sum = 0;
-
     [loop]
     for (uint ray = 0; ray < rayCount; ++ray)
     {
         float2 xi = LoadSTBN2D(blueNoise, id.xy, frameIndex, ray);
-        sum += TraceRay(pixel, position + n * normalBias, CosineDirection(xi, n));
+        float3 viewDirection = CosineDirection(xi, n);
+        if (SSGIWorldMode() == 0)
+        {
+            sum += TraceRay(pixel, position + n * normalBias, viewDirection);
+            continue;
+        }
+        SSGIHybridRayResult sample = TraceHybridRay(pixel, position + n * normalBias, viewDirection);
+        sum += float4(sample.radiance, float(sample.hit));
     }
     // Cosine-weighted sampling: RGB is E/pi. Normalize by ALL rays, including misses.
     // Alpha stores hit fraction, never an AO factor or normalization weight.
@@ -282,7 +434,8 @@ cbuffer SSGICompositeConstants : register(b0)
     uint albedoTextureIdx;
     uint giTextureIdx;
     float intensity;
-    uint2 padding;
+    uint traceDownsampleFactor;
+    uint padding;
 };
 
 float4 VSMain(uint id : SV_VertexID) : SV_POSITION
@@ -308,9 +461,12 @@ float4 PSMain(float4 position : SV_POSITION) : SV_Target0
     float2 uv = (pixel + 0.5) / sceneSize;
     float3 p = ReconstructPosition(uv, z, invProjMat);
     float3 n = SSGIDecodeViewNormal(normal.Load(int3(pixel, 0)).xyz, viewMat);
-    float footprint = SSGISameDepthPixelFootprint(uv, z, p, sceneSize, invProjMat);
+    float footprint = SameDepthPixelFootprint(uv, z, p, sceneSize, invProjMat);
     float tolerance = max(min(footprint * 0.5, p.z * 0.01), 0.001);
-    float2 halfPixel = float2(pixel) * 0.5;
+    uint factor = max(traceDownsampleFactor, 2u);
+    float inverseFactor = factor == 2u ? 0.5 : rcp(float(factor));
+    // Signal texel i samples full-resolution pixel factor*i, including odd extents.
+    float2 halfPixel = float2(pixel) * inverseFactor;
     int2 base = int2(floor(halfPixel));
     float2 fraction = frac(halfPixel);
     float3 sum = 0;
@@ -325,7 +481,7 @@ float4 PSMain(float4 position : SV_POSITION) : SV_Target0
         {
             continue;
         }
-        int2 fullPixel = tap * 2;
+        int2 fullPixel = tap * int(factor);
         float tapZ = depth.Load(int3(fullPixel, 0));
         if (tapZ >= 1 || orm.Load(int3(fullPixel, 0)).a < 0.5)
         {
@@ -340,7 +496,7 @@ float4 PSMain(float4 position : SV_POSITION) : SV_Target0
         }
         float3 q = ReconstructPosition((fullPixel + 0.5) / sceneSize, tapZ, invProjMat);
         float3 delta = q - p;
-        float planeError = SSGISymmetricPlaneDistance(delta, n, tapN) / tolerance;
+        float planeError = SymmetricPlaneDistance(delta, n, tapN) / tolerance;
 
         // Preserve coplanar surfaces using plane distance rather than point distance.
         if (planeError >= 3)
@@ -355,6 +511,10 @@ float4 PSMain(float4 position : SV_POSITION) : SV_Target0
     }
     float3 indirect = weightSum > 1e-5 ? sum / weightSum : 0;
 
+#ifdef SSGI_DISPLAY_IRRADIANCE
+    // Display the completed GI signal (E/pi), without the receiver's material response.
+    return float4(indirect * intensity, 0);
+#else
     float3 albedo = albedoTexture.Load(int3(pixel, 0)).rgb;
     float3 F = fresnelSchlickRoughness(saturate(dot(n, normalize(-p))), ComputeMaterialF0(albedo, material.b),
                                        ClampPerceptualRoughness(material.g));
@@ -362,6 +522,7 @@ float4 PSMain(float4 position : SV_POSITION) : SV_Target0
     float3 result = indirect * albedo * ComputeDiffuseEnergy(F, material.b) * intensity;
 
     return float4(result, 0);
+#endif
 }
 
 #endif

@@ -127,9 +127,9 @@ public:
         return true;
     }
 
-    bool InitializeSSGI(RenderDevice* dc)
+    bool InitializeSSGI(RenderDevice* dc, bool modeFromSRV = true)
     {
-        return BuildSSGIPipeline(dc);
+        return BuildSSGIPipeline(dc, modeFromSRV);
     }
 
     ID3D12RootSignature* GetSSGIRootSignature()
@@ -156,9 +156,9 @@ public:
     {
         return ssgiHistoryClampPSO.Get();
     }
-    ID3D12PipelineState* GetSSGICompositePSO()
+    ID3D12PipelineState* GetSSGICompositePSO(bool giOnly = false)
     {
-        return ssgiCompositePSO.Get();
+        return giOnly ? ssgiGIOnlyPSO.Get() : ssgiCompositePSO.Get();
     }
     ID3D12PipelineState* GetSSGIAtrousPSO(bool first)
     {
@@ -1020,13 +1020,34 @@ private:
         return true;
     }
 
-    bool BuildSSGIPipeline(RenderDevice* dc)
+    bool BuildSSGIPipeline(RenderDevice* dc, bool modeFromSRV)
     {
         auto* device = dc->GetDevice();
-        CD3DX12_ROOT_PARAMETER parameter;
-        parameter.InitAsConstantBufferView(0);
-        CD3DX12_ROOT_SIGNATURE_DESC desc(ConstantBufferBinding::Count, &parameter, 0, nullptr,
+#ifdef VXGI_ACCEPTANCE_EXACT_FALLBACK
+        // Acceptance-only A/B reference. Production keeps the compact root below.
+        CD3DX12_ROOT_PARAMETER parameters[12];
+        parameters[0].InitAsConstantBufferView(0);
+        for (UINT i = 0; i < 8; ++i) parameters[i + 1].InitAsShaderResourceView(i);
+        for (UINT i = 0; i < 3; ++i) parameters[i + 9].InitAsShaderResourceView(i, 1);
+        const D3D12_STATIC_SAMPLER_DESC sampler = CD3DX12_STATIC_SAMPLER_DESC(0,
+            D3D12_FILTER_MIN_MAG_MIP_LINEAR);
+        CD3DX12_ROOT_SIGNATURE_DESC desc(12, parameters, 1, &sampler,
+                                           D3D12_ROOT_SIGNATURE_FLAG_CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED);
+#else
+        // Six world resources and a raw view of the trace constants for the
+        // mode flag. Other SSGI stages use b0 and the bindless texture heap.
+        CD3DX12_ROOT_PARAMETER parameters[8];
+        parameters[0].InitAsConstantBufferView(0);
+        parameters[1].InitAsShaderResourceView(0);
+        parameters[2].InitAsShaderResourceView(6);
+        parameters[3].InitAsShaderResourceView(7);
+        parameters[4].InitAsShaderResourceView(0, 1);
+        parameters[5].InitAsShaderResourceView(1, 1);
+        parameters[6].InitAsShaderResourceView(3, 1);
+        parameters[7].InitAsShaderResourceView(4, 1);
+        CD3DX12_ROOT_SIGNATURE_DESC desc(8, parameters, 0, nullptr,
                                          D3D12_ROOT_SIGNATURE_FLAG_CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED);
+#endif
         Microsoft::WRL::ComPtr<ID3DBlob> blob;
         HRESULT hr = D3D12SerializeRootSignature(&desc, D3D_ROOT_SIGNATURE_VERSION_1, &blob, nullptr);
         if (SUCCEEDED(hr))
@@ -1042,7 +1063,13 @@ private:
         return BuildSSGIComputePipeline(device, L"Shaders/Shaders_For_SSGI.hlsl", L"CSMain_Pyramid", ssgiPyramidPSO,
                                         {L"SSGI_PASS_PYRAMID=1"}) &&
                BuildSSGIComputePipeline(device, L"Shaders/Shaders_For_SSGI.hlsl", L"CSMain_Trace", ssgiTracePSO,
-                                        {L"SSGI_PASS_TRACE=1"}) &&
+#ifdef VXGI_ACCEPTANCE_EXACT_FALLBACK
+                                         {L"SSGI_PASS_TRACE=1",L"VXGI_MESH_SDF=1"}) &&
+#else
+                                        modeFromSRV ?
+                                            std::vector<std::wstring>{L"SSGI_PASS_TRACE=1",L"VXGI_SSGI_THRESHOLD=1",L"SSGI_MODE_FROM_SRV=1"} :
+                                            std::vector<std::wstring>{L"SSGI_PASS_TRACE=1",L"VXGI_SSGI_THRESHOLD=1"}) &&
+#endif
                BuildSSGIComputePipeline(device, L"Shaders/Shaders_For_SSGI_Spatial.hlsl", L"CSMain_Reconstruct",
                                         ssgiReconstructPSO, {L"SSGI_PASS_RECONSTRUCT=1"}) &&
                BuildSSGIComputePipeline(device, L"Shaders/Shaders_For_SSGI_Temporal.hlsl", L"CSMain_Temporal",
@@ -1059,10 +1086,12 @@ private:
     bool BuildSSGICompositePipeline(ID3D12Device* device)
     {
         auto vs = ShaderCompiler::CompileFromFile(L"Shaders/Shaders_For_SSGI.hlsl", L"VSMain", L"vs_6_6",
-                                                  {L"SSGI_PASS_COMPOSITE=1"});
+                                                  {L"SSGI_PASS_COMPOSITE=1"}, true);
         auto ps = ShaderCompiler::CompileFromFile(L"Shaders/Shaders_For_SSGI.hlsl", L"PSMain", L"ps_6_6",
-                                                  {L"SSGI_PASS_COMPOSITE=1"});
-        if (!vs || !ps)
+                                                  {L"SSGI_PASS_COMPOSITE=1"}, true);
+        auto giOnlyPS = ShaderCompiler::CompileFromFile(L"Shaders/Shaders_For_SSGI.hlsl", L"PSMain", L"ps_6_6",
+                                                  {L"SSGI_PASS_COMPOSITE=1", L"SSGI_DISPLAY_IRRADIANCE=1"}, true);
+        if (!vs || !ps || !giOnlyPS)
         {
             return false;
         }
@@ -1088,7 +1117,13 @@ private:
         if (FAILED(hr))
         {
             ErrorLog::HRESULT("SSGI: composite PSO creation failed.", hr);
+            return false;
         }
+        // Pure GI displays irradiance before receiver albedo/Fresnel/metalness, replacing the lighting base.
+        desc.PS = {giOnlyPS->GetBufferPointer(), giOnlyPS->GetBufferSize()};
+        blend.BlendEnable = FALSE;
+        hr = device->CreateGraphicsPipelineState(&desc, IID_PPV_ARGS(&ssgiGIOnlyPSO));
+        if (FAILED(hr)) ErrorLog::HRESULT("SSGI: GI-only PSO creation failed.", hr);
         return SUCCEEDED(hr);
     }
 
@@ -1096,7 +1131,7 @@ private:
                                   Microsoft::WRL::ComPtr<ID3D12PipelineState>& output,
                                   const std::vector<std::wstring>& defines = {})
     {
-        auto shader = ShaderCompiler::CompileFromFile(path, entry, L"cs_6_6", defines);
+        auto shader = ShaderCompiler::CompileFromFile(path, entry, L"cs_6_6", defines, true);
         if (!shader)
         {
             return false;
@@ -1711,6 +1746,7 @@ private:
     ComPtr<ID3D12PipelineState> ssgiAtrousFirstPSO;
     ComPtr<ID3D12PipelineState> ssgiAtrousPSO;
     ComPtr<ID3D12PipelineState> ssgiCompositePSO;
+    ComPtr<ID3D12PipelineState> ssgiGIOnlyPSO;
 
     ComPtr<ID3D12RootSignature> hbaoRootSignature;
     ComPtr<ID3D12PipelineState> hbaoPSO;

@@ -16,4 +16,22 @@ float3 ReconstructPosition(float2 uv, float depth, float4x4 inverseClipTransform
     return positionH.xyz / positionH.w;
 }
 
+// One-pixel spacing at constant device depth, not distance along a sloped surface.
+// Position must use the same coordinate space as inverseClipTransform.
+float SameDepthPixelFootprint(float2 uv, float depth, float3 position, uint2 sceneSize,
+                             float4x4 inverseClipTransform)
+{
+    float footprintX = length(ReconstructPosition(uv + float2(1.0 / sceneSize.x, 0), depth,
+                                                    inverseClipTransform) - position);
+    float footprintY = length(ReconstructPosition(uv + float2(0, 1.0 / sceneSize.y), depth,
+                                                    inverseClipTransform) - position);
+    return max(footprintX, footprintY);
+}
+
+// Both normals must have unit length and share the displacement's coordinate space.
+float SymmetricPlaneDistance(float3 delta, float3 normal, float3 sampleNormal)
+{
+    return max(abs(dot(delta, normal)), abs(dot(delta, sampleNormal)));
+}
+
 #endif

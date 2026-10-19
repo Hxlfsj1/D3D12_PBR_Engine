@@ -28,7 +28,7 @@ cbuffer SSGITemporalConstants : register(b0)
     uint outputFastTextureIdx;
     float maxHistoryFrames;
     float maxFastAccumulatedFrames;
-    uint padding;
+    uint traceDownsampleFactor;
 };
 
 bool SameSurface(float3 p, float3 n, float3 q, float3 m, float planeTolerance)
@@ -37,7 +37,7 @@ bool SameSurface(float3 p, float3 n, float3 q, float3 m, float planeTolerance)
     // Reprojection already restricts taps to the previous bilinear footprint.
     // At grazing angles coplanar taps can be far apart along the surface;
     // reject normal/plane disagreement, not that tangential separation.
-    return dot(n, m) >= 0.85 && SSGISymmetricPlaneDistance(delta, n, m) <= planeTolerance;
+    return dot(n, m) >= 0.85 && SymmetricPlaneDistance(delta, n, m) <= planeTolerance;
 }
 
 [numthreads(8, 8, 1)]
@@ -56,7 +56,8 @@ void CSMain_Temporal(uint3 id : SV_DispatchThreadID)
     RWTexture2D<float4> output = ResourceDescriptorHeap[outputGITextureIdx];
     RWTexture2D<float> outputDepth = ResourceDescriptorHeap[outputDepthTextureIdx];
     RWTexture2D<float4> outputNormal = ResourceDescriptorHeap[outputNormalTextureIdx];
-    uint2 pixel = id.xy * 2;
+    uint factor = max(traceDownsampleFactor, 2u);
+    uint2 pixel = id.xy * factor;
     float z = depth.Load(int3(pixel, 0));
     output[id.xy] = 0;
     outputFast[id.xy] = 0;
@@ -84,7 +85,7 @@ void CSMain_Temporal(uint3 id : SV_DispatchThreadID)
 
     float2 uv = (pixel + 0.5) / sceneSize;
     float3 p = ReconstructPosition(uv, z, currJitteredInvViewProj);
-    float footprint = SSGISameDepthPixelFootprint(uv, z, p, sceneSize, currJitteredInvViewProj);
+    float footprint = SameDepthPixelFootprint(uv, z, p, sceneSize, currJitteredInvViewProj);
     footprint = max(footprint, 1e-4);
     float rayDepth = length(p - ReconstructPosition(uv, 0, currJitteredInvViewProj));
     float planeTolerance = max(min(footprint * 0.5, rayDepth * 0.01), 0.001);
@@ -99,8 +100,9 @@ void CSMain_Temporal(uint3 id : SV_DispatchThreadID)
     {
         return;
     }
-    // History texel i represents full pixel center 2*i+0.5, not the center of a 2x2 block.
-    float2 historyPixel = (previousUV * sceneSize - 0.5) * 0.5;
+    // History texel i represents full pixel center factor*i+0.5.
+    float inverseFactor = factor == 2u ? 0.5 : rcp(float(factor));
+    float2 historyPixel = (previousUV * sceneSize - 0.5) * inverseFactor;
     int2 base = int2(floor(historyPixel));
     float2 fraction = frac(historyPixel);
     Texture2D<float4> previousGI = ResourceDescriptorHeap[previousGITextureIdx];
@@ -128,7 +130,7 @@ void CSMain_Temporal(uint3 id : SV_DispatchThreadID)
             continue;
         }
         float tapZ = previousDepth.Load(int3(tap, 0));
-        float3 q = ReconstructPosition((tap * 2 + 0.5) / sceneSize, tapZ, prevJitteredInvViewProj);
+        float3 q = ReconstructPosition((tap * int(factor) + 0.5) / sceneSize, tapZ, prevJitteredInvViewProj);
         float3 m = normalize(DecodeGBufferNormal(tapNormal.xyz));
 
         if (!SameSurface(p, n, q, m, planeTolerance))

@@ -15,7 +15,8 @@ cbuffer SSGIReconstructConstants : register(b0)
     uint ormTextureIdx;
     uint rawTextureIdx;
     uint outputTextureIdx;
-    uint3 padding;
+    uint traceDownsampleFactor;
+    uint2 padding;
 };
 
 [numthreads(8, 8, 1)]
@@ -30,7 +31,8 @@ void CSMain_Reconstruct(uint3 id : SV_DispatchThreadID)
     Texture2D<float4> orm = ResourceDescriptorHeap[ormTextureIdx];
     Texture2D<float4> raw = ResourceDescriptorHeap[rawTextureIdx];
     RWTexture2D<float4> output = ResourceDescriptorHeap[outputTextureIdx];
-    uint2 pixel = id.xy * 2;
+    uint factor = max(traceDownsampleFactor, 2u);
+    uint2 pixel = id.xy * factor;
     float z = depth.Load(int3(pixel, 0));
     output[id.xy] = 0;
     if (z >= 1 || orm.Load(int3(pixel, 0)).a < 0.5)
@@ -41,7 +43,7 @@ void CSMain_Reconstruct(uint3 id : SV_DispatchThreadID)
     float2 uv = (pixel + 0.5) / sceneSize;
     float3 p = ReconstructPosition(uv, z, invProjMat);
     float3 n = SSGIDecodeViewNormal(normals.Load(int3(pixel, 0)).xyz, viewMat);
-    float footprint = SSGISameDepthPixelFootprint(uv, z, p, sceneSize, invProjMat);
+    float footprint = SameDepthPixelFootprint(uv, z, p, sceneSize, invProjMat);
     float planeTolerance = max(0.5 * footprint, 1e-4);
 
     // Binomial 5x5 kernel [1,4,6,4,1] in each axis. Gather more current-frame
@@ -65,7 +67,7 @@ void CSMain_Reconstruct(uint3 id : SV_DispatchThreadID)
             {
                 continue;
             }
-            int2 fullPixel = tap * 2;
+            int2 fullPixel = tap * int(factor);
             float tapZ = depth.Load(int3(fullPixel, 0));
             if (tapZ >= 1 || orm.Load(int3(fullPixel, 0)).a < 0.5)
             {
@@ -81,7 +83,7 @@ void CSMain_Reconstruct(uint3 id : SV_DispatchThreadID)
             float3 tapP = ReconstructPosition((fullPixel + 0.5) / sceneSize, tapZ, invProjMat);
             float3 delta = tapP - p;
             // Symmetric tangent-plane distance preserves sloped surfaces better than |z0-z1|.
-            float planeError = SSGISymmetricPlaneDistance(delta, n, tapN) / planeTolerance;
+            float planeError = SymmetricPlaneDistance(delta, n, tapN) / planeTolerance;
             if (planeError >= 3)
             {
                 continue;
@@ -119,6 +121,8 @@ cbuffer SSGIAtrousConstants : register(b0)
     uint stepWidth;
     float phiLuminance;
     float depthThreshold;
+    uint traceDownsampleFactor;
+    uint3 padding;
 };
 // Both variants require at most a two-texel border (short-history 5x5 or step-2 3x3).
 groupshared float4 signalTile[12][12];
@@ -138,7 +142,7 @@ void CSMain_Atrous(uint3 id : SV_DispatchThreadID, uint3 group : SV_GroupID, uin
     {
         uint2 local = uint2(i % 12, i / 12);
         int2 pixel = clamp(int2(group.xy * 8 + local) - 2, 0, int2(outputSize) - 1);
-        int2 fullPixel = pixel * 2;
+        int2 fullPixel = pixel * int(max(traceDownsampleFactor, 2u));
         float historyLength = history.Load(int3(pixel, 0)).a;
         float3 n = 0;
         float3 p = 0;

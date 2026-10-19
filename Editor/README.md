@@ -2,9 +2,13 @@
 
 ## UI 创建中心
 
-所有面板及控件统一通过 `EditorUICenter.h` 创建，颜色、字体和尺寸集中在 `EditorTheme.h`。参照本机 UE 5.4.4 Starship 源码，使用随项目分发的 Roboto 字体。字号按 DPI 缩放，不再跟随窗口宽度变化。Outliner、Details、Output Log 和 File 菜单均使用统一组件；搜索框实际过滤对应面板内容。
+所有面板及控件统一通过 `EditorUICenter.h` 创建，颜色、字体和尺寸集中在 `EditorTheme.h`。参照本机 UE 5.4.4 Starship 源码，使用随项目分发的 Roboto 字体。字号按 DPI 缩放，不再跟随窗口宽度变化。Outliner、Details、Output Log 和 File / Edit / Debug 菜单均使用统一组件；搜索框实际过滤对应面板内容。
 
 按 **F10** 打开或关闭 UI 创建中心的组件模板窗口。新 UI 的接入方式和参考源码见 [STYLE_REFERENCE.md](STYLE_REFERENCE.md)。MSBuild 自动执行 `CheckUIArchitecture.ps1`，阻止功能面板绕过中心直接创建 ImGui 控件。模板是 ImGui 对 Starship 的适配，字体和语义色有明确来源，图标与布局不是 UE 整个窗口的逐像素复制。
+
+顶部 **Edit → 相机** 在鼠标悬停时显示当前相机的位置、旋转、固定单位缩放、FOV、裁剪距离与视口大小。点击 **Copy camera JSON** 可复制完整机位数据，直接粘贴用于复现测试；面板只读，复制不会关闭，点击外部关闭。相机使用渲染器原生的左手 Y-up 坐标，旋转 XYZ 分别是 Pitch、Yaw、Roll（度），与下述模型 Details 的 Z-up 轴映射不同。复制的 JSON 包含精确的 eye、forward、up、target 和投影参数，不受界面小数位显示影响。
+
+顶部 **Debug → Pass** 是渲染查看模式的统一入口，悬停 Pass 后可选择 **默认**、**关闭 VXGI**、**仅 SSGI** 或 **仅 GI**，当前项显示勾选。默认显示包含完整 GI 的正常合成画面；关闭 VXGI 保留模型原色、直接光、IBL 和 SSGI 的正常合成，只关闭世界空间探针补充；仅 SSGI 显示屏幕空间间接光，屏幕未命中时结束；仅 GI 显示屏幕空间与世界探针补充合成的完整间接光。两个独立 GI 输出都不乘接收表面的原色。原来的 T 切换和 Details 中的 SSGI source 入口已移除。GI 不可用时，除默认外的三个选项禁用。查看选择仅保存在本次运行，不修改 JSON 中的质量配置。F10 模板复用同一个菜单组件，并在 **Debug pass** 中提供可用状态切换，便于检查禁用样式。
 
 Outliner 和 Output Log 使用 Unity 式深浅交替行底色，颜色仍由统一主题管理。搜索后按显示顺序重新交替，模型选中与悬停高亮覆盖行底色。
 

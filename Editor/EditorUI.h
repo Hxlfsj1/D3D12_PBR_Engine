@@ -8,6 +8,11 @@
 #include "EditorSelection.h"
 #include "EditorGizmo.h"
 #include "EditorTransform.h"
+#include "EditorCameraSnapshot.h"
+#include "VXGIWorld.h"
+#include "VXGIMeshSDFScene.h"
+#include "VXGISurface.h"
+#include "VXGIProbeState.h"
 
 #include "EditorUICenter.h"
 
@@ -43,7 +48,12 @@ public:
 
     // Returns a quit request for the application to handle after completing the frame.
     static bool Draw(ResourceManager& resourceManager, EditorSelection& selection,
-        EditorGizmo& gizmo, const EditorGizmo::CameraFrame& camera, EditorHistory& history)
+        EditorGizmo& gizmo, const EditorGizmo::CameraFrame& camera,
+        const EditorCameraSnapshot& cameraSnapshot, EditorHistory& history,
+        const VXGIWorld& vxgiWorld, const VXGIMeshSDFScene& vxgiSDF, const VXGISurface& vxgiSurface,
+        const VXGIProbeState& vxgiProbes, double vxgiProbeGpuMs, uint64_t vxgiProbeGpuBytes,
+        double vxgiFilterGpuMs, uint64_t vxgiFilterGpuBytes, VXGIConfig& vxgiConfig,
+        RenderDebugPass& debugPass, bool giAvailable)
     {
         auto& instances = resourceManager.GetSceneInstances();
         history.CommitInactiveTransform(instances, ImGui::GetActiveID());
@@ -61,7 +71,7 @@ public:
         const ImGuiViewport* viewport = ImGui::GetMainViewport();
         if (!input.WantTextInput && ImGui::IsKeyPressed(ImGuiKey_F10, false)) s_showStyleGuide = !s_showStyleGuide;
         float menuHeight = 0.0f;
-        const bool quitRequested = EditorUICenter::FileMenu(menuHeight);
+        const bool quitRequested = EditorUICenter::MainMenu(menuHeight, cameraSnapshot, debugPass, giAvailable);
         // WorkPos incorporates main-menu height on the next frame. Use this frame's
         // measured height so first display and font/viewport resizing don't overlap.
         const ImVec2 origin(viewport->Pos.x, viewport->Pos.y + menuHeight);
@@ -86,7 +96,11 @@ public:
         EditorUICenter::CreatePanel({"Outliner", "Outliner", EditorUICenter::Icon::Outliner}, origin, ImVec2(s_leftWidth, columnsHeight),
             [&] { DrawOutlinerBody(resourceManager, selection, history); });
         EditorUICenter::CreatePanel({"Detail", "Details", EditorUICenter::Icon::Details}, ImVec2(rightX, origin.y), ImVec2(s_rightWidth, columnsHeight),
-            [&] { DrawDetailBody(resourceManager, selection, history); });
+            [&] {
+                DrawDetailBody(resourceManager, selection, history);
+                DrawVXGIBody(vxgiWorld, vxgiSDF, vxgiSurface, vxgiProbes, vxgiProbeGpuMs, vxgiProbeGpuBytes,
+                    vxgiFilterGpuMs, vxgiFilterGpuBytes, vxgiConfig);
+            });
         EditorUICenter::CreatePanel({"Console", "Output Log", EditorUICenter::Icon::Console}, ImVec2(origin.x, origin.y + columnsHeight + kSplitterThickness),
             ImVec2(total.x, s_bottomHeight),
             [&] { DrawConsoleBody(); });
@@ -226,6 +240,151 @@ private:
             }
         }
         EditorUICenter::Muted("Select an object to view details.");
+    }
+
+    static void DrawVXGIBody(const VXGIWorld& world, const VXGIMeshSDFScene& sdf, const VXGISurface& surface,
+        const VXGIProbeState& probes, double probeGpuMs, uint64_t probeGpuBytes,
+        double filterGpuMs, uint64_t filterGpuBytes, VXGIConfig& config)
+    {
+        if (!config.enabled)
+        {
+            if (EditorUICenter::Section("VXGI allocation")) EditorUICenter::Muted("Disabled in Pipeline.json.");
+            return;
+        }
+        const auto property = [](const char* label, const std::string& value) {
+            EditorUICenter::ReadOnlyProperty(label, value.c_str());
+        };
+        if (EditorUICenter::Section("VXGI allocation"))
+        {
+            const char* views[] = { "Off", "Probes", "Cells", "Both", "SDF slice", "Hit position", "Hit normal", "Sun visibility",
+                "Surface albedo", "Material normal", "Metallic", "Emissive", "Direct + emission",
+                "Probe status", "Probe SH", "Probe age", "Filtered SH", "Neighbor visibility",
+                "Query E/pi", "Query support", "Query missing / negative" };
+            EditorUICenter::ChoiceProperty("Debug view", config.debugView, views, 21);
+            if (config.debugView == 4)
+            {
+                const char* axes[] = { "X", "Y", "Z" };
+                EditorUICenter::ChoiceProperty("Slice axis", config.sdfSliceAxis, axes, 3);
+                EditorUICenter::FloatProperty("Slice position", config.sdfSlicePosition);
+                if (!std::isfinite(config.sdfSlicePosition)) config.sdfSlicePosition = 0.0f;
+            }
+            const auto& stats = world.GetStats();
+            property("Instances", std::to_string(stats.includedInstances) + " / " + std::to_string(stats.sceneInstances));
+            property("Cutout proxies", std::to_string(stats.cutoutInstances));
+            property("Transparent skipped", std::to_string(stats.transparentInstances));
+            property("LOD0 triangles", std::to_string(stats.triangles));
+            property("Cells / probes", std::to_string(stats.cells) + " / " + std::to_string(world.GetOccupiedCenters().size()));
+            property("Voxel size", std::to_string(world.GetVoxelSize()));
+            property("CPU MiB (est.)", std::to_string(stats.memoryBytes / (1024.0 * 1024.0)));
+            property("Build (ms)", std::to_string(stats.buildMilliseconds));
+            property("Revision", std::to_string(world.GetRevision()));
+            property("Geometry hash", std::to_string(stats.geometryFingerprint));
+            EditorUICenter::Muted("Allocation only: fixed cell centers and triangle candidates. GPU probe history is shown below. Cell/probe overlays ignore depth.", true);
+            EditorUICenter::Muted("Cutout triangles are conservative; alpha holes are not evaluated yet.", true);
+            if (!world.GetLastError().empty()) EditorUICenter::Error(world.GetLastError().c_str());
+        }
+
+        if (EditorUICenter::Section("Distance field"))
+        {
+            // Bind the existing read-only rows to unique local assets. No global
+            // distance field is constructed for editor statistics.
+            VXGISDF::Stats sdfStats{};
+            VXGISDF::Grid grid{};
+            std::vector<const VXGIMeshSDFCache::Asset*> assets;
+            for(const auto& instance:sdf.GetInstances())
+            {
+                if(std::find(assets.begin(),assets.end(),instance.asset.get())!=assets.end()) continue;
+                assets.push_back(instance.asset.get());
+                const auto& local=instance.asset->GetSDF();const auto& stats=local.GetStats();
+                sdfStats.nodes+=stats.nodes;sdfStats.occupiedCells+=stats.occupiedCells;
+                sdfStats.triangleReferences+=stats.triangleReferences;sdfStats.memoryBytes+=stats.memoryBytes;
+                sdfStats.buildMilliseconds+=stats.buildMilliseconds;
+                grid.cellSize=local.GetGrid().cellSize;
+                for(size_t axis=0;axis<3;++axis) grid.nodeDimensions[axis]=(std::max)(grid.nodeDimensions[axis],local.GetGrid().nodeDimensions[axis]);
+            }
+            property("SDF cell size", std::to_string(grid.cellSize));
+            property("Node dimensions", std::to_string(grid.nodeDimensions[0]) + " x " +
+                std::to_string(grid.nodeDimensions[1]) + " x " + std::to_string(grid.nodeDimensions[2]));
+            property("Distance nodes", std::to_string(sdfStats.nodes));
+            property("Surface cells", std::to_string(sdfStats.occupiedCells));
+            property("Triangle refs", std::to_string(sdfStats.triangleReferences));
+            property("CPU MiB (est.)", std::to_string(sdfStats.memoryBytes / (1024.0 * 1024.0)));
+            property("Build (ms)", std::to_string(sdfStats.buildMilliseconds));
+            property("Revision", std::to_string(sdf.GetRevision()));
+            property("Geometry revision", std::to_string(sdf.GetRevision()));
+            EditorUICenter::Muted("Unsigned distances support open meshes. Ray hits are refined against triangles; alpha holes remain conservative.", true);
+            if (!sdf.GetLastError().empty()) EditorUICenter::Error(sdf.GetLastError().c_str());
+        }
+
+        if (EditorUICenter::Section("World surface"))
+        {
+            EditorUICenter::Muted("Screen misses query probe radiance along the original finite SSGI ray. No per-hit lighting is evaluated.", true);
+            const float previousMip = config.surfaceMaterialMipLevel;
+            if (EditorUICenter::FloatProperty("Material mip", config.surfaceMaterialMipLevel) &&
+                (!std::isfinite(config.surfaceMaterialMipLevel) || config.surfaceMaterialMipLevel < 0))
+                config.surfaceMaterialMipLevel = previousMip;
+            property("Materials", std::to_string(surface.GetMaterials().size()));
+            property("Revision", std::to_string(surface.GetRevision()));
+            property("Material revision", std::to_string(surface.GetMaterialRevision()));
+            property("Lighting revision", std::to_string(surface.GetLightingRevision()));
+            property("Sampling revision", std::to_string(surface.GetSamplingRevision()));
+            EditorUICenter::Muted("Material sampling here supplies probe updates and geometry coverage. World GI fallback reads the probe cache.", true);
+            if (!surface.GetLastError().empty()) EditorUICenter::Error(surface.GetLastError().c_str());
+        }
+
+        if (EditorUICenter::Section("Probe cache"))
+        {
+            const auto integer = [](const char* label, int& value, int minimum, int maximum, bool even = false) {
+                const int previous = value;
+                if (EditorUICenter::IntegerProperty(label, value) &&
+                    (value < minimum || value > maximum || (even && value % 2 != 0))) value = previous;
+            };
+            integer("Probes / frame", config.probeProbesPerFrame, 1, 4096);
+            integer("Classify rays", config.probeClassifyRays, 8, 256, true);
+            integer("Rays / update", config.probeRaysPerUpdate, 8, 256, true);
+            integer("History window", config.probeMaxHistoryUpdates, 1, 256);
+            const float previousThreshold = config.probeBackfaceThreshold;
+            if (EditorUICenter::FloatProperty("Backface limit", config.probeBackfaceThreshold) &&
+                (!std::isfinite(config.probeBackfaceThreshold) || config.probeBackfaceThreshold < 0 || config.probeBackfaceThreshold > 1))
+                config.probeBackfaceThreshold = previousThreshold;
+            const float previousWeight = config.probeFilterNeighborWeight;
+            if (EditorUICenter::FloatProperty("Filter neighbor weight", config.probeFilterNeighborWeight) &&
+                (!std::isfinite(config.probeFilterNeighborWeight) || config.probeFilterNeighborWeight < 0 || config.probeFilterNeighborWeight > 1))
+                config.probeFilterNeighborWeight = previousWeight;
+            EditorUICenter::Muted("Budget: 1..4096 probes/frame; even 8..256 rays; 1..256 history window. Probe centers stay fixed.", true);
+
+            const auto& stats = probes.GetStats();
+            property("Probes", std::to_string(stats.probeCount));
+            property("Epoch", std::to_string(probes.GetRevision()));
+            property("Submitted frame", std::to_string(stats.submittedFrameIndex));
+            property("GPU time (ms)", std::to_string(probeGpuMs));
+            property("GPU MiB", std::to_string(probeGpuBytes / (1024.0 * 1024.0)));
+            property("Filter GPU ms", std::to_string(filterGpuMs));
+            property("Filter GPU MiB", std::to_string(filterGpuBytes / (1024.0 * 1024.0)));
+            EditorUICenter::Muted("Surface queries blend up to eight individually visible raw probes. Filtered SH is diagnostic; missing support is explicit.", true);
+            if (stats.hasCompletedReadback)
+            {
+                property("Readback frame", std::to_string(stats.completedFrameIndex));
+                property("Valid / disabled", std::to_string(stats.valid) + " / " + std::to_string(stats.disabled));
+                property("Unclassified", std::to_string(stats.unclassified));
+                property("Reason none", std::to_string(stats.reasons[VXGIProbeState::None]));
+                property("Backface", std::to_string(stats.reasons[VXGIProbeState::Backface]));
+                property("Unsafe origin", std::to_string(stats.reasons[VXGIProbeState::UnsafeOrigin]));
+                property("Trace failure", std::to_string(stats.reasons[VXGIProbeState::TraceFailure]));
+                property("Sample failure", std::to_string(stats.reasons[VXGIProbeState::SampleFailure]));
+                property("Updates total", std::to_string(stats.totalUpdates));
+                property("Updates avg", std::to_string(stats.averageUpdates));
+                property("Updates min/max", std::to_string(stats.minimumUpdates) + " / " + std::to_string(stats.maximumUpdates));
+                property("Samples total", std::to_string(stats.totalSamples));
+                property("Updated probes", std::to_string(stats.probesWithUpdates));
+                property("Age avg", std::to_string(stats.averageAge));
+                property("Age min/max", std::to_string(stats.minimumAge) + " / " + std::to_string(stats.maximumAge));
+                EditorUICenter::Muted("GPU statistics are the last completed asynchronous snapshot. Age counts submitted probe frames since the last successful sample.", true);
+            }
+            else EditorUICenter::Muted("Awaiting a completed GPU snapshot for this epoch.", true);
+            EditorUICenter::Muted("Status: green valid, red disabled, gray unclassified. Probe SH glyphs show octahedral E/pi from unconvolved RGB SH.", true);
+            if (!probes.GetLastError().empty()) EditorUICenter::Error(probes.GetLastError().c_str());
+        }
     }
 
     static void DrawTransformRow(const char* label, DirectX::XMFLOAT3& value,

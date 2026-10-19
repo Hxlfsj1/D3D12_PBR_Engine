@@ -65,6 +65,10 @@ namespace EditorTheme
     inline constexpr float LeftWidth = 250.0f, RightWidth = 390.0f, BottomHeight = 190.0f;
     inline constexpr float MinPanelWidth = 180.0f, MinPanelHeight = 100.0f, MinViewportWidth = 240.0f;
     inline constexpr float SplitterThickness = 4.0f, SplitterGrabSize = 24.0f;
+    inline constexpr float ProgressHeight = 20.0f;
+    inline constexpr float LoadingWidth = 480.0f, LoadingMargin = 24.0f;
+    inline constexpr float LoadingPadding = 20.0f, LoadingSpacing = 12.0f, LoadingRounding = 4.0f;
+    inline constexpr float CameraPopupWidth = 440.0f, CameraPopupMargin = 8.0f;
     inline constexpr ImU32 GizmoSelected = IM_COL32(255,215,70,255);
     inline constexpr ImU32 GizmoCenter = IM_COL32(225,225,225,255);
     inline constexpr ImU32 GizmoOutline = IM_COL32(40,40,40,255);
@@ -188,6 +192,8 @@ namespace EditorTheme
         c[ImGuiCol_ResizeGripHovered] = EditorColors::Hover;
         c[ImGuiCol_ResizeGripActive] = EditorColors::Primary;
         c[ImGuiCol_UnsavedMarker] = EditorColors::Warning;
+        c[ImGuiCol_PlotHistogram] = EditorColors::Primary;
+        c[ImGuiCol_PlotHistogramHovered] = EditorColors::PrimaryHover;
 
         style.WindowRounding = 0.0f;
         style.ChildRounding = 0.0f;

@@ -1409,6 +1409,14 @@ public:
         return pass;
     }
 
+    // Optional instrumentation around live passes, including their input barriers.
+    // The normal renderer leaves this unset; observers must only record commands.
+    void SetPassExecutionObserver(
+        std::function<void(ID3D12GraphicsCommandList*, const char*, bool)> observer)
+    {
+        m_passExecutionObserver = std::move(observer);
+    }
+
     void Execute(ID3D12GraphicsCommandList* cmdList)
     {
         if (m_executed)
@@ -1452,14 +1460,15 @@ public:
                 continue;
             }
 
-            SubmitBarriers(cmdList, m_passBarriers[passIndex]);
-
             RDGPass& pass = m_passes[passIndex];
+            if (m_passExecutionObserver) m_passExecutionObserver(cmdList, pass.name.c_str(), true);
+            SubmitBarriers(cmdList, m_passBarriers[passIndex]);
 
             if (pass.execute)
             {
                 pass.execute(cmdList);
             }
+            if (m_passExecutionObserver) m_passExecutionObserver(cmdList, pass.name.c_str(), false);
         }
 
         SubmitBarriers(cmdList, m_finalBarriers);
@@ -2478,10 +2487,10 @@ private:
     }
 
     void TraceBarrier(
-        const char* phase,
-        const std::string& textureName,
-        D3D12_RESOURCE_STATES before,
-        D3D12_RESOURCE_STATES after) const
+        [[maybe_unused]] const char* phase,
+        [[maybe_unused]] const std::string& textureName,
+        [[maybe_unused]] D3D12_RESOURCE_STATES before,
+        [[maybe_unused]] D3D12_RESOURCE_STATES after) const
     {
     #if defined(_DEBUG)
         if constexpr (EnableBarrierDump)
@@ -2500,8 +2509,8 @@ private:
     }
 
     void TraceUAVBarrier(
-        const char* phase,
-        const std::string& resourceName) const
+        [[maybe_unused]] const char* phase,
+        [[maybe_unused]] const std::string& resourceName) const
     {
     #if defined(_DEBUG)
         if constexpr (EnableBarrierDump)
@@ -2929,6 +2938,7 @@ private:
 
     RDGTransientResourceAllocator m_transientResourceAllocator;
     RDGTransientSrvUavDescriptorAllocator m_transientSrvUavDescriptorAllocator;
+    std::function<void(ID3D12GraphicsCommandList*, const char*, bool)> m_passExecutionObserver;
 
     std::vector<RDGTexture> m_textures;
     std::vector<RDGBuffer> m_buffers;

@@ -11,6 +11,7 @@
 #include <wrl/client.h>
 #include <string>
 #include <vector>
+#include <functional>
 
 using Microsoft::WRL::ComPtr;
 
@@ -30,14 +31,15 @@ public:
         }
     }
 
-    bool Initialize(HWND hwnd, int width, int height, int frameBufferCount)
+    bool Initialize(HWND hwnd, int width, int height, int frameBufferCount,
+        const std::function<bool(ID3D12Device*)>& onDeviceCreated = {})
     {
         m_renderTargets.resize(frameBufferCount);
         m_commandAllocator.resize(frameBufferCount);
         m_fence.resize(frameBufferCount);
         m_fenceValue.resize(frameBufferCount, 0);
 
-        if (!CreateDevice()) return false;
+        if (!CreateDevice(onDeviceCreated)) return false;
         if (!CreateCommandObjects(frameBufferCount)) return false;
         if (!CreateSwapChain(hwnd, width, height, frameBufferCount)) return false;
         if (!CreateDepthBuffer(width, height)) return false;
@@ -45,7 +47,7 @@ public:
         return true;
     }
 
-    bool CreateDevice()
+    bool CreateDevice(const std::function<bool(ID3D12Device*)>& onDeviceCreated = {})
     {
 #if defined(_DEBUG)
         // Activate the D3D12 validation layer BEFORE any device is created;
@@ -152,6 +154,8 @@ public:
         }
 #endif
 
+        // Attach diagnostics before creating queues, command lists or resources.
+        if (onDeviceCreated && !onDeviceCreated(device.Get())) return false;
         return true;
     }
 

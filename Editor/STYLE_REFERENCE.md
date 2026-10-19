@@ -63,6 +63,42 @@ Shift selection and Ctrl+A retain the text widget's native behavior. Line select
 includes the newline and retains the frozen copy snapshot while the log has focus.
 
 New control types must be added to the center and demonstrated in `StyleGuide`.
+`MainMenu` owns the File, Edit and Debug menus. Hovering **Debug > Pass** exposes
+four mutually exclusive views: **默认**, **关闭 VXGI**, **仅 SSGI** and **仅 GI**.
+The active view is marked with a check; all three alternate views are disabled
+when GI is unavailable. Default displays the normal composition with full GI;
+VXGI-off retains the normal material, direct-light and IBL composition with SSGI
+but disables world-space probe fallback. SSGI-only shows the screen
+contribution and ends on screen misses, while GI-only shows screen plus world
+probe indirect light. The separate GI views omit receiver albedo. This menu
+replaces the former T shortcut and Details source selector.
+`DebugPassMenu` is reused by the main menu and the F10 template's own menu bar.
+The F10 **Debug pass** section can toggle availability to inspect the disabled
+state. View selection is runtime state supplied by the caller, independent of
+render quality configuration; selecting a menu item does not edit JSON.
+Hovering **Edit > 相机** opens a temporary
+submenu using `CameraTransformContent`, also demonstrated in the F10 **Camera
+transform** section. Its read-only property rows show the live world transform,
+vertical FOV, clipping planes and viewport size. **Copy camera JSON** exports the
+current view at float round-trip precision, including eye/target/up/forward so
+rendering tests can reproduce the view. Copying keeps the submenu open; clicking
+outside dismisses it. Popup width is constrained to the viewport at every DPI;
+values wrap and short viewports scroll without reducing the font size. The camera
+has no transform scale control; its displayed/exported scale is `(1, 1, 1)`.
+Camera values use the renderer's native left-handed, Y-up axes and degree Pitch /
+Yaw / Roll rotation, explicitly labelled in the popup. They are not remapped to
+the model Details panel's Z-up editor axes, so pasted values directly reproduce
+the engine camera without an implicit coordinate conversion.
+`Progress` displays a clamped completion fraction with a numeric percentage using
+the shared blue accent. `LoadingScreen` places it in a centered card over the
+editor background, followed by one wrapped status message. The F10 **Loading**
+section uses the same content and offers a three-second full-screen preview.
+Startup reports actual completed work through this API; the control does not
+animate or invent intermediate progress. At 320 / 640 pixel window widths and
+100% / 150% DPI, only the card width and status wrapping change, never font size.
+`IntegerProperty` uses the shared property grid, wrapped labels and single-click
+integer text editing. It is demonstrated by **Sample count** in F10 Properties;
+business bindings validate integer ranges without drawing their own controls.
 Do not duplicate ImGui style pushes, custom headers or per-panel sizes. The
 MSBuild target `CheckEditorUIArchitecture` rejects raw widgets outside the center.
 
