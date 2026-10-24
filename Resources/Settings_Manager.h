@@ -9,6 +9,7 @@
 #include <fstream>
 #include <cmath>
 #include <cstdint>
+#include <array>
 #include <stdexcept>
 #include <DirectXMath.h>
 #include "json.hpp"
@@ -96,6 +97,7 @@ struct SSGIConfig
 {
     bool enabled = false;
     bool giOnly = false; // Runtime presentation; Debug > Pass controls the editor view.
+    bool checkerboard = false;
     float intensity = 1.0f;
     int quality = 1;
     float radius = 2.0f;
@@ -115,6 +117,12 @@ struct VXGIConfig
     float sdfCellSize = 1.0f;
     int sdfSliceAxis = 2;
     float sdfSlicePosition = 0.0f;
+    bool globalSDFEnabled = true;
+    int globalSDFCells = 64, globalSDFClipmaps = 3;
+    std::array<uint32_t, 3> globalSDFLayerCells{};
+    float globalSDFCellSize = 0.5f;
+    float globalSDFTraceDistance = 128.0f;
+    int globalSDFMaxSteps = 256;
     float surfaceMaterialMipLevel = 0.0f;
     float surfaceRayMinDistance = 0.0001f;
     float surfaceMaxRayDistance = 1000.0f;
@@ -183,15 +191,7 @@ public:
             {
                 s_skyboxPath = j.value("skybox_path", "HDRs/citrus_orchard_road_puresky_4k.hdr");
 
-                bool isStressTest = j.value("stress_test", false);
-                std::vector<InstanceDesc> instances = j.value("instances", nlohmann::json::array()).get<std::vector<InstanceDesc>>();
-
-                if (isStressTest && !instances.empty())
-                {
-                    return GeneratePerformanceTestScene(instances[0].modelPath);
-                }
-
-                return instances;
+                return j.value("instances", nlohmann::json::array()).get<std::vector<InstanceDesc>>();
             }
             else if (j.is_array())
             {
@@ -209,39 +209,6 @@ public:
         }
 
         return {};
-    }
-
-    static std::vector<InstanceDesc> GeneratePerformanceTestScene(const std::string& modelPath)
-    {
-        std::vector<InstanceDesc> scene;
-        scene.reserve(8000);
-
-        float spacing = 3.0f;
-        float offset = (10.0f * spacing) / 2.0f;
-
-        for (int x = 0; x < 20; ++x)
-        {
-            for (int y = 0; y < 20; ++y)
-            {
-                for (int z = 0; z < 20; ++z)
-                {
-                    std::string name = "Test_Model_" + std::to_string(x) + "_" + std::to_string(y) + "_" + std::to_string(z);
-
-                    InstanceDesc desc;
-                    desc.name = name;
-                    desc.modelPath = modelPath;
-                    desc.pos = { (x * spacing) - offset, (y * spacing) - offset, (z * spacing) - offset };
-                    desc.rot = { 0.0f, 0.0f, 0.0f };
-                    desc.scale = { 1.0f, 1.0f, 1.0f };
-                    desc.isTransparent = false;
-                    desc.isCutout = false;
-                    desc.materialOverrideIndex = 0xFFFFFFFF;
-
-                    scene.push_back(desc);
-                }
-            }
-        }
-        return scene;
     }
 
     void LoadAllSettingsFromJson()
@@ -376,6 +343,7 @@ private:
                 {
                     const auto& config = j.at("ssgi");
                     ssgi.enabled = config.value("enabled", ssgi.enabled);
+                    ssgi.checkerboard = config.value("checkerboard", ssgi.checkerboard);
                     ssgi.intensity = config.value("intensity", ssgi.intensity);
                     if (config.contains("quality") && !config.at("quality").is_number_integer())
                         throw std::runtime_error("SSGI quality must be an integer from 1 to 4.");
@@ -419,6 +387,41 @@ private:
                     vxgi.enabled = config.value("enabled", vxgi.enabled);
                     vxgi.voxelSize = config.value("voxel_size", vxgi.voxelSize);
                     vxgi.debugView = readInteger(config, "debug_view", vxgi.debugView, 0, 20);
+                    if (config.contains("global_sdf"))
+                    {
+                        const auto& global = config.at("global_sdf");
+                        if (!global.is_object()) throw std::runtime_error("VXGI global_sdf must be an object.");
+                        vxgi.globalSDFEnabled = global.value("enabled", vxgi.globalSDFEnabled);
+                        vxgi.globalSDFClipmaps = readInteger(global, "clipmaps", vxgi.globalSDFClipmaps, 1, 3);
+                        if (global.contains("cells_per_axis"))
+                        {
+                            const auto& cells = global.at("cells_per_axis");
+                            vxgi.globalSDFLayerCells = {};
+                            if (cells.is_array())
+                            {
+                                if (cells.size() != size_t(vxgi.globalSDFClipmaps))
+                                    throw std::runtime_error("VXGI global_sdf.cells_per_axis needs one count per clipmap.");
+                                for (size_t layer = 0; layer < cells.size(); ++layer)
+                                {
+                                    const nlohmann::json entry = {{"cells_per_axis", cells.at(layer)}};
+                                    const int count = readInteger(entry, "cells_per_axis", 0, 2, 256);
+                                    if (count % 2)
+                                        throw std::runtime_error("VXGI global_sdf cells_per_axis counts must be even.");
+                                    vxgi.globalSDFLayerCells[layer] = uint32_t(count);
+                                }
+                                vxgi.globalSDFCells = int(vxgi.globalSDFLayerCells[0]);
+                            }
+                            else
+                                vxgi.globalSDFCells = readInteger(global, "cells_per_axis", vxgi.globalSDFCells, 2, 256);
+                        }
+                        vxgi.globalSDFCellSize = global.value("cell_size", vxgi.globalSDFCellSize);
+                        vxgi.globalSDFTraceDistance = global.value("trace_distance", vxgi.globalSDFTraceDistance);
+                        vxgi.globalSDFMaxSteps = readInteger(global, "max_trace_steps", vxgi.globalSDFMaxSteps, 1, 1024);
+                        if (vxgi.globalSDFCells % 2 || !std::isfinite(vxgi.globalSDFCellSize) || vxgi.globalSDFCellSize <= 0)
+                            throw std::runtime_error("VXGI global_sdf requires an even cell count and finite positive cell_size.");
+                        if (!std::isfinite(vxgi.globalSDFTraceDistance) || vxgi.globalSDFTraceDistance <= 0)
+                            throw std::runtime_error("VXGI global_sdf.trace_distance must be finite and positive.");
+                    }
                     if (config.contains("probes"))
                     {
                         const auto& probes = config.at("probes");

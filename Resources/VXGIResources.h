@@ -15,6 +15,7 @@
 #include "VXGIProbeCache.h"
 #include "VXGIProbePass.h"
 #include "VXGIProbeFilterPass.h"
+#include "VXGIGlobalSDFRuntime.h"
 #include "InitializationProgress.h"
 #include <algorithm>
 #include <chrono>
@@ -38,6 +39,7 @@ public:
     VXGIProbeCache probeCache;
     VXGIProbePass probePass;
     VXGIProbeFilterPass filterPass;
+    VXGIGlobalSDFRuntime globalSDF;
 
     bool Initialize(RenderDevice& device, UINT frameCount,
         const std::vector<ModelInstance>& instances, const std::vector<MaterialData>& materials,
@@ -60,7 +62,8 @@ public:
             return true;
         }
         if (!probePass.Initialize(device, frameCount, true) ||
-            !filterPass.Initialize(device, frameCount, true))
+            !filterPass.Initialize(device, frameCount, true) ||
+            (config.globalSDFEnabled && !globalSDF.Initialize(device, frameCount)))
             return Fail("VXGI probe pipeline initialization failed.");
         const InitializationProgress sceneProgress = progress ? InitializationProgress{
             [&progress](float fraction, const std::string& status)
@@ -253,6 +256,7 @@ public:
         if (!probePass.OnSubmitted(slot, fence, probes) || !filterPass.OnSubmitted(slot, fence))
             return Fail("VXGI failed to commit the submitted probe batch.");
         probeCache.OnSubmitted(probes.GetPendingWork());
+        if (!globalSDF.OnSubmitted()) return Fail(globalSDF.GetLastError());
         m_error.clear();
         return true;
     }
@@ -261,6 +265,18 @@ public:
     double GetInitializationMilliseconds() const { return m_initializationMilliseconds; }
     uint64_t GetInitializationBatches() const { return m_initializationBatches; }
     UINT GetFrameCount() const { return m_frameCount; }
+
+    bool RecordGlobalSDF(RenderDevice& device, int slot, const DirectX::XMFLOAT3& cameraPosition,
+        const VXGIConfig& config)
+    {
+        if (!config.globalSDFEnabled) return true;
+        if (!globalSDF.Initialize(device, m_frameCount) ||
+            !globalSDF.Record(device, slot, meshSDFScene, gpuScene, cameraPosition,
+                {uint32_t(config.globalSDFCells), uint32_t(config.globalSDFClipmaps), config.globalSDFCellSize,
+                    config.globalSDFLayerCells}))
+            return Fail(globalSDF.GetLastError());
+        return true;
+    }
 
 private:
     bool Fail(const std::string& message)

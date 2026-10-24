@@ -53,7 +53,8 @@ public:
         const VXGIWorld& vxgiWorld, const VXGIMeshSDFScene& vxgiSDF, const VXGISurface& vxgiSurface,
         const VXGIProbeState& vxgiProbes, double vxgiProbeGpuMs, uint64_t vxgiProbeGpuBytes,
         double vxgiFilterGpuMs, uint64_t vxgiFilterGpuBytes, VXGIConfig& vxgiConfig,
-        RenderDebugPass& debugPass, bool giAvailable)
+        RenderDebugPass& debugPass, RenderPassView& passView, const RenderPassAvailability& available,
+        bool accumulatedReady = false)
     {
         auto& instances = resourceManager.GetSceneInstances();
         history.CommitInactiveTransform(instances, ImGui::GetActiveID());
@@ -71,7 +72,8 @@ public:
         const ImGuiViewport* viewport = ImGui::GetMainViewport();
         if (!input.WantTextInput && ImGui::IsKeyPressed(ImGuiKey_F10, false)) s_showStyleGuide = !s_showStyleGuide;
         float menuHeight = 0.0f;
-        const bool quitRequested = EditorUICenter::MainMenu(menuHeight, cameraSnapshot, debugPass, giAvailable);
+        const bool quitRequested = EditorUICenter::MainMenu(menuHeight, cameraSnapshot, debugPass,
+            passView, available, accumulatedReady);
         // WorkPos incorporates main-menu height on the next frame. Use this frame's
         // measured height so first display and font/viewport resizing don't overlap.
         const ImVec2 origin(viewport->Pos.x, viewport->Pos.y + menuHeight);

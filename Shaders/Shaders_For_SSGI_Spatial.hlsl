@@ -40,6 +40,14 @@ void CSMain_Reconstruct(uint3 id : SV_DispatchThreadID)
         return;
     }
 
+    float4 centerSample = raw.Load(int3(id.xy, 0));
+    if (centerSample.a < 0)
+    {
+        // Reprojected history is already filtered. Preserve its reuse marker.
+        output[id.xy] = centerSample;
+        return;
+    }
+
     float2 uv = (pixel + 0.5) / sceneSize;
     float3 p = ReconstructPosition(uv, z, invProjMat);
     float3 n = SSGIDecodeViewNormal(normals.Load(int3(pixel, 0)).xyz, viewMat);
@@ -49,7 +57,7 @@ void CSMain_Reconstruct(uint3 id : SV_DispatchThreadID)
     // Binomial 5x5 kernel [1,4,6,4,1] in each axis. Gather more current-frame
     // samples without extending temporal persistence. Geometry weights preserve surface edges.
     // Keep the center unconditional for isolated surfaces/1x1 views.
-    float4 sum = raw.Load(int3(id.xy, 0)) * 36;
+    float4 sum = centerSample * 36;
     float weightSum = 36;
 
     [loop]
@@ -65,6 +73,12 @@ void CSMain_Reconstruct(uint3 id : SV_DispatchThreadID)
             int2 tap = int2(id.xy) + int2(x, y);
             if (any(tap < 0) || any(tap >= int2(outputSize)))
             {
+                continue;
+            }
+            float4 tapSample = raw.Load(int3(tap, 0));
+            if (tapSample.a < 0)
+            {
+                // A reused value is not another independent current-frame sample.
                 continue;
             }
             int2 fullPixel = tap * int(factor);
@@ -90,7 +104,7 @@ void CSMain_Reconstruct(uint3 id : SV_DispatchThreadID)
             }
             float spatialWeight = (x == 0 ? 6 : (abs(x) == 1 ? 4 : 1)) * (y == 0 ? 6 : (abs(y) == 1 ? 4 : 1));
             float weight = SSGIApplyBilateralGeometryWeight(spatialWeight, normalAgreement, planeError);
-            sum += raw.Load(int3(tap, 0)) * weight;
+            sum += tapSample * weight;
             weightSum += weight;
         }
     }

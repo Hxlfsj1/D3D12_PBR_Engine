@@ -8,7 +8,30 @@
 
 顶部 **Edit → 相机** 在鼠标悬停时显示当前相机的位置、旋转、固定单位缩放、FOV、裁剪距离与视口大小。点击 **Copy camera JSON** 可复制完整机位数据，直接粘贴用于复现测试；面板只读，复制不会关闭，点击外部关闭。相机使用渲染器原生的左手 Y-up 坐标，旋转 XYZ 分别是 Pitch、Yaw、Roll（度），与下述模型 Details 的 Z-up 轴映射不同。复制的 JSON 包含精确的 eye、forward、up、target 和投影参数，不受界面小数位显示影响。
 
-顶部 **Debug → Pass** 是渲染查看模式的统一入口，悬停 Pass 后可选择 **默认**、**关闭 VXGI**、**仅 SSGI** 或 **仅 GI**，当前项显示勾选。默认显示包含完整 GI 的正常合成画面；关闭 VXGI 保留模型原色、直接光、IBL 和 SSGI 的正常合成，只关闭世界空间探针补充；仅 SSGI 显示屏幕空间间接光，屏幕未命中时结束；仅 GI 显示屏幕空间与世界探针补充合成的完整间接光。两个独立 GI 输出都不乘接收表面的原色。原来的 T 切换和 Details 中的 SSGI source 入口已移除。GI 不可用时，除默认外的三个选项禁用。查看选择仅保存在本次运行，不修改 JSON 中的质量配置。F10 模板复用同一个菜单组件，并在 **Debug pass** 中提供可用状态切换，便于检查禁用样式。
+顶部 **Debug → Pass** 按完整逻辑 Pass 查看结果。每个启用的 Pass 可以选择 **本步结果** 或 **截至本步**，以该 Pass 支持的模式为准。GBuffer 在同一个 Pass 内选择 Albedo、Normal、ORM、Emissive 或 Depth 附件；Shadow 将四级阴影深度排为 2×2 图。HBAO 与 GI 不展开追踪、滤波等内部步骤。仅抗锯齿和后处理只提供累计画面；TAA、TSR、DLSS、SMAA 共用一个抗锯齿入口，ToneMap 归入后处理。SMAA 实际在 ToneMap 后执行，其他三种在 ToneMap 前，快照遵循实际执行位置。
+
+未启用或不属于当前渲染路径的 Pass 置灰并显示“未启用”，失效选择回到默认。查看操作不启用功能、不修改 JSON；正常 GI 计算与历史继续更新，阶段快照单独用于显示。GI 历史不接受诊断图，颜色抗锯齿历史在视图或来源切换时重置。GBuffer 原色按线性颜色显示，法线保留编码映射，AO 灰度显示，深度线性化后以对数压缩距离显示，运动向量单独可视化。GI 本步的数据来源是滤波后的 `E/pi`，不乘接收面的材质响应；纯 GI 显示随后经过下述抗锯齿与 ToneMap。Skybox、Transparent 的本步结果表示真实线性 HDR 的 `阶段后 − 阶段前` 颜色变化：橙色为变亮，蓝色为变暗；原始文件保留正负值。它们的累计模式显示正常场景颜色。
+
+GI 子菜单只有三个条目，依次为 **默认（SSGI + Mesh SDF VXGI + Global SDF GI）**、**SSGI**、**SSGI + Mesh SDF VXGI**。默认项的完整标签在窄窗口自动换行，字体大小不变。Global SDF 未启用时，默认项显示 **默认（SSGI + Mesh SDF VXGI）**；VXGI 未启用时显示 **默认（SSGI）**，Mesh SDF 项置灰；GI 未启用时整个入口置灰。诊断来源使用独立输出及历史，切换诊断来源时重置该历史，正常混合输出继续更新。GI 累计画面仍可由 CLI 捕获。
+
+三个纯 GI 画面经过配置中的抗锯齿与 ToneMap 后显示；截至本步仍查看 GI 合成边界的累计快照。抗锯齿沿用 `Pipeline.json` 的选择，`None` 保持关闭，不自动改成其他算法。GI 菜单下方明确显示“纯 GI 输出：抗锯齿已启用”或“纯 GI 输出：抗锯齿未启用”。正常混合与诊断来源的 GI 历史隔离，切换查看来源时重新开始颜色抗锯齿历史，避免沿用其他画面的颜色。
+
+F10 模板复用同一个菜单组件，可切换 SSGI、VXGI、Global SDF、AA 等可用状态检查正常、禁用和累计样式。
+
+有限帧后台复现也走同一条生产渲染与保存路径。例如：
+
+```powershell
+.\x64\Debug\LearnDirectX.exe --hidden --frames=8 --capture-frame=6 --pass-view=gi --pass-result=output
+.\x64\Debug\LearnDirectX.exe --hidden --frames=8 --capture-frame=6 --pass-view=gi --pass-result=output --pass-gi-source=ssgi
+.\x64\Debug\LearnDirectX.exe --hidden --frames=8 --capture-frame=6 --pass-view=anti-aliasing --pass-result=accumulated
+.\x64\Debug\LearnDirectX.exe --hidden --frames=8 --capture-frame=6 --pass-view=gbuffer --pass-channel=normal
+```
+
+参数不更改配置中的功能开关。`--pass-view` 使用 `RenderPassCatalog` 的稳定 ID；未启用的目标仍回到默认。正常启动无需这些参数。有限帧验收将渲染、保存和 D3D12 检查结果写入 `PassViewRun.json`；它在驱动清理前生成，进程是否完整退出仍须单独检查。
+
+GI 本步结果可使用 `--pass-gi-source=default|mesh-sdf|ssgi` 选择正常混合、SSGI 加近段 Mesh SDF 或仅 SSGI，省略时为 `default`。该参数要求 `--pass-view=gi --pass-result=output`，不会更改功能开关。
+
+后台验收通过 `--capture-frame=N` 在运行工作目录的 `Captures/<pass>-<frame>-<unique>/` 中生成 `preview.png`、原始 `.raw` 和 `metadata.json`，默认画面也可导出。截图是管线结果，不包含编辑器面板、描边、操作轴或后续 VXGI 诊断叠加；原始文件保存所选输出资源本身：三个纯 GI 输出是经过配置抗锯齿与一次 ToneMap 后的全输出分辨率 RGBA8，不再是 GI 内部半分辨率 `E/pi`；截至本步仍保存 GI 合成边界的 HDR 资源。其他阶段保留各自的资源格式，深度与阴影不经色调映射，Shadow 的四级全部保存。元信息记录每个文件的 DXGI 格式、尺寸、行字节、mip、数组层，以及相机、逻辑帧号、查看模式、渲染路径、抗锯齿算法和关键配置。复制使用正常帧的 fence，完成后再读回，不增加全局 GPU 等待。GI 元信息另外记录 `gi_output_stage`（`after_configured_aa_and_tonemap` 或 `after_gi`）与 `gi_preview_aa_enabled`，便于区分纯 GI 显示输出和 GI 边界快照。导出成功或失败显示在 Output Log。
 
 Outliner 和 Output Log 使用 Unity 式深浅交替行底色，颜色仍由统一主题管理。搜索后按显示顺序重新交替，模型选中与悬停高亮覆盖行底色。
 

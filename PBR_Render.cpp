@@ -25,6 +25,7 @@
 #include "ScalarTemporalFilterPass.h"
 #include "DLSSPass.h"
 #include "EditorUI.h"
+#include "RenderPassViewer.h"
 
 #include "imgui.h"
 #include "backends/imgui_impl_win32.h"
@@ -45,10 +46,7 @@ extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND hWnd, UINT msg
 #include <cmath>
 #include <cstdlib>
 #include <cstring>
-#include <chrono>
-#include <filesystem>
 #include <fstream>
-#include <sstream>
 
 using namespace DirectX;
 // std::shared_ptr allocates an external reference counter, whereas ComPtr uses the internal counter of the COM object itself
@@ -58,61 +56,6 @@ static std::vector<ModelInstance*> g_visibleInstances;
 static std::array<std::vector<ModelInstance*>, NUM_CASCADES> g_shadowVisibleInstancesByCascade;
 static std::array<size_t, NUM_CASCADES> g_shadowInstanceOffsets;
 struct InitializationStopped {};
-
-// Bounded-rate Debug evidence for startup versus T round trips. The frame
-// interval includes GPU waits, Present and messages; it is not a CPU/GPU timer.
-static void LogSubmittedGIState(UINT sampleFrame, int slot, float frameWallSeconds,
-    int requestedMode, uint32_t effectiveMode, bool historyWasValid, bool sourceReset,
-    const VXGIProbeState& state, const VXGIProbePass& probes,
-    const VXGIProbeFilterPass& filter, const VXGIGPUScene& scene)
-{
-#if defined(DEBUG) || defined(_DEBUG)
-    using Clock = std::chrono::steady_clock;
-    static const auto start = Clock::now();
-    static auto last = start;
-    static int previousRequested = -1;
-    static uint32_t previousEffective = UINT32_MAX;
-    const auto now = Clock::now();
-    const bool changed = requestedMode != previousRequested || effectiveMode != previousEffective;
-    if (!changed && now - last < std::chrono::seconds(1)) return;
-    static std::ofstream output = [] {
-        std::error_code error;
-        std::filesystem::create_directories("tmp", error);
-        std::ofstream file("tmp/VXGI-runtime-diagnostics.csv", std::ios::trunc);
-        file << "elapsed_seconds,sample_frame,slot,requested_mode,effective_mode,previous_frame_wall_ms,"
-            "history_was_valid,source_reset,probe_plan_frame,probe_work_count,probe_epoch,active_batches,"
-            "history_copies,update_dispatches,feedback_copies,filter_active_batches,probe_count,"
-            "valid,disabled,unclassified,last_probe_gpu_ms,last_filter_gpu_ms,raw_gpu_address,"
-            "sdf_nodes,assets,instances,bvh_nodes\n";
-        return file;
-    }();
-    const auto& plan = state.GetPendingPlan();
-    const auto& stats = state.GetStats();
-    auto* raw = probes.GetDisplayHistory();
-    output << std::chrono::duration<double>(now - start).count() << ',' << sampleFrame << ',' << slot
-        << ',' << requestedMode << ',' << effectiveMode << ',' << frameWallSeconds * 1000.0f
-        << ',' << historyWasValid << ',' << sourceReset << ',' << plan.frameIndex << ',' << plan.count
-        << ',' << plan.epoch << ',' << probes.GetActivityStats().activeBatches
-        << ',' << probes.GetActivityStats().historyCopies << ',' << probes.GetActivityStats().updateDispatches
-        << ',' << probes.GetActivityStats().feedbackCopies << ',' << filter.GetActivityStats().activeBatches
-        << ',' << state.GetPendingSources().probeCount << ',' << stats.valid
-        << ',' << stats.disabled << ',' << stats.unclassified << ',' << probes.GetGPUMilliseconds()
-        << ',' << filter.GetGPUMilliseconds() << ',' << (raw ? raw->GetGPUVirtualAddress() : 0)
-        << ',' << scene.GetDistanceNodeCount(slot) << ',' << scene.GetAssetCount(slot)
-        << ',' << scene.GetInstanceCount(slot) << ',' << scene.GetInstanceBVHNodeCount(slot) << '\n';
-    output.flush();
-    if (changed)
-        ErrorLog::Write("SSGI submitted: requested=" + std::to_string(requestedMode) +
-            ", effective=" + std::to_string(effectiveMode) + ", probe work=" + std::to_string(plan.count) +
-            ". Runtime evidence: tmp/VXGI-runtime-diagnostics.csv");
-    previousRequested = requestedMode;
-    previousEffective = effectiveMode;
-    last = now;
-#else
-    (void)sampleFrame; (void)slot; (void)frameWallSeconds; (void)requestedMode; (void)effectiveMode;
-    (void)historyWasValid; (void)sourceReset; (void)state; (void)probes; (void)filter; (void)scene;
-#endif
-}
 
 // Global hook for Win32 message routing
 D3D12App* g_App = nullptr;
@@ -133,10 +76,16 @@ int WINAPI WinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance, _
     // Disable system DPI scaling to unlock raw GPU performance
     SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
 
-    const bool verifyStartup = std::strstr(lpCmdLine, "--verify-startup") != nullptr;
     D3D12App app(hInstance);
     g_App = &app;
-    const bool profileStartup = app.ConfigureDiagnostics(lpCmdLine);
+    RenderPassRunOptions passOptions;
+    std::string passOptionsError;
+    if (!ParseRenderPassRunOptions(lpCmdLine, passOptions, passOptionsError))
+    {
+        ErrorLog::Write(passOptionsError);
+        return 1;
+    }
+    app.SetPassRunOptions(passOptions);
 
     // App-only scale override for inspecting editor layouts without changing OS DPI.
     float uiScaleOverride = 0.0f;
@@ -149,15 +98,80 @@ int WINAPI WinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance, _
             return 1;
         }
     }
-    if (!app.Initialize((verifyStartup || profileStartup) ? SW_HIDE : nShowCmd, uiScaleOverride))
+    if (!app.Initialize(passOptions.hidden ? SW_HIDE : nShowCmd, uiScaleOverride))
     {
         ErrorLog::Write("Application: initialization failed; WinMain is returning failure.");
         return 1;
     }
 
-    if (!verifyStartup) app.Run();
+    app.Run();
 
-    return 0;
+    return app.FinishPassRun();
+}
+
+// Explicit finite runs finish pending exports and leave a machine-readable
+// outcome. Ordinary interactive runs retain the normal shutdown path.
+int D3D12App::FinishPassRun()
+{
+    if (!m_passRunOptions.frameLimit && !m_passRunOptions.captureFrame) return 0;
+    for (int slot = 0; slot < frameBufferCount; ++slot)
+        m_deviceContext.WaitForPreviousFrame(slot);
+    const bool saved = m_passCapture.Poll();
+    nlohmann::json messages = nlohmann::json::array();
+    Microsoft::WRL::ComPtr<ID3D12InfoQueue> validation;
+    const bool hasValidation = SUCCEEDED(m_deviceContext.GetDevice()->QueryInterface(IID_PPV_ARGS(&validation)));
+    uint64_t warnings = 0, errors = 0;
+    if (hasValidation)
+    {
+        const UINT64 count = validation->GetNumStoredMessagesAllowedByRetrievalFilter();
+        for (UINT64 index = 0; index < count; ++index)
+        {
+            SIZE_T bytes = 0;
+            validation->GetMessage(index, nullptr, &bytes);
+            std::vector<uint8_t> storage(bytes);
+            auto* message = reinterpret_cast<D3D12_MESSAGE*>(storage.data());
+            if (SUCCEEDED(validation->GetMessage(index, message, &bytes)))
+            {
+                if (message->Severity == D3D12_MESSAGE_SEVERITY_WARNING) ++warnings;
+                if (message->Severity <= D3D12_MESSAGE_SEVERITY_ERROR) ++errors;
+                if (message->Severity <= D3D12_MESSAGE_SEVERITY_WARNING)
+                    messages.push_back(message->pDescription);
+            }
+        }
+    }
+    const bool passed = saved && (!m_passRunOptions.captureFrame || !m_passCapture.GetLastSavedPath().empty()) &&
+        (!m_passRunOptions.frameLimit || m_renderedFrames == m_passRunOptions.frameLimit) &&
+        SUCCEEDED(m_deviceContext.GetDevice()->GetDeviceRemovedReason()) && errors == 0;
+    nlohmann::json report{{"passed", passed}, {"frames", m_renderedFrames},
+        {"capture", m_passCapture.GetLastSavedPath()}, {"capture_error", m_passCapture.GetLastError()},
+        {"d3d12_validation_available", hasValidation}, {"d3d12_warnings", warnings}, {"d3d12_errors", errors},
+        {"d3d12_messages", messages}, {"log", ErrorLog::RecentEntries()}};
+    const auto& global = m_resourceManager.GetVXGI().globalSDF;
+    const auto& globalStats = global.GetStats();
+    report["global_sdf"] = {{"enabled", m_settingsManager.vxgi.enabled && m_settingsManager.vxgi.globalSDFEnabled},
+        {"submitted_frames", globalStats.frames}, {"idle_frames", globalStats.idleFrames},
+        {"dispatches", globalStats.dispatches}, {"updated_nodes", globalStats.updatedNodes},
+        {"full_layer_updates", globalStats.fullLayerUpdates}, {"allocations", globalStats.allocations}};
+    if (global.GetState().IsInitialized())
+    {
+        const auto& layout = global.GetState().GetLayout();
+        report["global_sdf"]["shape"] = {layout.width, layout.height, layout.depth};
+        report["global_sdf"]["clipmaps"] = nlohmann::json::array();
+        for (uint32_t layer = 0; layer < layout.constants.clipmapCount; ++layer)
+        {
+            const auto& clipmap = layout.constants.clipmaps[layer];
+            report["global_sdf"]["clipmaps"].push_back({
+                {"origin", {clipmap.origin.x, clipmap.origin.y, clipmap.origin.z}},
+                {"cell_size", clipmap.cellSize},
+                {"cells_per_axis", VXGIGlobalSDF::Resolution(layout.constants, layer) - 1},
+                {"bounds_maximum", {clipmap.boundsMaximum.x, clipmap.boundsMaximum.y, clipmap.boundsMaximum.z}},
+                {"scroll_offset", clipmap.scrollOffset},
+                {"distance_limit", clipmap.distanceLimit}});
+        }
+    }
+    std::ofstream output("PassViewRun.json", std::ios::binary | std::ios::trunc);
+    output << report.dump(2) << '\n';
+    return passed && output ? 0 : 1;
 }
 
 // Constructs the application instance and sets default parameters
@@ -202,68 +216,21 @@ D3D12App::~D3D12App()
         // every submission before releasing the SDF buffers and UI resources.
         for (int i = 0; i < frameBufferCount; ++i)
             if (m_deviceContext.GetFence(i)) m_deviceContext.WaitForPreviousFrame(i);
-        if (m_diagnosticsPGODevice && m_diagnosticsPGOOverride)
-        {
-            const HRESULT result = m_diagnosticsPGODevice->SetBackgroundProcessingMode(
-                D3D12_BACKGROUND_PROCESSING_MODE_ALLOWED, D3D12_MEASUREMENTS_ACTION_KEEP_ALL, nullptr, nullptr);
-            if (FAILED(result)) ErrorLog::HRESULT("Diagnostics: failed to restore default background processing.", result);
-            m_diagnosticsPGOOverride = false;
-        }
+        m_passCapture.Poll();
         m_dlssManager.Shutdown();
         // The GPU is idle here; ImGui's device objects can be released safely
         ShutdownImGui();
-        if (m_diagnosticsGPUValidation)
-            m_validationDiagnostics.Collect("shutdown-gpu-idle", m_diagnosticsFrame, RenderDebugWorldMode(m_debugPass));
     }
-    if (m_diagnosticsGPUValidation && !m_validationDiagnostics.Finish())
-        ErrorLog::Write("Diagnostics: full-program GPU validation failed; inspect the validation report.");
-    // Verification can exit before Run() receives WM_DESTROY. Retire the native
-    // window while its message target and all input state still exist.
+    // Retire the native window while its message target and input state still exist.
     if (hwnd && IsWindow(hwnd)) DestroyWindow(hwnd);
     hwnd = nullptr;
     if (g_App == this) g_App = nullptr;
 }
 
 static std::wstring g_wWindowTitle;
-bool D3D12App::ConfigureDiagnostics(const char* commandLine)
-{
-    std::istringstream arguments(commandLine ? commandLine : "");
-    std::string argument;
-    while (arguments >> argument)
-    {
-        if (argument.rfind("--profile-startup=", 0) == 0)
-        {
-            const auto label = argument.substr(18);
-            if (!label.empty() && label.find_first_not_of("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_") == std::string::npos)
-                m_diagnosticsPrefix = "tmp/VXGI-full-" + label;
-        }
-        else if (argument.rfind("--profile-sequence=", 0) == 0)
-            m_diagnosticsSequence = argument.substr(19);
-        else if (argument.rfind("--profile-seconds=", 0) == 0)
-            m_diagnosticsSeconds = std::clamp(std::strtod(argument.c_str() + 18, nullptr), 1.0, 90.0);
-        else if (argument == "--profile-gpu-validation")
-            m_diagnosticsGPUValidation = true;
-        else if (argument.rfind("--profile-mode-read=", 0) == 0)
-        {
-            const auto value = argument.substr(20);
-            if (value == "srv") m_diagnosticsModeFromSRV = true;
-            else if (value == "cbv") m_diagnosticsModeFromSRV = false;
-            else m_diagnosticsOptionsValid = false;
-        }
-    }
-    return !m_diagnosticsPrefix.empty();
-}
 
 bool D3D12App::Initialize(int nShowCmd, float uiScaleOverride)
 {
-    if (!m_diagnosticsOptionsValid ||
-        ((m_diagnosticsGPUValidation || !m_diagnosticsModeFromSRV) && m_diagnosticsPrefix.empty()) ||
-        (m_diagnosticsSequence == "validation-toggle" && !m_diagnosticsGPUValidation))
-    {
-        ErrorLog::Write("Diagnostics: validation/read-path overrides require a valid --profile-startup label and cbv|srv mode.");
-        return false;
-    }
-    m_loadingHiddenVerification = nShowCmd == SW_HIDE;
     m_uiScaleOverride = uiScaleOverride;
     m_settingsManager.LoadAllSettingsFromJson();
 
@@ -312,86 +279,6 @@ bool D3D12App::Initialize(int nShowCmd, float uiScaleOverride)
 
         ShowLoadingProgress(1.0f, "Ready");
         if (!WaitForLoadingFrame()) return false;
-        if (m_diagnosticsGPUValidation)
-        {
-            m_validationDiagnostics.Collect("initialization-complete", 0, RenderDebugWorldMode(m_debugPass));
-            if (m_validationDiagnostics.GetErrorCount()) return false;
-        }
-        if (!m_diagnosticsPrefix.empty() && m_diagnosticsSequence == "no-dlss")
-            m_antiAliasingMode = AntiAliasingMode::None;
-        if (!m_diagnosticsPrefix.empty() &&
-            !m_frameDiagnostics.Initialize(m_deviceContext.GetDevice(), m_deviceContext.GetCommandQueue(),
-                frameBufferCount, m_diagnosticsPrefix)) return false;
-        if (m_frameDiagnostics.IsEnabled() &&
-            (m_diagnosticsSequence == "no-pgo" || m_diagnosticsSequence == "no-background" ||
-             m_diagnosticsSequence == "pgo" || m_diagnosticsSequence == "pgo-discard"))
-        {
-            HRESULT result = m_deviceContext.GetDevice()->QueryInterface(IID_PPV_ARGS(&m_diagnosticsPGODevice));
-            if (FAILED(result))
-            {
-                ErrorLog::HRESULT("Diagnostics: background processing requires ID3D12Device6.", result);
-                return false;
-            }
-            D3D12_FEATURE_DATA_D3D12_OPTIONS6 options{};
-            if (SUCCEEDED(m_deviceContext.GetDevice()->CheckFeatureSupport(
-                D3D12_FEATURE_D3D12_OPTIONS6, &options, sizeof(options))))
-                m_diagnosticsBackgroundSupport = options.BackgroundProcessingSupported ? 1 : 0;
-            // These overrides are requested only by explicit diagnostic CLI
-            // sequences. They do not change Windows developer-mode settings.
-            if (m_diagnosticsSequence != "pgo-discard")
-            {
-                const auto mode = m_diagnosticsSequence == "no-pgo" ?
-                    D3D12_BACKGROUND_PROCESSING_MODE_DISABLE_PROFILING_BY_SYSTEM :
-                    m_diagnosticsSequence == "no-background" ?
-                    D3D12_BACKGROUND_PROCESSING_MODE_DISABLE_BACKGROUND_WORK :
-                    D3D12_BACKGROUND_PROCESSING_MODE_ALLOW_INTRUSIVE_MEASUREMENTS;
-                result = m_diagnosticsPGODevice->SetBackgroundProcessingMode(
-                    mode, D3D12_MEASUREMENTS_ACTION_KEEP_ALL, nullptr, nullptr);
-                if (FAILED(result))
-                {
-                    ErrorLog::HRESULT("Diagnostics: SetBackgroundProcessingMode initialization failed.", result);
-                    return false;
-                }
-                m_diagnosticsPGOOverride = true;
-            }
-            ErrorLog::Write("Diagnostics: background processing sequence " + m_diagnosticsSequence +
-                "; BackgroundProcessingSupported=" + std::to_string(m_diagnosticsBackgroundSupport) + '.');
-        }
-        if (m_frameDiagnostics.IsEnabled() && (m_diagnosticsSequence == "capture-toggle" || m_diagnosticsSequence == "capture-fixed" || m_diagnosticsSequence == "alias"))
-        {
-            const UINT factor = static_cast<UINT>(m_settingsManager.ssgi.traceDownsampleFactor);
-            if (!m_traceOutputDiagnostics.Initialize(m_deviceContext.GetDevice(),
-                (SceneWidth + factor - 1) / factor, (SceneHeight + factor - 1) / factor,
-                RenderFormats::IndirectLighting, m_diagnosticsPrefix,
-                m_diagnosticsSequence == "capture-fixed" ? 280 : TraceOutputDiagnostics::JointSamplePeriod)) return false;
-        }
-        if (m_loadingHiddenVerification)
-        {
-            uint64_t errors = 0, warnings = 0;
-            ComPtr<ID3D12InfoQueue> info;
-            if (SUCCEEDED(m_deviceContext.GetDevice()->QueryInterface(IID_PPV_ARGS(&info))))
-                for (UINT64 index = 0; index < info->GetNumStoredMessages(); ++index)
-                {
-                    SIZE_T bytes = 0;
-                    if (FAILED(info->GetMessage(index, nullptr, &bytes))) continue;
-                    std::vector<uint8_t> storage(bytes);
-                    auto* entry = reinterpret_cast<D3D12_MESSAGE*>(storage.data());
-                    if (FAILED(info->GetMessage(index, entry, &bytes))) continue;
-                    if (entry->Severity <= D3D12_MESSAGE_SEVERITY_ERROR) ++errors;
-                    if (entry->Severity == D3D12_MESSAGE_SEVERITY_WARNING) ++warnings;
-                }
-            const bool ready = !m_settingsManager.vxgi.enabled ||
-                (!m_vxgiProbes.GetPendingPlan().HasWork() && m_vxgiProbes.GetStats().unclassified == 0);
-            const bool passed = !IsWindowVisible(hwnd) && errors == 0 && ready && m_loadingProgress == 1.0f;
-            std::ofstream report("tmp/Loading-startup-verification.json");
-            report << nlohmann::json{{"passed", passed}, {"window_visible", bool(IsWindowVisible(hwnd))},
-                {"loading_frames", m_loadingFenceValue}, {"progress", m_loadingProgress},
-                {"d3d12_errors", errors}, {"d3d12_warnings", warnings}, {"probe_cache_ready", ready},
-                {"probe_work", m_vxgiProbes.GetPendingPlan().count},
-                {"probe_valid", m_vxgiProbes.GetStats().valid},
-                {"probe_disabled", m_vxgiProbes.GetStats().disabled}}.dump(2);
-            return passed;
-        }
         return true;
     }
     catch (const InitializationStopped&) { return false; }
@@ -407,7 +294,6 @@ void D3D12App::Run()
 
     LARGE_INTEGER timeStart, timeCur;
     QueryPerformanceCounter(&timeStart);
-    const auto diagnosticsStart = std::chrono::steady_clock::now();
 
     while (Running)
     {
@@ -429,65 +315,13 @@ void D3D12App::Run()
             timeStart = timeCur;
 
             // CPU-GPU synchronization
-            auto sectionStart = std::chrono::steady_clock::now();
-            if (!m_diagnosticsPrefix.empty() && m_diagnosticsSequence == "serial")
-                for (int slot = 0; slot < frameBufferCount; ++slot) m_deviceContext.WaitForPreviousFrame(slot);
             WaitForPreviousFrame();
-            if (m_diagnosticsGPUValidation)
-            {
-                m_validationDiagnostics.Collect("frame-fence-complete", m_diagnosticsFrame, RenderDebugWorldMode(m_debugPass));
-                if (m_validationDiagnostics.GetErrorCount())
-                {
-                    Running = false;
-                    break;
-                }
-            }
-            const double waitMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - sectionStart).count();
-            if (m_frameDiagnostics.IsEnabled())
-            {
-                m_frameDiagnostics.Collect(frameIndex, m_deviceContext.GetFence(frameIndex));
-                m_diagnosticsElapsed = std::chrono::duration<double>(std::chrono::steady_clock::now() - diagnosticsStart).count();
-                m_frameDiagnostics.BeginFrame(frameIndex, m_diagnosticsFrame++, RenderDebugWorldMode(m_debugPass), deltaTime * 1000.0);
-                m_frameDiagnostics.CPU("FenceWait", waitMs);
-                m_frameDiagnostics.Metadata("time_s", m_diagnosticsElapsed);
-                m_frameDiagnostics.Metadata("slot", frameIndex);
-                m_frameDiagnostics.Metadata("submitted", false);
-                m_frameDiagnostics.Metadata("gpu_validation_requested", m_diagnosticsGPUValidation);
-                m_frameDiagnostics.Metadata("mode_read", m_diagnosticsModeFromSRV ? "srv" : "cbv");
-                m_frameDiagnostics.Metadata("sequence", m_diagnosticsSequence);
-                m_frameDiagnostics.Metadata("phase", m_diagnosticsElapsed < 8 ? "pre" : m_diagnosticsElapsed < 10 ? "off_window" : "post");
-                m_frameDiagnostics.Metadata("stage", m_diagnosticsElapsed < 8 ? "pre" : m_diagnosticsElapsed < 10 ? "off_window" : "post");
-            }
             // Logic update
-            sectionStart = std::chrono::steady_clock::now();
             Update();
-            m_frameDiagnostics.CPU("Update", std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - sectionStart).count());
             // Graphics commands submission (generates drawcall)
-            sectionStart = std::chrono::steady_clock::now();
             Render();
-            m_frameDiagnostics.CPU("Render", std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - sectionStart).count());
-            // GBV may spend the nominal duration patching the first frame's
-            // shaders. Still exercise repeated submissions through all slots.
-            if (!m_diagnosticsPrefix.empty() &&
-                ((m_diagnosticsSequence == "validation-toggle" && m_diagnosticsFrame >= 36) ||
-                 (m_diagnosticsSequence != "validation-toggle" && m_diagnosticsElapsed >= m_diagnosticsSeconds &&
-                   (m_diagnosticsSequence != "debug-pass" || m_diagnosticsFrame >= 60) &&
-                  (!m_diagnosticsGPUValidation || m_diagnosticsFrame >= 9)))) Running = false;
         }
     }
-    if (m_frameDiagnostics.IsEnabled())
-    {
-        for (int slot = 0; slot < frameBufferCount; ++slot)
-        {
-            m_deviceContext.WaitForPreviousFrame(slot);
-            m_frameDiagnostics.Collect(slot, m_deviceContext.GetFence(slot));
-        }
-        m_frameDiagnostics.Flush();
-        if (!m_traceOutputDiagnostics.Flush())
-            ErrorLog::Write(m_traceOutputDiagnostics.GetLastError().c_str());
-    }
-    if (m_diagnosticsGPUValidation)
-        m_validationDiagnostics.Collect("run-gpu-drained", m_diagnosticsFrame, RenderDebugWorldMode(m_debugPass));
 }
 
 // Handle user input
@@ -559,35 +393,11 @@ LRESULT D3D12App::MsgProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 // Pre-allocation, pre-binding, pre-compilation, pre-loading, pre-computation/baking, and pre-defined states—it’s all about pre-processing
 bool D3D12App::InitD3D()
 {
-    if (m_diagnosticsGPUValidation && !m_validationDiagnostics.EnableBeforeDevice())
-    {
-        m_validationDiagnostics.Attach(nullptr, m_diagnosticsPrefix);
-        ErrorLog::Write("Diagnostics: could not enable required D3D12 GPU-based validation before device creation.");
-        return false;
-    }
     // Bootstrap Hardware : Initialize DXGI infrastructure, Device, Command Queue, and Swap Chain
-    const auto attachValidation = [this](ID3D12Device* device)
-    {
-        return !m_diagnosticsGPUValidation || m_validationDiagnostics.Attach(device, m_diagnosticsPrefix);
-    };
-    if (!m_deviceContext.Initialize(hwnd, Width, Height, frameBufferCount,
-        m_diagnosticsGPUValidation ? std::function<bool(ID3D12Device*)>(attachValidation) :
-            std::function<bool(ID3D12Device*)>{}))
+    if (!m_deviceContext.Initialize(hwnd, Width, Height, frameBufferCount))
     {
         ErrorLog::Write("Application: RenderDevice initialization failed.");
         return false;
-    }
-    if (m_diagnosticsGPUValidation)
-    {
-        m_deviceContext.GetCommandQueue()->SetName(L"Main.GraphicsQueue");
-        m_deviceContext.GetCommandList()->SetName(L"Main.SceneCommandList");
-        for (int slot = 0; slot < frameBufferCount; ++slot)
-        {
-            const auto suffix = std::to_wstring(slot);
-            m_deviceContext.GetCommandAllocator(slot)->SetName((L"Main.SceneAllocator." + suffix).c_str());
-            m_deviceContext.GetFence(slot)->SetName((L"Main.SceneFence." + suffix).c_str());
-        }
-        m_validationDiagnostics.Collect("device-initialized", 0, RenderDebugWorldMode(m_debugPass));
     }
 
     // The loading UI uses its own allocator/list so it can draw while asset
@@ -707,21 +517,18 @@ bool D3D12App::InitD3D()
         ErrorLog::Write("Application: main pipeline initialization failed.");
         return false;
     }
+    if (!m_passPreview.Initialize(m_deviceContext)) return false;
     if (m_settingsManager.pipeline.useDeferred && m_settingsManager.ssgi.enabled &&
-        (!m_pipelineManager.InitializeSSGI(&m_deviceContext, m_diagnosticsModeFromSRV) ||
+        (!m_pipelineManager.InitializeSSGI(&m_deviceContext) ||
          !m_resourceManager.InitSSGIHistoryResources(&m_deviceContext, SceneWidth, SceneHeight,
              static_cast<UINT>(m_settingsManager.ssgi.traceDownsampleFactor))))
     {
         ErrorLog::Write("Application: SSGI pipeline initialization failed.");
         return false;
     }
-    if (m_diagnosticsGPUValidation && m_pipelineManager.GetSSGITracePSO())
-    {
-        m_pipelineManager.GetSSGITracePSO()->SetName(m_diagnosticsModeFromSRV ? L"SSGI.Trace.SRV" : L"SSGI.Trace.CBV");
-        m_pipelineManager.GetSSGIRootSignature()->SetName(L"SSGI.SharedRootSignature");
-    }
     DirectX::XMStoreFloat4x4(&m_ssgiHistory.previousViewProj, DirectX::XMMatrixIdentity());
     m_ssgiHistory.previousInvViewProj = m_ssgiHistory.previousViewProj;
+    m_ssgiPreviewHistory = m_ssgiHistory;
     if (m_antiAliasingMode == AntiAliasingMode::TAA &&
         !m_pipelineManager.InitializeTAA(&m_deviceContext))
     {
@@ -836,6 +643,7 @@ void D3D12App::InvalidateTemporalHistories()
     m_hbaoHistoryValid = false;
     m_dlssHistoryValid = false;
     m_ssgiHistory.valid = false;
+    m_ssgiPreviewHistory.valid = false;
     m_ssgiSources.Invalidate();
 }
 
@@ -938,7 +746,7 @@ void D3D12App::Update()
     }
 
     // Continuous keyboard movement must update the camera before building frame matrices and culling volumes.
-    const bool allowCameraNavigation = m_diagnosticsPrefix.empty() && !m_editorGizmo.IsDragging() &&
+    const bool allowCameraNavigation = !m_editorGizmo.IsDragging() &&
         (ImGui::GetCurrentContext() == nullptr ||
             (!ImGui::GetIO().WantCaptureKeyboard && !ImGui::GetIO().WantCaptureMouse && !ImGui::GetIO().AppFocusLost));
     m_inputManager.Update(deltaTime, camera, allowCameraNavigation);
@@ -986,7 +794,6 @@ void D3D12App::Update()
         jitterEnabled = true;
     }
 
-    if (!m_diagnosticsPrefix.empty() && m_diagnosticsSequence == "no-jitter") jitterEnabled = false;
     if (jitterEnabled)
     {
         m_currJitterNdcX = (jitterPixels.x * 2.0f) / SceneWidth;
@@ -1169,7 +976,6 @@ void D3D12App::Update()
     }
 
     // Initial data is already baked. Scene edits invalidate only affected probes.
-    const auto vxgiPrepareStart = std::chrono::steady_clock::now();
     if (m_settingsManager.vxgi.enabled &&
         !m_resourceManager.GetVXGI().Prepare(m_deviceContext, instances,
             m_resourceManager.GetGlobalMaterials(), m_settingsManager.vxgi, m_settingsManager.lighting))
@@ -1178,7 +984,6 @@ void D3D12App::Update()
         Running = false;
         return;
     }
-    m_frameDiagnostics.CPU("VXGI.Prepare", std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - vxgiPrepareStart).count());
 
     m_visibleInstanceCount = static_cast<int>(g_visibleInstances.size());
 
@@ -1320,11 +1125,7 @@ bool D3D12App::EndFrame()
     // Every exit path from Render() reaches this function exactly once, so the ImGui
     // frame started after BeginFrame() is guaranteed to be finalized here (paired Render)
     ImGui::Render();
-    m_frameDiagnostics.GPU(m_deviceContext.GetCommandList(), "Editor.Draw", true);
     RecordImGuiDrawData();
-    m_frameDiagnostics.GPU(m_deviceContext.GetCommandList(), "Editor.Draw", false);
-    m_frameDiagnostics.GPU(m_deviceContext.GetCommandList(), "Frame", false);
-    m_frameDiagnostics.Resolve(m_deviceContext.GetCommandList());
 
     // Close the Command List to finalize recording, no further commands can be added until the next Reset
     // CPU recording is complete, but the GPU has yet to begin execution; therefore
@@ -1341,14 +1142,16 @@ bool D3D12App::EndFrame()
 
 void D3D12App::Render()
 {
+    m_passCapture.Poll();
+    if (m_passRunOptions.captureFrame == m_renderedFrames + 1)
+        m_savePassViewRequested = true;
     bool ssgiHistoryWritten = false;
-    bool ssgiHistoryWasValid = false;
+    bool ssgiPreviewHistoryWritten = false;
     bool ssgiSourceReset = false;
     SSGIHybridState::Key ssgiSourceKey;
     bool temporalHistoryWritten = false;
     bool hbaoHistoryWritten = false;
     bool dlssHistoryWritten = false;
-    bool viewHistoryReset = false;
     bool dlssResetRequested = false;
     // Normal composition: add SSGI to scene lighting, then render sky/transparency.
     const bool useZPrepass =
@@ -1357,32 +1160,18 @@ void D3D12App::Render()
     const bool enablePostProcessSharpen =
         m_antiAliasingMode == AntiAliasingMode::TAA ||
         m_antiAliasingMode == AntiAliasingMode::TSR;
-    const bool skipDLSS = !m_diagnosticsPrefix.empty() &&
-        (m_diagnosticsSequence == "skip-dlss" ||
-         (m_diagnosticsSequence == "pause-dlss" && m_diagnosticsElapsed >= 8.0 && m_diagnosticsElapsed < 10.0));
-    if (m_diagnosticsPGODevice && m_diagnosticsSequence == "pgo-discard" &&
-        !m_diagnosticsPGODiscarded && m_diagnosticsElapsed >= 8.0)
-    {
-        m_diagnosticsPGODiscarded = true;
-        const HRESULT result = m_diagnosticsPGODevice->SetBackgroundProcessingMode(
-            D3D12_BACKGROUND_PROCESSING_MODE_ALLOWED, D3D12_MEASUREMENTS_ACTION_DISCARD_PREVIOUS, nullptr, nullptr);
-        m_frameDiagnostics.Metadata("pgo_discard_hr", static_cast<uint32_t>(result));
-        m_frameDiagnostics.Metadata("pgo_discard_at_s", m_diagnosticsElapsed);
-        if (FAILED(result))
-        {
-            ReportFrameError("Diagnostics: background measurement discard failed.", result);
-            Running = false;
-            return;
-        }
-        m_diagnosticsPGOOverride = true;
-    }
     if (!BeginFrame())
     {
         // The command infrastructure is unusable this frame (e.g. the device was removed)
         return;
     }
-    m_frameDiagnostics.GPU(m_deviceContext.GetCommandList(), "Frame", true);
-    auto diagnosticsSectionStart = std::chrono::steady_clock::now();
+    struct CaptureFrameGuard
+    {
+        RenderPassCapture& capture;
+        UINT slot;
+        bool executed = false;
+        ~CaptureFrameGuard() { if (!executed) capture.CancelRecorded(slot); }
+    } captureFrame{m_passCapture, static_cast<UINT>(frameIndex)};
 
     // Start the ImGui frame before any graph work so panel state can affect this frame.
     // It is finalized inside EndFrame(), which every exit path below passes through exactly once.
@@ -1406,37 +1195,6 @@ void D3D12App::Render()
     EditorUI::UpdateScale(m_uiScaleOverride > 0 ? m_uiScaleOverride :
         static_cast<float>(GetDpiForWindow(hwnd)) / 96.0f);
 
-    if (!m_diagnosticsPrefix.empty())
-    {
-        // Hidden acceptance changes the same viewport selector as the menu,
-        // without sending OS input or introducing another interactive shortcut.
-        io.AddFocusEvent(true);
-        if (m_diagnosticsSequence == "debug-pass")
-        {
-            m_debugPass = m_diagnosticsFrame >= 12 && m_diagnosticsFrame < 24 ? RenderDebugPass::VXGIOff :
-                m_diagnosticsFrame >= 24 && m_diagnosticsFrame < 36 ? RenderDebugPass::SSGIOnly :
-                m_diagnosticsFrame >= 36 && m_diagnosticsFrame < 48 ? RenderDebugPass::GIOnly : RenderDebugPass::Default;
-        }
-        const bool toggle = m_diagnosticsSequence == "toggle" || m_diagnosticsSequence == "immediate" ||
-            m_diagnosticsSequence == "capture-toggle";
-        const double first = m_diagnosticsSequence == "immediate" ? 0.05 : 8.0;
-        const double second = m_diagnosticsSequence == "immediate" ? 0.10 : 10.0;
-        const bool validationToggle = m_diagnosticsSequence == "validation-toggle" &&
-            ((m_diagnosticsStage == 0 && m_diagnosticsFrame > 12) ||
-             (m_diagnosticsStage == 1 && m_diagnosticsFrame > 24));
-        if (validationToggle || (toggle && ((m_diagnosticsStage == 0 && m_diagnosticsElapsed >= first) ||
-            (m_diagnosticsStage == 1 && m_diagnosticsElapsed >= second))))
-        {
-            m_debugPass = m_diagnosticsStage == 0 ? RenderDebugPass::SSGIOnly : RenderDebugPass::Default;
-            ++m_diagnosticsStage;
-        }
-        if (m_diagnosticsSequence == "reset" && m_diagnosticsStage == 0 && m_diagnosticsElapsed >= 8.0)
-        {
-            m_ssgiHistory.valid = false;
-            m_diagnosticsStage = 1;
-        }
-    }
-
     ImGui::NewFrame();
 
     m_editorSelectionRenderer.Poll(m_deviceContext, m_resourceManager, m_editorSelection, m_editorHistory);
@@ -1444,66 +1202,112 @@ void D3D12App::Render()
     // Match the unjittered projection used above: live camera.Zoom, near .1, far 1000.
     const auto cameraSnapshot = EditorCameraSnapshot::Capture(camera,
         static_cast<uint32_t>(Width), static_cast<uint32_t>(Height), 0.1f, 1000.0f);
+    // Describe the configured pipeline without enabling features for a debug view.
+    const RenderPassAvailability passAvailability{
+        .deferred = m_settingsManager.pipeline.useDeferred,
+        .zPrepass = useZPrepass,
+        .hbao = m_settingsManager.hbao.enabled,
+        .ssgi = m_settingsManager.ssgi.enabled,
+        .vxgi = m_settingsManager.vxgi.enabled,
+        .antiAliasing = m_antiAliasingMode != AntiAliasingMode::None,
+        .motionVectors = m_settingsManager.pipeline.useDeferred ||
+            m_antiAliasingMode == AntiAliasingMode::TAA ||
+            m_antiAliasingMode == AntiAliasingMode::TSR ||
+            m_antiAliasingMode == AntiAliasingMode::DLSS,
+        .transparent = true,
+        .globalSDF = m_settingsManager.vxgi.globalSDFEnabled
+    };
+    NormalizeRenderPassView(m_passView, passAvailability);
+    NormalizeRenderDebugPass(m_debugPass, passAvailability);
     const bool quitRequested = EditorUI::Draw(m_resourceManager, m_editorSelection, m_editorGizmo,
         gizmoCamera, cameraSnapshot, m_editorHistory, m_vxgiWorld, m_vxgiMeshSDFScene, m_vxgiSurface, m_vxgiProbes,
         m_vxgiProbePass.GetGPUMilliseconds(), m_vxgiProbePass.GetGPUMemoryBytes(),
         m_vxgiProbeFilterPass.GetGPUMilliseconds(), m_vxgiProbeFilterPass.GetGPUMemoryBytes(), m_settingsManager.vxgi,
-        m_debugPass, m_settingsManager.pipeline.useDeferred && m_settingsManager.ssgi.enabled);
-    const bool giAvailable = m_settingsManager.pipeline.useDeferred && m_settingsManager.ssgi.enabled;
-    if (!giAvailable) m_debugPass = RenderDebugPass::Default;
+        m_debugPass, m_passView, passAvailability, true);
+    const bool pureGIView = m_passView.pass == RenderPassId::GI &&
+        m_passView.result == RenderPassResult::PassOutput;
+    const bool screenOnlyGIView = pureGIView && m_passView.giSource == RenderPassGISource::SSGIOnly;
+    const bool meshSDFGIView = pureGIView && m_passView.giSource == RenderPassGISource::SSGIAndMeshSDF;
+    if ((!screenOnlyGIView && !meshSDFGIView) || m_passView.giSource != m_lastRenderedPureGISource)
+        m_ssgiPreviewHistory.valid = false;
+    const bool saveThisFrame = m_savePassViewRequested && !m_passCapture.IsBusy(frameIndex);
+    RenderPassViewer passViewer(m_passView, m_passPreview,
+        m_resourceManager.GetMainDescriptorHeap(), static_cast<UINT>(Width), static_cast<UINT>(Height), saveThisFrame);
+    const auto finishPassView = [&](RDGBuilder& graph) {
+        if (!passViewer.NeedsResult()) return true;
+        const auto target = graph.RegisterExternalTextureOutput(m_deviceContext.GetRenderTarget(frameIndex),
+            D3D12_RESOURCE_STATE_PRESENT, D3D12_RESOURCE_STATE_PRESENT, "BackBuffer");
+        if (!passViewer.Finish(graph, target)) return false;
+        if (saveThisFrame)
+        {
+            const auto* info = GetRenderPassInfo(m_passView.pass);
+            const auto* channel = &RenderPassChannels[static_cast<size_t>(m_passView.channel)];
+            const char* aaNames[] = {"None", "TAA", "TSR", "SMAA", "DLSS"};
+            const bool delta = m_passView.result == RenderPassResult::PassOutput &&
+                (m_passView.pass == RenderPassId::Skybox || m_passView.pass == RenderPassId::Transparent);
+            nlohmann::json metadata = {
+                {"frame", m_renderedFrames + 1}, {"pass", info->id},
+                {"result", m_passView.result == RenderPassResult::PassOutput ? "output" : "accumulated"},
+                {"channel", m_passView.pass == RenderPassId::GBuffer ? channel->id : "none"},
+                {"gi_source", m_passView.pass == RenderPassId::GI && m_passView.result == RenderPassResult::PassOutput ?
+                    RenderPassGISourceId(m_passView.giSource) : "none"},
+                {"gi_output_stage", pureGIView ? "after_configured_aa_and_tonemap" :
+                    m_passView.pass == RenderPassId::GI ? "after_gi" : "none"},
+                {"gi_preview_aa_enabled", pureGIView && passAvailability.antiAliasing},
+                {"preview_mapping", static_cast<uint32_t>(passViewer.Source().mapping)},
+                {"signed_after_minus_before", delta}, {"debug_gi_source", static_cast<int>(m_debugPass)},
+                {"path", passAvailability.deferred ? "deferred" : "forward"},
+                {"anti_aliasing", aaNames[static_cast<int>(m_antiAliasingMode)]},
+                {"camera", nlohmann::json::parse(cameraSnapshot.ToJson())},
+                {"render_size", {SceneWidth, SceneHeight}}, {"output_size", {Width, Height}},
+                {"ssgi", {{"enabled", m_settingsManager.ssgi.enabled}, {"radius", m_settingsManager.ssgi.radius},
+                    {"intensity", m_settingsManager.ssgi.intensity}, {"quality", m_settingsManager.ssgi.quality},
+                    {"trace_downsample_factor", m_settingsManager.ssgi.traceDownsampleFactor},
+                    {"checkerboard", m_settingsManager.ssgi.checkerboard}}},
+                {"vxgi", {{"enabled", m_settingsManager.vxgi.enabled}, {"voxel_size", m_settingsManager.vxgi.voxelSize},
+                    {"sdf_cell_size", m_settingsManager.vxgi.sdfCellSize}}},
+                {"hbao", {{"enabled", m_settingsManager.hbao.enabled}, {"radius", m_settingsManager.hbao.radius},
+                    {"intensity", m_settingsManager.hbao.intensity}}},
+                {"history_valid", {{"gi", m_ssgiHistory.valid}, {"color", m_temporalHistoryValid}, {"dlss", m_dlssHistoryValid}}}
+            };
+            const std::array<RenderPassCapture::RawOutput, 1> raw{{{"result", passViewer.Source().texture,
+                UINT_MAX, delta ? "signed linear HDR: after minus before" :
+                m_passView.pass == RenderPassId::GI && m_passView.result == RenderPassResult::PassOutput ?
+                "pure indirect-light display after configured anti-aliasing and tone mapping" :
+                "native selected pass resource; DXGI format and preview mapping recorded"}}};
+            const std::string prefix = std::string("Captures/") + info->id + "-" +
+                std::to_string(m_renderedFrames + 1) + "-" + std::to_string(GetTickCount64());
+            if (!m_passCapture.AddToGraph(graph, m_deviceContext.GetDevice(), frameIndex,
+                passViewer.PreviewTexture(), raw, prefix, metadata).IsValid())
+                ErrorLog::Write("Pass capture: " + m_passCapture.GetLastError());
+            m_savePassViewRequested = false;
+        }
+        return true;
+    };
+    const bool giAvailable = IsScreenGIAvailable(passAvailability);
     // Resolve after the menu so a click affects this same frame. The editor's
     // output selector never changes persistent quality settings.
     const bool showGIOnly = giAvailable && IsGIOnlyDebugPass(m_debugPass);
     SSGIConfig frameSSGI = m_settingsManager.ssgi;
     frameSSGI.giOnly = showGIOnly;
-    if (m_debugPass != m_lastRenderedDebugPass)
+    if (m_debugPass != m_lastRenderedDebugPass || pureGIView != m_lastRenderedPureGI ||
+        (pureGIView && m_passView.giSource != m_lastRenderedPureGISource))
     {
         // Color histories contain the composed viewport, unlike the GI signal's
         // own history, which already tracks screen/world source changes.
         m_temporalHistoryValid = false;
         m_dlssHistoryValid = false;
-        viewHistoryReset = true;
     }
-    m_frameDiagnostics.CPU("Editor.Build", std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - diagnosticsSectionStart).count());
-
-    diagnosticsSectionStart = std::chrono::steady_clock::now();
-    m_frameDiagnostics.GPU(m_deviceContext.GetCommandList(), "VXGI.Record", true);
     if (m_settingsManager.vxgi.enabled &&
-        !m_resourceManager.GetVXGI().Record(m_deviceContext, frameIndex,
-            m_resourceManager.GetMainDescriptorHeap(), m_resourceManager.GetMaterialBuffer(), m_settingsManager.vxgi))
+        (!m_resourceManager.GetVXGI().Record(m_deviceContext, frameIndex,
+            m_resourceManager.GetMainDescriptorHeap(), m_resourceManager.GetMaterialBuffer(), m_settingsManager.vxgi) ||
+         !m_resourceManager.GetVXGI().RecordGlobalSDF(m_deviceContext, frameIndex, camera.Position, m_settingsManager.vxgi)))
     {
-        ErrorLog::Write("VXGI: probe GPU update failed; frame was not submitted.");
+        ErrorLog::Write("VXGI: GPU cache update failed; frame was not submitted: " + m_resourceManager.GetVXGI().GetLastError());
         Running = false;
         EndFrame();
         return;
     }
-    m_frameDiagnostics.GPU(m_deviceContext.GetCommandList(), "VXGI.Record", false);
-    m_frameDiagnostics.CPU("VXGI.Record", std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - diagnosticsSectionStart).count());
-    const auto diagnosticsGraphStart = std::chrono::steady_clock::now();
-    const auto executeGraph = [this, diagnosticsGraphStart](RDGBuilder& graph)
-    {
-        if (m_frameDiagnostics.IsEnabled())
-        {
-            m_frameDiagnostics.CPU("Graph.Build", std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - diagnosticsGraphStart).count());
-            graph.SetPassExecutionObserver([this, start = std::chrono::steady_clock::time_point{}]
-                (ID3D12GraphicsCommandList* cmd, const char* name, bool begin) mutable {
-                m_frameDiagnostics.GPU(cmd, name, begin);
-                if (begin) start = std::chrono::steady_clock::now();
-                else m_frameDiagnostics.CPU(name, std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count());
-            });
-        }
-        const auto start = std::chrono::steady_clock::now();
-        m_frameDiagnostics.GPU(m_deviceContext.GetCommandList(), "Graph", true);
-        graph.Execute(m_deviceContext.GetCommandList());
-        m_frameDiagnostics.GPU(m_deviceContext.GetCommandList(), "Graph", false);
-        m_frameDiagnostics.CPU("Graph.Execute", std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count());
-        if (m_frameDiagnostics.IsEnabled())
-        {
-            const auto& stats = graph.GetCompileStats();
-            m_frameDiagnostics.Metadata("rdg", {{"passes", stats.compiledPassCount}, {"textures", stats.textureCount},
-                {"buffers", stats.bufferCount}, {"barriers", stats.passBarrierCount + stats.finalBarrierCount}});
-        }
-    };
 
     if (m_antiAliasingMode == AntiAliasingMode::DLSS)
     {
@@ -1596,6 +1400,8 @@ void D3D12App::Render()
             return;
         }
 
+        passViewer.Output(forwardGraph, RenderPassId::Shadow, shadowOutput.shadowMap, RenderPassViewer::Mapping::Shadow);
+
         PBRPass::ZPrepassOutput zPrepassOutput = {};
         if (useZPrepass)
         {
@@ -1618,6 +1424,8 @@ void D3D12App::Render()
                 return;
             }
         }
+
+        passViewer.Output(forwardGraph, RenderPassId::ZPrepass, zPrepassOutput.depth, RenderPassViewer::Mapping::Depth);
 
         PBRPass::OpaqueInput opaqueInput = {};
         opaqueInput.depth = zPrepassOutput.depth;
@@ -1645,6 +1453,8 @@ void D3D12App::Render()
             return;
         }
         transparentIdx = opaqueOutput.transparentStartIndex;
+        passViewer.Color(forwardGraph, RenderPassId::PBROpaque, opaqueOutput.sceneColor);
+        passViewer.Before(forwardGraph, RenderPassId::Skybox, opaqueOutput.sceneColor);
 
         SkyboxPass::Input skyboxInput = {};
         skyboxInput.sceneColor = opaqueOutput.sceneColor;
@@ -1671,6 +1481,8 @@ void D3D12App::Render()
         }
         forwardGraph.AddPassDependencies(skyboxPass, { forwardSceneColorProducer });
         forwardSceneColorProducer = skyboxPass;
+        passViewer.After(forwardGraph, RenderPassId::Skybox, opaqueOutput.sceneColor);
+        passViewer.Before(forwardGraph, RenderPassId::Transparent, opaqueOutput.sceneColor);
 
         if (transparentIdx < g_visibleInstances.size())
         {
@@ -1699,6 +1511,8 @@ void D3D12App::Render()
             }
             forwardSceneColorProducer = transparentPass;
         }
+
+        passViewer.After(forwardGraph, RenderPassId::Transparent, opaqueOutput.sceneColor);
 
         RDGTextureHandle forwardFinalColor = opaqueOutput.sceneColor;
         RDGPassHandle forwardFinalColorProducer = forwardSceneColorProducer;
@@ -1730,6 +1544,7 @@ void D3D12App::Render()
                 return;
             }
 
+            passViewer.Output(forwardGraph, RenderPassId::MotionVector, motionOutput.motionTexture, RenderPassViewer::Mapping::Motion);
             if (m_antiAliasingMode == AntiAliasingMode::TAA)
             {
                 TAAPass::Output taaOutput = TAAPass::AddToGraph(
@@ -1798,7 +1613,7 @@ void D3D12App::Render()
                 forwardFinalColorProducer = tsrOutput.pass;
                 temporalHistoryWrittenByForwardGraph = true;
             }
-            else if (!skipDLSS)
+            else
             {
                 dlssResetRequested = !m_dlssHistoryValid;
                 DLSSPass::Output dlssOutput = DLSSPass::AddToGraph(
@@ -1848,6 +1663,9 @@ void D3D12App::Render()
             }
         }
 
+        if (m_antiAliasingMode != AntiAliasingMode::None && m_antiAliasingMode != AntiAliasingMode::SMAA)
+            passViewer.Accumulated(forwardGraph, RenderPassId::AntiAliasing, forwardFinalColor);
+
         if (m_antiAliasingMode == AntiAliasingMode::SMAA)
         {
             PostProcessPass::TextureOutput toneMapOutput =
@@ -1871,6 +1689,7 @@ void D3D12App::Render()
                 EndFrame();
                 return;
             }
+            passViewer.Accumulated(forwardGraph, RenderPassId::PostProcess, toneMapOutput.texture, RenderPassViewer::Mapping::LDR);
             forwardGraph.AddPassDependency(
                 toneMapOutput.pass,
                 forwardFinalColorProducer);
@@ -1901,6 +1720,7 @@ void D3D12App::Render()
                 EndFrame();
                 return;
             }
+            passViewer.Accumulated(forwardGraph, RenderPassId::AntiAliasing, smaaOutput.color, RenderPassViewer::Mapping::LDR);
             forwardGraph.AddPassDependency(
                 smaaOutput.edgePass,
                 toneMapOutput.pass);
@@ -1930,7 +1750,19 @@ void D3D12App::Render()
                 { forwardFinalColorProducer });
         }
 
-        executeGraph(forwardGraph);
+        if (m_antiAliasingMode != AntiAliasingMode::SMAA && passViewer.Wants(RenderPassId::PostProcess))
+        {
+            const auto finalColor = forwardGraph.RegisterExternalTexture(m_deviceContext.GetRenderTarget(frameIndex),
+                D3D12_RESOURCE_STATE_PRESENT, D3D12_RESOURCE_STATE_PRESENT, "BackBuffer");
+            passViewer.Accumulated(forwardGraph, RenderPassId::PostProcess, finalColor, RenderPassViewer::Mapping::LDR);
+        }
+        if (!finishPassView(forwardGraph))
+        {
+            Running = false;
+            EndFrame();
+            return;
+        }
+        forwardGraph.Execute(m_deviceContext.GetCommandList());
         if (m_resourceManager.PassConstantsAllocationFailed(frameIndex))
         {
             ErrorLog::Write("Application: pass constant allocation failed; rendering stopped.");
@@ -2009,6 +1841,8 @@ void D3D12App::Render()
             return;
         }
 
+        passViewer.Output(deferredGraph, RenderPassId::Shadow, shadowOutput.shadowMap, RenderPassViewer::Mapping::Shadow);
+
         PBRPass::ZPrepassOutput zPrepassOutput = {};
         if (useZPrepass)
         {
@@ -2032,6 +1866,7 @@ void D3D12App::Render()
             }
         }
 
+        passViewer.Output(deferredGraph, RenderPassId::ZPrepass, zPrepassOutput.depth, RenderPassViewer::Mapping::Depth);
         GBufferPass::Output gbufferOutput = GBufferPass::AddToGraph(
             deferredGraph,
             &m_deviceContext,
@@ -2058,6 +1893,18 @@ void D3D12App::Render()
             return;
         }
 
+        if (passViewer.Wants(RenderPassId::GBuffer))
+        {
+            switch (m_passView.channel)
+            {
+            case RenderPassChannel::Albedo: passViewer.Output(deferredGraph, RenderPassId::GBuffer, gbufferOutput.albedo, RenderPassViewer::Mapping::LinearColor); break;
+            case RenderPassChannel::Normal: passViewer.Output(deferredGraph, RenderPassId::GBuffer, gbufferOutput.normal, RenderPassViewer::Mapping::Normal); break;
+            case RenderPassChannel::ORM: passViewer.Output(deferredGraph, RenderPassId::GBuffer, gbufferOutput.orm, RenderPassViewer::Mapping::LDR); break;
+            case RenderPassChannel::Emissive: passViewer.Output(deferredGraph, RenderPassId::GBuffer, gbufferOutput.emissive); break;
+            case RenderPassChannel::Depth: passViewer.Output(deferredGraph, RenderPassId::GBuffer, gbufferOutput.depth, RenderPassViewer::Mapping::Depth); break;
+            }
+        }
+
         MotionVectorPass::Output motionOutput = MotionVectorPass::AddToGraph(
             deferredGraph,
             &m_deviceContext,
@@ -2079,6 +1926,7 @@ void D3D12App::Render()
             return;
         }
         deferredGraph.AddPassDependencies(motionOutput.pass, { gbufferOutput.pass });
+        passViewer.Output(deferredGraph, RenderPassId::MotionVector, motionOutput.motionTexture, RenderPassViewer::Mapping::Motion);
 
         RDGTextureHandle hbaoForLighting;
         RDGPassHandle hbaoProducer;
@@ -2280,10 +2128,13 @@ void D3D12App::Render()
             // White is the multiplicative identity for screen-space AO; material AO remains active.
             hbaoForLighting = deferredGraph.RegisterExternalTexture(
                 m_resourceManager.GetWhiteTexture(),
-                D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
-                D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, "HBAO.DisabledWhite");
+                D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
+                D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
+                "HBAO.DisabledWhite");
             m_hbaoHistoryValid = false;
         }
+
+        passViewer.Output(deferredGraph, RenderPassId::HBAO, hbaoForLighting, RenderPassViewer::Mapping::Scalar);
 
         DeferredLightingPass::Input deferredInput = {};
         deferredInput.gbufferAlbedo = gbufferOutput.albedo;
@@ -2318,81 +2169,51 @@ void D3D12App::Render()
             deferredGraph.AddPassDependencies(deferredOutput.pass, { hbaoProducer });
         }
         RDGPassHandle sceneColorProducer = deferredOutput.pass;
+        passViewer.Color(deferredGraph, RenderPassId::DeferredLighting, deferredOutput.sceneColor);
+        SSGIPass::IrradiancePreviewOutput giDisplay;
 
         if (m_settingsManager.ssgi.enabled)
         {
             SSGIPass::WorldInput worldInput;
-            if (m_traceOutputDiagnostics.IsEnabled())
-                worldInput.traceOutput = [this](ID3D12GraphicsCommandList* cmd, ID3D12Resource* raw, uint32_t frame, uint32_t mode) {
-                    const auto before = m_traceOutputDiagnostics.GetCaptureCount();
-                    if (!m_traceOutputDiagnostics.Capture(cmd, raw, frame, m_diagnosticsElapsed, mode))
-                        Running = false;
-                    if (before != m_traceOutputDiagnostics.GetCaptureCount())
-                        m_frameDiagnostics.Metadata("rawgi_capture", before);
-                };
-            if (m_frameDiagnostics.IsEnabled())
-                worldInput.traceExecution = [this](ID3D12GraphicsCommandList* cmd, bool begin) {
-                    m_frameDiagnostics.GPU(cmd, "SSGI.Trace.Dispatch", begin);
-                };
-            if (m_frameDiagnostics.IsEnabled())
-                worldInput.traceResources = [this](std::span<ID3D12Resource* const> resources) {
-                    nlohmann::json pointers = nlohmann::json::array();
-                    for (auto* resource : resources) pointers.push_back(reinterpret_cast<uintptr_t>(resource));
-                    m_frameDiagnostics.Metadata("trace_textures", std::move(pointers));
-                };
-            if (m_frameDiagnostics.IsEnabled())
-                worldInput.traceDiagnostics = [this](SSGITraceConstants& trace, D3D12_GPU_VIRTUAL_ADDRESS cbv,
-                    std::span<const D3D12_GPU_VIRTUAL_ADDRESS> addresses) {
-                    if (m_diagnosticsSequence == "pulse" && m_diagnosticsElapsed >= 8 && m_diagnosticsElapsed < 10)
-                        trace.hybrid.worldMode = 0;
-                    if (m_diagnosticsSequence == "alias" && m_diagnosticsElapsed >= 8 && m_diagnosticsElapsed < 10)
-                        trace.hybrid.worldMode = 1;
-                    if (m_diagnosticsSequence == "one" && trace.hybrid.worldMode != 0)
-                        trace.hybrid.worldMode = 1;
-                    if (m_diagnosticsSequence == "prime" && m_ssgiFrameIndex < 2)
-                        trace.hybrid.worldMode = 0;
-                    if (m_diagnosticsSequence == "clearstate") trace.padding2 = 1;
-                    if (m_diagnosticsSequence == "barrier") trace.padding2 = 2;
-                    nlohmann::json roots = nlohmann::json::array();
-                    for (const auto address : addresses) roots.push_back(address);
-                    m_frameDiagnostics.Metadata("trace_roots", std::move(roots));
-                    m_frameDiagnostics.Metadata("trace_constants", {{"cbv", cbv}, {"mode", trace.hybrid.worldMode},
-                        {"rays", trace.rayCount}, {"iterations", trace.maxIterations}, {"radius", trace.radius},
-                        {"dimensions", {trace.width, trace.height, trace.outputWidth, trace.outputHeight}},
-                        {"descriptors", {trace.depthIndex, trace.normalIndex, trace.ormIndex, trace.sourceIndex,
-                            trace.outputIndex, trace.blueNoiseIndex, trace.albedoIndex}},
-                        {"world_counts", {trace.hybrid.nodeCount, trace.hybrid.assetCount, trace.hybrid.instanceCount,
-                            trace.hybrid.bvhNodeCount, trace.hybrid.probeCount}},
-                        {"voxel_size", trace.hybrid.voxelSize}, {"cell_size", trace.hybrid.cellSize}});
-                };
             if (m_settingsManager.vxgi.enabled)
             {
                 worldInput.scene = &m_vxgiGPUScene;
-                worldInput.surface = &m_vxgiSurface;
                 worldInput.rawRecords = m_vxgiProbePass.GetDisplayHistory();
                 worldInput.materialBuffer = m_resourceManager.GetMaterialBuffer();
                 worldInput.probeCount = static_cast<uint32_t>(m_vxgiWorld.GetOccupiedCenters().size());
                 worldInput.voxelSize = m_vxgiWorld.GetVoxelSize();
                 worldInput.mode = RenderDebugWorldMode(m_debugPass);
+                if (m_settingsManager.vxgi.globalSDFEnabled)
+                {
+                    worldInput.globalSDF = &m_resourceManager.GetVXGI().globalSDF;
+                    worldInput.globalTraceDistance = m_settingsManager.vxgi.globalSDFTraceDistance;
+                    worldInput.globalMaxSteps = uint32_t(m_settingsManager.vxgi.globalSDFMaxSteps);
+                }
             }
             ssgiSourceKey.effectiveWorldMode = SSGIPass::EffectiveWorldMode(&worldInput, frameIndex);
             if (ssgiSourceKey.effectiveWorldMode != m_lastRenderedGIWorldMode)
             {
                 m_temporalHistoryValid = false;
                 m_dlssHistoryValid = false;
-                viewHistoryReset = true;
             }
             ssgiSourceKey.screenSourceStamp = m_ssgiScreenSourceStamp;
             ssgiSourceKey.screenRadius = m_settingsManager.ssgi.radius;
             ssgiSourceKey.quality = static_cast<uint32_t>(m_settingsManager.ssgi.quality);
             ssgiSourceKey.traceDownsampleFactor = static_cast<uint32_t>(m_settingsManager.ssgi.traceDownsampleFactor);
+            ssgiSourceKey.checkerboard = m_settingsManager.ssgi.checkerboard;
+            ssgiSourceKey.globalEnabled = ssgiSourceKey.effectiveWorldMode != 0 && worldInput.globalSDF != nullptr;
+            ssgiSourceKey.globalTraceDistance = worldInput.globalTraceDistance;
+            ssgiSourceKey.globalMaxSteps = worldInput.globalMaxSteps;
+            ssgiSourceKey.globalCellSize = m_settingsManager.vxgi.globalSDFCellSize;
+            ssgiSourceKey.globalCells = uint32_t(m_settingsManager.vxgi.globalSDFCells);
+            ssgiSourceKey.globalClipmaps = uint32_t(m_settingsManager.vxgi.globalSDFClipmaps);
+            ssgiSourceKey.globalLayerCells = m_settingsManager.vxgi.globalSDFLayerCells;
             ssgiSourceKey.worldGeometryRevision = ssgiSourceKey.effectiveWorldMode ? m_vxgiWorld.GetGeometryRevision() : 0;
             ssgiSourceKey.sdfGeometryRevision = m_vxgiMeshSDFScene.GetRevision();
             ssgiSourceKey.surfaceRevision = ssgiSourceKey.effectiveWorldMode ? m_vxgiSurface.GetRevision() : 0;
             // Prepare exposes the reset epoch used by the current recorded RAW buffer.
             // Batch cursor/frame changes intentionally do not invalidate screen history.
             ssgiSourceKey.probeResetEpoch = m_vxgiProbes.GetPendingPlan().epoch;
-            ssgiHistoryWasValid = m_ssgiHistory.valid;
             ssgiSourceReset = m_ssgiSources.NeedsReset(ssgiSourceKey);
             if (ssgiSourceReset) m_ssgiHistory.valid = false;
             SSGIPass::Input ssgiInput = { deferredOutput.sceneColor, gbufferOutput.depth,
@@ -2409,9 +2230,55 @@ void D3D12App::Render()
                 return;
             }
             sceneColorProducer = ssgiOutput.pass;
+            auto previewGI = ssgiOutput.indirectLighting;
+            if ((screenOnlyGIView || (meshSDFGIView && worldInput.globalSDF)) &&
+                ssgiSourceKey.effectiveWorldMode != 0)
+            {
+                if (!m_ssgiHistory.valid) m_ssgiPreviewHistory.valid = false;
+                if (!m_resourceManager.EnsureSSGIPreviewHistoryResources(&m_deviceContext, SceneWidth, SceneHeight,
+                    static_cast<UINT>(frameSSGI.traceDownsampleFactor)))
+                {
+                    ErrorLog::Write("SSGI: preview history allocation failed; rendering stopped.");
+                    Running = false;
+                    EndFrame();
+                    return;
+                }
+                auto previewWorld = worldInput;
+                previewWorld.globalSDF = nullptr;
+                previewGI = SSGIPass::AddLightingPreviewToGraph(deferredGraph, &m_resourceManager,
+                    &m_pipelineManager, m_ssgiPreviewHistory, m_currViewGpu, m_currJitteredProjGpu,
+                    m_currJitteredInvProjGpu, m_currJitteredInvViewProjGpu, SceneWidth, SceneHeight,
+                    frameIndex, m_ssgiFrameIndex, frameSSGI, ssgiInput,
+                    meshSDFGIView ? &previewWorld : nullptr);
+                if (!previewGI.IsValid())
+                {
+                    ErrorLog::Write("SSGI: GI tier preview construction failed; rendering stopped.");
+                    Running = false;
+                    EndFrame();
+                    return;
+                }
+                ssgiPreviewHistoryWritten = true;
+            }
+            else m_ssgiPreviewHistory.valid = false;
+            if (pureGIView)
+            {
+                giDisplay = SSGIPass::AddIrradiancePreviewToGraph(deferredGraph, &m_resourceManager,
+                    &m_pipelineManager, m_currViewGpu, m_currJitteredInvProjGpu, SceneWidth, SceneHeight,
+                    frameIndex, static_cast<UINT>(frameSSGI.traceDownsampleFactor), ssgiInput,
+                    previewGI, frameSSGI.intensity);
+                if (!giDisplay.texture.IsValid() || !giDisplay.pass.IsValid())
+                {
+                    ErrorLog::Write("SSGI: irradiance display construction failed; rendering stopped.");
+                    Running = false;
+                    EndFrame();
+                    return;
+                }
+            }
+            passViewer.Accumulated(deferredGraph, RenderPassId::GI, ssgiOutput.sceneColor);
             ssgiHistoryWritten = true;
         }
 
+        passViewer.Before(deferredGraph, RenderPassId::Skybox, deferredOutput.sceneColor);
         if (!showGIOnly)
         {
             RDGPassHandle skyboxPass = SkyboxPass::AddToGraph(
@@ -2435,6 +2302,8 @@ void D3D12App::Render()
             }
             deferredGraph.AddPassDependencies(skyboxPass, { sceneColorProducer });
             sceneColorProducer = skyboxPass;
+            passViewer.After(deferredGraph, RenderPassId::Skybox, deferredOutput.sceneColor);
+            passViewer.Before(deferredGraph, RenderPassId::Transparent, deferredOutput.sceneColor);
 
             RDGPassHandle transparentPass = PBRPass::AddTransparentToGraph(
                 deferredGraph,
@@ -2456,10 +2325,16 @@ void D3D12App::Render()
                 return;
             }
             sceneColorProducer = transparentPass;
+            passViewer.After(deferredGraph, RenderPassId::Transparent, deferredOutput.sceneColor);
         }
 
-        RDGTextureHandle deferredFinalColor = deferredOutput.sceneColor;
-        RDGPassHandle deferredFinalColorProducer = sceneColorProducer;
+        // Pure GI uses the same reconstruction, configured AA and tone mapping
+        // as the former GI-only view. Its lighting history remains independent
+        // from color AA history, which is reset when the displayed source changes.
+        const auto deferredAAColor = pureGIView ? giDisplay.texture : deferredOutput.sceneColor;
+        const auto deferredAAProducer = pureGIView ? giDisplay.pass : sceneColorProducer;
+        RDGTextureHandle deferredFinalColor = deferredAAColor;
+        RDGPassHandle deferredFinalColorProducer = deferredAAProducer;
         if (m_antiAliasingMode == AntiAliasingMode::TAA ||
             m_antiAliasingMode == AntiAliasingMode::TSR ||
             m_antiAliasingMode == AntiAliasingMode::DLSS)
@@ -2479,7 +2354,7 @@ void D3D12App::Render()
                     Width,
                     Height,
                     m_temporalHistoryValid,
-                    { deferredOutput.sceneColor, gbufferOutput.depth, motionOutput.motionTexture });
+                    { deferredAAColor, gbufferOutput.depth, motionOutput.motionTexture });
 
                 if (!taaOutput.historyTexture.IsValid() || !taaOutput.pass.IsValid())
                 {
@@ -2492,7 +2367,7 @@ void D3D12App::Render()
 
                 deferredGraph.AddPassDependencies(
                     taaOutput.pass,
-                    { sceneColorProducer, motionOutput.pass });
+                    { deferredAAProducer, motionOutput.pass });
                 deferredFinalColor = taaOutput.historyTexture;
                 deferredFinalColorProducer = taaOutput.pass;
                 temporalHistoryWrittenByDeferredGraph = true;
@@ -2514,7 +2389,7 @@ void D3D12App::Render()
                     Width,
                     Height,
                     m_temporalHistoryValid,
-                    { deferredOutput.sceneColor, gbufferOutput.depth, motionOutput.motionTexture });
+                    { deferredAAColor, gbufferOutput.depth, motionOutput.motionTexture });
 
                 if (!tsrOutput.historyTexture.IsValid() || !tsrOutput.pass.IsValid())
                 {
@@ -2527,12 +2402,12 @@ void D3D12App::Render()
 
                 deferredGraph.AddPassDependencies(
                     tsrOutput.pass,
-                    { sceneColorProducer, motionOutput.pass });
+                    { deferredAAProducer, motionOutput.pass });
                 deferredFinalColor = tsrOutput.historyTexture;
                 deferredFinalColorProducer = tsrOutput.pass;
                 temporalHistoryWrittenByDeferredGraph = true;
             }
-            else if (!skipDLSS)
+            else
             {
                 dlssResetRequested = !m_dlssHistoryValid;
                 DLSSPass::Output dlssOutput = DLSSPass::AddToGraph(
@@ -2543,7 +2418,7 @@ void D3D12App::Render()
                     m_currJitterPixelY,
                     (std::max)(deltaTime * 1000.0f, 0.0f),
                     dlssResetRequested,
-                    { deferredOutput.sceneColor, gbufferOutput.depth, motionOutput.motionTexture },
+                    { deferredAAColor, gbufferOutput.depth, motionOutput.motionTexture },
                     [this](ID3D12GraphicsCommandList* commandList)
                     {
                         // The post-process root signature declares
@@ -2575,12 +2450,15 @@ void D3D12App::Render()
 
                 deferredGraph.AddPassDependencies(
                     dlssOutput.pass,
-                    { sceneColorProducer, motionOutput.pass });
+                    { deferredAAProducer, motionOutput.pass });
                 deferredFinalColor = dlssOutput.outputTexture;
                 deferredFinalColorProducer = dlssOutput.pass;
                 dlssEvaluatedByDeferredGraph = true;
             }
         }
+
+        if (m_antiAliasingMode != AntiAliasingMode::None && m_antiAliasingMode != AntiAliasingMode::SMAA)
+            passViewer.Accumulated(deferredGraph, RenderPassId::AntiAliasing, deferredFinalColor);
 
         if (m_antiAliasingMode == AntiAliasingMode::SMAA)
         {
@@ -2605,6 +2483,7 @@ void D3D12App::Render()
                 EndFrame();
                 return;
             }
+            passViewer.Accumulated(deferredGraph, RenderPassId::PostProcess, toneMapOutput.texture, RenderPassViewer::Mapping::LDR);
             deferredGraph.AddPassDependency(
                 toneMapOutput.pass,
                 deferredFinalColorProducer);
@@ -2635,6 +2514,7 @@ void D3D12App::Render()
                 EndFrame();
                 return;
             }
+            passViewer.Accumulated(deferredGraph, RenderPassId::AntiAliasing, smaaOutput.color, RenderPassViewer::Mapping::LDR);
             deferredGraph.AddPassDependency(
                 smaaOutput.edgePass,
                 toneMapOutput.pass);
@@ -2665,7 +2545,25 @@ void D3D12App::Render()
         }
 
         // Execute the entire graph after all passes have been added
-        executeGraph(deferredGraph);
+        if (m_antiAliasingMode != AntiAliasingMode::SMAA && passViewer.Wants(RenderPassId::PostProcess))
+        {
+            const auto finalColor = deferredGraph.RegisterExternalTexture(m_deviceContext.GetRenderTarget(frameIndex),
+                D3D12_RESOURCE_STATE_PRESENT, D3D12_RESOURCE_STATE_PRESENT, "BackBuffer");
+            passViewer.Accumulated(deferredGraph, RenderPassId::PostProcess, finalColor, RenderPassViewer::Mapping::LDR);
+        }
+        if (pureGIView)
+        {
+            const auto finalColor = deferredGraph.RegisterExternalTexture(m_deviceContext.GetRenderTarget(frameIndex),
+                D3D12_RESOURCE_STATE_PRESENT, D3D12_RESOURCE_STATE_PRESENT, "BackBuffer");
+            passViewer.Output(deferredGraph, RenderPassId::GI, finalColor, RenderPassViewer::Mapping::LDR);
+        }
+        if (!finishPassView(deferredGraph))
+        {
+            Running = false;
+            EndFrame();
+            return;
+        }
+        deferredGraph.Execute(m_deviceContext.GetCommandList());
         if (m_resourceManager.PassConstantsAllocationFailed(frameIndex))
         {
             ErrorLog::Write("Application: pass constant allocation failed; rendering stopped.");
@@ -2700,7 +2598,7 @@ void D3D12App::Render()
         }
     }
 
-    if (!showGIOnly && m_settingsManager.vxgi.enabled && m_settingsManager.vxgi.debugView >= 1 &&
+    if (!passViewer.Active() && !showGIOnly && m_settingsManager.vxgi.enabled && m_settingsManager.vxgi.debugView >= 1 &&
         m_settingsManager.vxgi.debugView <= 3 &&
         !m_vxgiDebugRenderer.Record(m_deviceContext, m_resourceManager.GetMainDescriptorHeap(),
             frameIndex, m_currUnjitteredViewProjGpu, m_imguiRtvHandles[frameIndex],
@@ -2714,7 +2612,7 @@ void D3D12App::Render()
         return;
     }
 
-    if (!showGIOnly && m_settingsManager.vxgi.enabled && ((m_settingsManager.vxgi.debugView >= 4 && m_settingsManager.vxgi.debugView <= 12) ||
+    if (!passViewer.Active() && !showGIOnly && m_settingsManager.vxgi.enabled && ((m_settingsManager.vxgi.debugView >= 4 && m_settingsManager.vxgi.debugView <= 12) ||
         (m_settingsManager.vxgi.debugView >= 18 && m_settingsManager.vxgi.debugView <= 20)))
     {
         XMFLOAT3 sunTowardLight;
@@ -2733,7 +2631,7 @@ void D3D12App::Render()
         }
     }
 
-    if (!showGIOnly && m_settingsManager.vxgi.enabled && m_settingsManager.vxgi.debugView >= 13 && m_settingsManager.vxgi.debugView <= 17 &&
+    if (!passViewer.Active() && !showGIOnly && m_settingsManager.vxgi.enabled && m_settingsManager.vxgi.debugView >= 13 && m_settingsManager.vxgi.debugView <= 17 &&
         !m_vxgiProbeDebugRenderer.Record(m_deviceContext, m_resourceManager.GetMainDescriptorHeap(), frameIndex,
             m_currUnjitteredViewProjGpu, m_imguiRtvHandles[frameIndex], m_vxgiGPUScene,
             m_settingsManager.vxgi.debugView == 16 ? m_vxgiProbeFilterPass.GetFilteredRecords() : m_vxgiProbePass.GetDisplayHistory(),
@@ -2748,20 +2646,19 @@ void D3D12App::Render()
         return;
     }
 
-    m_editorSelectionRenderer.Record(m_deviceContext, m_resourceManager, m_editorSelection,
+    if (!passViewer.Active()) m_editorSelectionRenderer.Record(m_deviceContext, m_resourceManager, m_editorSelection,
         frameIndex, m_currUnjitteredViewProjGpu, m_imguiRtvHandles[frameIndex], io.DisplaySize.x, io.DisplaySize.y);
 
     if (!EndFrame())
     {
-        if (m_traceOutputDiagnostics.IsEnabled()) m_traceOutputDiagnostics.SubmissionFailed("closing frame failed");
         // The command list could not be finalized; skip submission and presentation
         return;
     }
 
     ID3D12CommandList* lists[] = { m_deviceContext.GetCommandList() };
-    diagnosticsSectionStart = std::chrono::steady_clock::now();
     // Submit recorded rendering commands to the GPU for execution
     m_deviceContext.GetCommandQueue()->ExecuteCommandLists(1, lists);
+    captureFrame.executed = true;
     // Insert a signal into the queue to track GPU progress
     HRESULT hr = m_deviceContext.GetCommandQueue()->Signal(
         m_deviceContext.GetFence(frameIndex),
@@ -2769,14 +2666,20 @@ void D3D12App::Render()
     if (FAILED(hr))
     {
         ReportFrameError("Application: failed to signal the frame fence.", hr);
-        if (m_traceOutputDiagnostics.IsEnabled()) m_traceOutputDiagnostics.SubmissionFailed("frame fence signal failed");
     }
     else
     {
-        m_frameDiagnostics.Submitted(frameIndex, m_deviceContext.GetFenceValue(frameIndex));
-        m_frameDiagnostics.Metadata("submitted", true);
+        if (!m_passCapture.OnSubmitted(frameIndex, m_deviceContext.GetFence(frameIndex),
+            m_deviceContext.GetFenceValue(frameIndex))) ErrorLog::Write(m_passCapture.GetLastError());
         CommitTemporalHistories(temporalHistoryWritten, hbaoHistoryWritten, dlssHistoryWritten, ssgiHistoryWritten);
+        if (ssgiPreviewHistoryWritten)
+        {
+            m_resourceManager.FlipSSGIHistoryIndex(true);
+            m_ssgiPreviewHistory = m_ssgiHistory;
+        }
         m_lastRenderedDebugPass = m_debugPass;
+        m_lastRenderedPureGI = pureGIView;
+        m_lastRenderedPureGISource = m_passView.giSource;
         m_lastRenderedGIWorldMode = ssgiHistoryWritten ? ssgiSourceKey.effectiveWorldMode : 0;
         if (ssgiHistoryWritten)
         {
@@ -2786,75 +2689,18 @@ void D3D12App::Render()
         if (m_settingsManager.vxgi.enabled &&
             !m_resourceManager.GetVXGI().OnSubmitted(frameIndex, m_deviceContext.GetFenceValue(frameIndex)))
             ReportFrameError("VXGI: failed to commit the submitted probe batch.", E_FAIL);
-        if (ssgiHistoryWritten)
-            LogSubmittedGIState(m_ssgiFrameIndex - 1, frameIndex, deltaTime,
-                RenderDebugWorldMode(m_debugPass), ssgiSourceKey.effectiveWorldMode,
-                ssgiHistoryWasValid, ssgiSourceReset, m_vxgiProbes, m_vxgiProbePass,
-                m_vxgiProbeFilterPass, m_vxgiGPUScene);
         m_editorSelectionRenderer.OnSubmitted(frameIndex, m_deviceContext.GetFenceValue(frameIndex));
     }
-    m_frameDiagnostics.CPU("Submit.Commit", std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - diagnosticsSectionStart).count());
 
     // Flip the back buffer to the front screen
-    diagnosticsSectionStart = std::chrono::steady_clock::now();
     hr = m_deviceContext.GetSwapChain()->Present(0, 0);
-    m_frameDiagnostics.CPU("Present", std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - diagnosticsSectionStart).count());
-    if (m_diagnosticsPGODevice && m_diagnosticsSequence == "pgo")
-    {
-        const auto queryStart = std::chrono::steady_clock::now();
-        BOOL wantMoreFrames = TRUE;
-        const HRESULT result = m_diagnosticsPGODevice->SetBackgroundProcessingMode(
-            D3D12_BACKGROUND_PROCESSING_MODE_ALLOW_INTRUSIVE_MEASUREMENTS,
-            D3D12_MEASUREMENTS_ACTION_KEEP_ALL, nullptr, &wantMoreFrames);
-        m_frameDiagnostics.CPU("PGO.Query", std::chrono::duration<double, std::milli>(
-            std::chrono::steady_clock::now() - queryStart).count());
-        m_frameDiagnostics.Metadata("pgo_query_hr", static_cast<uint32_t>(result));
-        if (SUCCEEDED(result)) m_frameDiagnostics.Metadata("pgo_more", bool(wantMoreFrames));
-        else
-        {
-            ReportFrameError("Diagnostics: background measurement query failed.", result);
-            Running = false;
-        }
-    }
-    if (m_frameDiagnostics.IsEnabled())
-    {
-        const auto& plan = m_vxgiProbes.GetPendingPlan();
-        if (m_diagnosticsPGODevice)
-        {
-            m_frameDiagnostics.Metadata("pgo_background_supported", m_diagnosticsBackgroundSupport);
-            m_frameDiagnostics.Metadata("pgo_discarded", m_diagnosticsPGODiscarded);
-        }
-        m_frameDiagnostics.Metadata("actual_mode", RenderDebugWorldMode(m_debugPass));
-        m_frameDiagnostics.Metadata("gi_only", showGIOnly);
-        m_frameDiagnostics.Metadata("debug_pass", static_cast<int>(m_debugPass));
-        m_frameDiagnostics.Metadata("view_history_reset", viewHistoryReset);
-        m_frameDiagnostics.Metadata("dlss_reset", dlssResetRequested);
-        m_frameDiagnostics.Metadata("dlss_evaluated", dlssHistoryWritten);
-        m_frameDiagnostics.Metadata("validation_stage", m_diagnosticsStage);
-        m_frameDiagnostics.Metadata("dlss_evaluated", dlssHistoryWritten);
-        m_frameDiagnostics.Metadata("effective_mode", ssgiSourceKey.effectiveWorldMode);
-        m_frameDiagnostics.Metadata("present_hr", static_cast<uint32_t>(hr));
-        m_frameDiagnostics.Metadata("history_valid_before", ssgiHistoryWasValid);
-        m_frameDiagnostics.Metadata("history_reset", ssgiSourceReset);
-        m_frameDiagnostics.Metadata("ssgi_frame", m_ssgiFrameIndex);
-        m_frameDiagnostics.Metadata("dlss_frame", m_dlssJitterFrameIndex);
-        m_frameDiagnostics.Metadata("dlss_history", m_dlssHistoryValid);
-        m_frameDiagnostics.Metadata("scene_size", {SceneWidth, SceneHeight, Width, Height});
-        m_frameDiagnostics.Metadata("ssgi_config", {m_settingsManager.ssgi.quality, m_settingsManager.ssgi.traceDownsampleFactor, m_settingsManager.ssgi.radius});
-        m_frameDiagnostics.Metadata("source", {ssgiSourceKey.worldGeometryRevision, ssgiSourceKey.sdfGeometryRevision,
-            ssgiSourceKey.surfaceRevision, ssgiSourceKey.probeResetEpoch, ssgiSourceKey.screenSourceStamp});
-        m_frameDiagnostics.Metadata("probe_work", plan.count);
-        m_frameDiagnostics.Metadata("probe_epoch", plan.epoch);
-        m_frameDiagnostics.Metadata("probe_batches", m_vxgiProbePass.GetActivityStats().activeBatches);
-        m_frameDiagnostics.Metadata("raw_address", m_vxgiProbePass.GetDisplayHistory() ? m_vxgiProbePass.GetDisplayHistory()->GetGPUVirtualAddress() : 0);
-        m_frameDiagnostics.Metadata("visible_instances", m_visibleInstanceCount);
-        m_frameDiagnostics.Metadata("debug_view", m_settingsManager.vxgi.debugView);
-        m_frameDiagnostics.Metadata("imgui_counts", {ImGui::GetDrawData()->TotalVtxCount, ImGui::GetDrawData()->TotalIdxCount});
-    }
     if (FAILED(hr))
     {
         ReportFrameError("Application: swap-chain Present failed.", hr);
     }
+    ++m_renderedFrames;
+    if (m_passRunOptions.frameLimit && m_renderedFrames >= m_passRunOptions.frameLimit)
+        Running = false;
 
     // Match Escape's confirmation and shutdown path, without destroying the window
     // while ImGui or the frame command list is still being recorded.
@@ -2875,12 +2721,6 @@ bool D3D12App::InitLoadingRenderer()
     if (SUCCEEDED(hr)) hr = m_loadingCommandList->Close();
     if (SUCCEEDED(hr)) hr = device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&m_loadingFence));
     if (FAILED(hr)) ErrorLog::HRESULT("Loading screen: failed to initialize command resources.", hr);
-    if (SUCCEEDED(hr) && m_diagnosticsGPUValidation)
-    {
-        m_loadingCommandList->SetName(L"Loading.CommandList");
-        m_loadingAllocator->SetName(L"Loading.Allocator");
-        m_loadingFence->SetName(L"Loading.Fence");
-    }
     return SUCCEEDED(hr);
 }
 
@@ -2921,11 +2761,6 @@ void D3D12App::ShowLoadingProgress(float fraction, const std::string& status)
         if (FAILED(hr)) { ErrorLog::HRESULT(operation, hr); throw InitializationStopped{}; }
     };
     if (!WaitForLoadingFrame()) throw InitializationStopped{};
-    if (m_diagnosticsGPUValidation)
-    {
-        m_validationDiagnostics.Collect("loading: " + status, 0, RenderDebugWorldMode(m_debugPass));
-        if (m_validationDiagnostics.GetErrorCount()) throw InitializationStopped{};
-    }
     check(m_loadingAllocator->Reset(), "Loading screen: reset allocator.");
     check(m_loadingCommandList->Reset(m_loadingAllocator.Get(), nullptr), "Loading screen: reset command list.");
     const int slot = m_deviceContext.GetSwapChain()->GetCurrentBackBufferIndex();
@@ -2957,12 +2792,6 @@ void D3D12App::ShowLoadingProgress(float fraction, const std::string& status)
     m_loadingStageKey = stageKey;
     // Loading presentation advances the swap chain independently of scene work.
     frameIndex = m_deviceContext.GetSwapChain()->GetCurrentBackBufferIndex();
-    if (m_loadingHiddenVerification)
-    {
-        static std::ofstream trace("tmp/Loading-startup-progress.jsonl");
-        trace << nlohmann::json{{"progress", m_loadingProgress}, {"status", status}}.dump() << '\n';
-        trace.flush();
-    }
 }
 
 // Set up Dear ImGui: dedicated descriptor heaps, platform/renderer backends, and SRV allocator callbacks
@@ -3017,7 +2846,6 @@ bool D3D12App::InitImGui()
 
     IMGUI_CHECKVERSION();
     ImGui::CreateContext();
-    if (m_loadingHiddenVerification) ImGui::GetIO().ConfigFlags |= ImGuiConfigFlags_NoMouseCursorChange;
 
     // Initialize the shared editor theme before the first frame using window DPI.
     RECT clientRect = {};

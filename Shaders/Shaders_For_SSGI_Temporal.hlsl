@@ -8,37 +8,23 @@
 
 cbuffer SSGITemporalConstants : register(b0)
 {
-    float4x4 currJitteredInvViewProj;
-    float4x4 prevJitteredViewProj;
-    float4x4 prevJitteredInvViewProj;
     uint2 sceneSize;
     uint2 outputSize;
     uint depthTextureIdx;
     uint normalTextureIdx;
     uint ormTextureIdx;
     uint currentTextureIdx;
-    uint previousGITextureIdx;
-    uint previousDepthTextureIdx;
-    uint previousNormalTextureIdx;
-    uint historyValid;
+    uint reprojectedGITextureIdx;
+    uint reprojectedFastTextureIdx;
     uint outputGITextureIdx;
     uint outputDepthTextureIdx;
     uint outputNormalTextureIdx;
-    uint previousFastTextureIdx;
     uint outputFastTextureIdx;
     float maxHistoryFrames;
     float maxFastAccumulatedFrames;
     uint traceDownsampleFactor;
+    uint3 padding;
 };
-
-bool SameSurface(float3 p, float3 n, float3 q, float3 m, float planeTolerance)
-{
-    float3 delta = q - p;
-    // Reprojection already restricts taps to the previous bilinear footprint.
-    // At grazing angles coplanar taps can be far apart along the surface;
-    // reject normal/plane disagreement, not that tangential separation.
-    return dot(n, m) >= 0.85 && SymmetricPlaneDistance(delta, n, m) <= planeTolerance;
-}
 
 [numthreads(8, 8, 1)]
 void CSMain_Temporal(uint3 id : SV_DispatchThreadID)
@@ -69,8 +55,8 @@ void CSMain_Temporal(uint3 id : SV_DispatchThreadID)
     }
 
     float3 encodedNormal = normal.Load(int3(pixel, 0)).xyz;
-    float3 n = normalize(DecodeGBufferNormal(encodedNormal));
-    float3 value = current.Load(int3(id.xy, 0)).rgb;
+    float4 currentSample = current.Load(int3(id.xy, 0));
+    float3 value = currentSample.rgb;
     outputDepth[id.xy] = z;
     outputNormal[id.xy] = float4(encodedNormal, 1);
     float luminance = RelaxLuminance(value);
@@ -78,82 +64,22 @@ void CSMain_Temporal(uint3 id : SV_DispatchThreadID)
     outputFast[id.xy] = float4(value, moment2);
     output[id.xy] = float4(value, 1); // Alpha is history length here, not the raw hit fraction.
 
-    if (!historyValid)
+    Texture2D<float4> reprojectedGI = ResourceDescriptorHeap[reprojectedGITextureIdx];
+    float4 history = reprojectedGI.Load(int3(id.xy, 0));
+    if (history.a <= 0)
     {
         return;
     }
-
-    float2 uv = (pixel + 0.5) / sceneSize;
-    float3 p = ReconstructPosition(uv, z, currJitteredInvViewProj);
-    float footprint = SameDepthPixelFootprint(uv, z, p, sceneSize, currJitteredInvViewProj);
-    footprint = max(footprint, 1e-4);
-    float rayDepth = length(p - ReconstructPosition(uv, 0, currJitteredInvViewProj));
-    float planeTolerance = max(min(footprint * 0.5, rayDepth * 0.01), 0.001);
-    float4 previousClip = mul(float4(p, 1), prevJitteredViewProj);
-    if (previousClip.w <= 0)
+    Texture2D<float4> reprojectedFast = ResourceDescriptorHeap[reprojectedFastTextureIdx];
+    float4 fastHistory = reprojectedFast.Load(int3(id.xy, 0));
+    if (currentSample.a < 0)
     {
+        // No new observation: retain accumulated color, moments and sample count.
+        // Depth and normal above still describe the current frame's surface.
+        output[id.xy] = history;
+        outputFast[id.xy] = fastHistory;
         return;
     }
-    float3 previousNDC = previousClip.xyz / previousClip.w;
-    float2 previousUV = previousNDC.xy * float2(0.5, -0.5) + 0.5;
-    if (any(previousUV < 0) || any(previousUV >= 1) || previousNDC.z < 0 || previousNDC.z >= 1)
-    {
-        return;
-    }
-    // History texel i represents full pixel center factor*i+0.5.
-    float inverseFactor = factor == 2u ? 0.5 : rcp(float(factor));
-    float2 historyPixel = (previousUV * sceneSize - 0.5) * inverseFactor;
-    int2 base = int2(floor(historyPixel));
-    float2 fraction = frac(historyPixel);
-    Texture2D<float4> previousGI = ResourceDescriptorHeap[previousGITextureIdx];
-    Texture2D<float> previousDepth = ResourceDescriptorHeap[previousDepthTextureIdx];
-    Texture2D<float4> previousNormal = ResourceDescriptorHeap[previousNormalTextureIdx];
-
-    Texture2D<float4> previousFast = ResourceDescriptorHeap[previousFastTextureIdx];
-    float4 fastHistory = 0;
-    float4 history = 0;
-    float historyWeight = 0;
-
-    [loop]
-    for (int i = 0; i < 4; ++i)
-    {
-        int2 offset = int2(i & 1, i >> 1);
-        int2 tap = base + offset;
-        if (any(tap < 0) || any(tap >= int2(outputSize)))
-        {
-            continue;
-        }
-
-        float4 tapNormal = previousNormal.Load(int3(tap, 0));
-        if (tapNormal.a < 0.5)
-        {
-            continue;
-        }
-        float tapZ = previousDepth.Load(int3(tap, 0));
-        float3 q = ReconstructPosition((tap * int(factor) + 0.5) / sceneSize, tapZ, prevJitteredInvViewProj);
-        float3 m = normalize(DecodeGBufferNormal(tapNormal.xyz));
-
-        if (!SameSurface(p, n, q, m, planeTolerance))
-        {
-            continue;
-        }
-
-        float2 weights = lerp(1 - fraction, fraction, float2(offset));
-        float weight = weights.x * weights.y;
-
-        history += previousGI.Load(int3(tap, 0)) * weight;
-        fastHistory += previousFast.Load(int3(tap, 0)) * weight;
-        historyWeight += weight;
-    }
-
-    if (historyWeight < 0.01)
-    {
-        return;
-    }
-
-    history /= historyWeight;
-
-    fastHistory /= historyWeight;
     float frames = min(history.a + 1, maxHistoryFrames);
     // RELAX: independent slow/fast accumulation before neighborhood clamping.
     float alpha = 1.0 / frames;
@@ -203,8 +129,9 @@ void CSMain_HistoryClamp(uint3 id : SV_DispatchThreadID, uint3 group : SV_GroupI
         int2 pixel = clamp(int2(group.xy * 8 + local) - 2, 0, int2(signalSize) - 1);
         float4 fast = fastTexture.Load(int3(pixel, 0));
         fastTile[local.y][local.x] = float4(RGBToYCoCg(fast.rgb), fast.a);
-        noisyTile[local.y][local.x] =
-            float4(noisyTexture.Load(int3(pixel, 0)).rgb, slowTexture.Load(int3(pixel, 0)).a > 0);
+        float4 noisy = noisyTexture.Load(int3(pixel, 0));
+        float sampleState = slowTexture.Load(int3(pixel, 0)).a > 0 ? (noisy.a < 0 ? -1 : 1) : 0;
+        noisyTile[local.y][local.x] = float4(noisy.rgb, sampleState);
     }
     GroupMemoryBarrierWithGroupSync();
     if (any(id.xy >= signalSize))
@@ -217,6 +144,17 @@ void CSMain_HistoryClamp(uint3 id : SV_DispatchThreadID, uint3 group : SV_GroupI
     outputMoments[id.xy] = 0;
     if (noisyTile[center.y][center.x].a == 0)
     {
+        return;
+    }
+    if (noisyTile[center.y][center.x].a < 0)
+    {
+        // Reuse is not a new noisy observation to clamp against. Preserve both
+        // histories and pass the retained second moment to the spatial filter.
+        float4 slow = slowTexture.Load(int3(id.xy, 0));
+        float4 fast = fastTexture.Load(int3(id.xy, 0));
+        output[id.xy] = slow;
+        outputFast[id.xy] = fast;
+        outputMoments[id.xy] = float4(slow.rgb, fast.a);
         return;
     }
 
@@ -235,7 +173,7 @@ void CSMain_HistoryClamp(uint3 id : SV_DispatchThreadID, uint3 group : SV_GroupI
         {
             uint2 tap = uint2(int2(center) + int2(x, y));
             float4 noisy = noisyTile[tap.y][tap.x];
-            if (noisy.a != 0)
+            if (noisy.a > 0)
             {
                 float3 fast = fastTile[tap.y][tap.x].rgb;
                 fastMean += fast;

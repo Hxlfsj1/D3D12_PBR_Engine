@@ -63,19 +63,50 @@ Shift selection and Ctrl+A retain the text widget's native behavior. Line select
 includes the newline and retains the frozen copy snapshot while the log has focus.
 
 New control types must be added to the center and demonstrated in `StyleGuide`.
-`MainMenu` owns the File, Edit and Debug menus. Hovering **Debug > Pass** exposes
-four mutually exclusive views: **默认**, **关闭 VXGI**, **仅 SSGI** and **仅 GI**.
-The active view is marked with a check; all three alternate views are disabled
-when GI is unavailable. Default displays the normal composition with full GI;
-VXGI-off retains the normal material, direct-light and IBL composition with SSGI
-but disables world-space probe fallback. SSGI-only shows the screen
-contribution and ends on screen misses, while GI-only shows screen plus world
-probe indirect light. The separate GI views omit receiver albedo. This menu
-replaces the former T shortcut and Details source selector.
-`DebugPassMenu` is reused by the main menu and the F10 template's own menu bar.
-The F10 **Debug pass** section can toggle availability to inspect the disabled
-state. View selection is runtime state supplied by the caller, independent of
-render quality configuration; selecting a menu item does not edit JSON.
+`MainMenu` owns the File, Edit and Debug menus. **Debug > Pass** lists the
+logical stages in `Resources/RenderPassView.h`. Enabled stages offer their real
+pass output and/or accumulated result; GBuffer selects an attachment within the
+same stage, and Shadow shows a four-cascade atlas. AA algorithms share one
+AntiAliasing entry; tone mapping belongs to PostProcess. Those two stages offer
+accumulated scene results only. Inactive stages are disabled and show `未启用`.
+The selected result is checked. Invalid selections return to Default.
+
+GI offers exactly three mutually exclusive pure-light views, in order:
+**默认（SSGI + Mesh SDF VXGI + Global SDF GI）**, **SSGI**, and
+**SSGI + Mesh SDF VXGI**. They compare the cumulative tracing tiers. Without
+Global SDF the default becomes **默认（SSGI + Mesh SDF VXGI）**, or **默认（SSGI）**
+without VXGI. The Mesh SDF choice is disabled when world GI is unavailable.
+`WrappedMenuItem` reuses the normal menu widget with viewport-aware line breaks
+and a stable `###` ID; narrow layouts retain full labels and unchanged font size.
+The F10 menu demonstrates this same component. Accumulated GI remains available
+through CLI capture, but has no entry in this three-item submenu. Pure views display indirect
+light before receiver material response. Diagnostic sources use separate output
+and history while normal mixed GI keeps running. Switching diagnostic sources
+invalidates their shared preview history. There is no isolated Mesh SDF/GDF-only
+contribution view. The entire GI menu is disabled when GI is unavailable.
+All three pure GI views continue through the configured AA and ToneMap
+before display. Accumulated GI remains a snapshot at the GI composition boundary.
+The AA choice follows Pipeline.json; None stays off. A wrapped muted footer reads
+**纯 GI 输出：抗锯齿已启用** or **纯 GI 输出：抗锯齿未启用**, according to the
+caller-supplied availability. The F10 template reuses this same status marker.
+Mixed/diagnostic GI histories stay separate; color AA histories restart on view or
+source changes instead of reusing colors from a different image. CLI captures of
+pure GI store the final full-output-resolution RGBA8 resource after configured
+AA and one ToneMap; accumulated GI captures retain the native HDR resource at the
+GI boundary. Capture metadata records the output stage and effective AA state.
+
+A stage choice never enables a feature or edits JSON. Normal GI computation and
+its history updates continue while the viewer presents the selected result;
+pure GI results use the AA/ToneMap display path described above.
+Skybox and Transparent pass output
+means signed linear after-minus-before color change (orange brighter, blue darker),
+explicitly described in their menus; their accumulated result is normal scene color.
+
+`DebugPassMenu` is shared by production and the F10 template. The template exposes
+independent availability controls, including Global SDF, to inspect disabled stages, forward/deferred
+paths and AA's accumulated-only result. It stays inside the viewport at narrow
+widths; long text wraps and short windows scroll without changing font size.
+
 Hovering **Edit > 相机** opens a temporary
 submenu using `CameraTransformContent`, also demonstrated in the F10 **Camera
 transform** section. Its read-only property rows show the live world transform,

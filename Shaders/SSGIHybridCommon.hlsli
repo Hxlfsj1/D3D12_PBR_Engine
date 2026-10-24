@@ -7,6 +7,9 @@
 #else
 #include "VXGIProbeQueryCommon.hlsli"
 #endif
+#ifdef VXGI_SSGI_GLOBAL
+#include "VXGIGlobalSDFCommon.hlsli"
+#endif
 
 static const uint SSGI_SCREEN_MISS = 0;
 static const uint SSGI_SCREEN_HIT = 1;
@@ -17,12 +20,18 @@ static const uint SSGI_SCREEN_INVALID = 5;
 static const uint SSGI_BACKEND_NONE = 0;
 static const uint SSGI_BACKEND_SCREEN = 1;
 static const uint SSGI_BACKEND_WORLD = 2;
+static const uint SSGI_BACKEND_GLOBAL = 3;
 static const uint SSGI_ANCHOR_UNUSED = 0;
 static const uint SSGI_ANCHOR_VERIFIED = 1;
 static const uint SSGI_ANCHOR_MISS = 2;
 static const uint SSGI_ANCHOR_INVALID = 3;
 static const uint SSGI_ANCHOR_EXHAUSTED = 4;
 static const uint SSGI_ANCHOR_MISMATCH = 5;
+
+#ifdef VXGI_SSGI_THRESHOLD
+static const float SSGI_WORLD_HIT_THRESHOLD_CELLS = 0.9;
+static const float SSGI_WORLD_NORMAL_BIAS_SCALE = 1.1;
+#endif
 
 // Legacy validation keeps six rows. Production appends explicit mesh/BVH
 // counts as a seventh row: 112B here, 624B for the complete trace constants.
@@ -38,6 +47,16 @@ struct SSGIHybridParameters
     uint nodeCount; uint assetCount; uint instanceCount; uint bvhNodeCount;
 #endif
 };
+
+#ifdef VXGI_SSGI_GLOBAL
+// 192B appended after the existing 784B trace contract. The worldMode SRV
+// alias and every history/checkerboard field keep their existing offsets.
+struct SSGIGlobalParameters
+{
+    uint enabled; uint textureIndex; float maxTraceDistance; uint maxSteps;
+    VXGIGlobalSDFConstants constants;
+};
+#endif
 
 // 48B. viewPoint is the fine hit pixel-center's depth surface; rayPoint is
 // the candidate on the traversed screen segment. Confidence is binary geometry
@@ -198,7 +217,7 @@ bool SSGIPrimarySurfaceMatchDepth(float3 nearPosition, float3 targetPosition,
 }
 #endif
 
-// The fallback is the original finite SSGI segment in world coordinates. A
+// The fallback reads cached radiance after a finite world-space query. A
 // surface hit directly reads the existing probe radiance. Cache lookup does
 // not trace probe visibility, shade the surface, trace its sunlight or expand
 // the segment to the scene bounds.
@@ -212,6 +231,9 @@ SSGIHybridRayResult SSGIWorldRaySource(float3 origin, float3 direction, float ra
 #ifndef VXGI_SSGI_THRESHOLD
     , SamplerState materialSampler
 #endif
+#ifdef VXGI_SSGI_GLOBAL
+    , SSGIGlobalParameters global
+#endif
     )
 {
     SSGIHybridRayResult result = (SSGIHybridRayResult)0;
@@ -222,7 +244,13 @@ SSGIHybridRayResult SSGIWorldRaySource(float3 origin, float3 direction, float ra
     float3 unitDirection;
     if (!all(isfinite(origin))
         || !SSGINormalizeDirection(direction, unitDirection)
-        || !isfinite(rayLength) || rayLength <= 0.0)
+        || !isfinite(rayLength)
+#ifdef VXGI_SSGI_GLOBAL
+        || (rayLength <= 0.0 && (rayLength < 0.0 || global.enabled == 0))
+#else
+        || rayLength <= 0.0
+#endif
+        )
         return result;
 #ifdef VXGI_SSGI_THRESHOLD
     VXGIMeshSDFThresholdCounts counts;
@@ -231,17 +259,131 @@ SSGIHybridRayResult SSGIWorldRaySource(float3 origin, float3 direction, float ra
     counts.instanceCount = parameters.instanceCount;
     counts.bvhNodeCount = parameters.bvhNodeCount;
     VXGIThresholdParameters traceParameters;
-    traceParameters.hitThresholdCells = 0.9;
+    traceParameters.hitThresholdCells = SSGI_WORLD_HIT_THRESHOLD_CELLS;
     traceParameters.stepScale = 0.9;
     traceParameters.maxSteps = 512;
     traceParameters.padding = 0;
-    VXGIMeshSDFThresholdResult hit = VXGIMeshSDFTraceThreshold(origin, unitDirection,
+    VXGIMeshSDFThresholdResult hit;
+#ifdef VXGI_SSGI_GLOBAL
+    // A near-plane clip or receiver offset can consume the entire short
+    // segment. This is an empty near interval, not a failed geometry query.
+    if (rayLength == 0.0)
+    {
+        hit = (VXGIMeshSDFThresholdResult)0;
+        hit.status = VXGI_THRESHOLD_MISS;
+    }
+    else
+#endif
+    hit = VXGIMeshSDFTraceThreshold(origin, unitDirection,
         0.0, rayLength, counts, traceParameters, nodes);
     result.worldTraceStatus = hit.status;
     bool found = hit.status == VXGI_THRESHOLD_HIT;
     if (!found)
     {
         result.status = hit.status >= VXGI_THRESHOLD_INVALID ? SSGI_SCREEN_INVALID : SSGI_SCREEN_MISS;
+#ifdef VXGI_SSGI_GLOBAL
+        // Only a completed clear near segment continues. Invalid/exhausted
+        // mesh queries are not evidence that geometry was absent.
+        if (hit.status == VXGI_THRESHOLD_MISS && global.enabled != 0)
+        {
+            if (!isfinite(global.maxTraceDistance) || global.maxTraceDistance < 0.0
+                || global.maxSteps == 0)
+            {
+                result.backend = SSGI_BACKEND_GLOBAL;
+                result.status = SSGI_SCREEN_INVALID;
+                result.worldTraceStatus = VXGI_GLOBAL_SDF_INVALID;
+                return result;
+            }
+            if (global.maxTraceDistance <= rayLength) return result;
+            Texture3D<float> field = ResourceDescriptorHeap[global.textureIndex];
+            result.backend = SSGI_BACKEND_GLOBAL;
+            result.worldTraceStatus = VXGI_GLOBAL_SDF_INVALID;
+            result.status = SSGI_SCREEN_INVALID;
+            float3 farDirection;
+            if (!VXGIGlobalSDFValidTexture(field, global.constants) ||
+                !VXGIThresholdNormalize(unitDirection, farDirection)) return result;
+            float farStart, farEnd;
+            result.worldTraceStatus = VXGI_GLOBAL_SDF_MISS;
+            result.status = SSGI_SCREEN_MISS;
+            // Fine verification owns no coverage beyond the last GDF layer.
+            // Use the same normalized ray as both distance-field queries.
+            if (!VXGIGlobalSDFRayBounds(origin, farDirection,
+                global.constants.clipmaps[global.constants.clipmapCount - 1],
+                rayLength, global.maxTraceDistance, farStart, farEnd)) return result;
+            uint remainingGlobalSteps = global.maxSteps;
+            uint remainingFineSteps = 512;
+            [loop] for (uint window = 0; window < 8; ++window)
+            {
+                if (remainingGlobalSteps == 0 || remainingFineSteps == 0) break;
+                VXGIGlobalSDFTraceResult coarse = VXGIGlobalSDFTrace(field, global.constants,
+                    origin, unitDirection, farStart, farEnd, remainingGlobalSteps);
+                remainingGlobalSteps -= min(remainingGlobalSteps, coarse.sampleCount);
+                result.worldTraceStatus = coarse.status;
+                result.distance = coarse.distance;
+                result.status = coarse.status >= VXGI_GLOBAL_SDF_INVALID ? SSGI_SCREEN_INVALID : SSGI_SCREEN_MISS;
+                if (coarse.status != VXGI_GLOBAL_SDF_HIT) return result;
+
+                // The nearest tight box proves only the clear gap before it.
+                // Never treat the closest-two Mesh SDF MISS as proof that all
+                // farther instances are empty.
+                VXGIMeshSDFThresholdCandidates boxes = VXGIMeshSDFThresholdClosestTwo(
+                    origin, farDirection, coarse.distance, farEnd, counts);
+                if (boxes.valid == 0)
+                {
+                    result.worldTraceStatus = VXGI_THRESHOLD_INVALID;
+                    result.status = SSGI_SCREEN_INVALID;
+                    return result;
+                }
+                if (boxes.count == 0)
+                {
+                    result.worldTraceStatus = VXGI_GLOBAL_SDF_MISS;
+                    result.status = SSGI_SCREEN_MISS;
+                    result.distance = farEnd;
+                    return result;
+                }
+                float fineStart = max(coarse.distance, boxes.candidates[0].entryDistance);
+                float fineEnd = min(farEnd, fineStart + 4.0 *
+                    global.constants.clipmaps[coarse.clipmapIndex].cellSize);
+                VXGIThresholdParameters fineParameters = traceParameters;
+                fineParameters.maxSteps = remainingFineSteps;
+                VXGIMeshSDFThresholdResult refined = VXGIMeshSDFTraceThresholdAll(
+                    origin, unitDirection, fineStart, fineEnd, counts, fineParameters, nodes);
+                remainingFineSteps -= min(remainingFineSteps, refined.sampleCount);
+                result.worldTraceStatus = refined.status;
+                result.distance = refined.distance;
+                result.status = refined.status >= VXGI_THRESHOLD_INVALID ? SSGI_SCREEN_INVALID : SSGI_SCREEN_MISS;
+                if (refined.status == VXGI_THRESHOLD_HIT)
+                {
+                    result.hit = 1;
+                    result.status = SSGI_SCREEN_HIT;
+                    result.confidence = 1.0;
+                    // A verified fine hit ends the ray regardless of cache
+                    // support or RGB. Radiance never decides whether to retry.
+                    VXGIProbeRadianceQueryResult farQuery = VXGIProbeQueryRadiance(refined.position,
+                        unitDirection, parameters.voxelSize, parameters.probeCount, lookup, rawRecords);
+                    result.probeHasSupport = farQuery.hasSupport;
+                    result.probeSupportWeight = farQuery.supportWeight;
+                    result.probeAcceptedCount = farQuery.acceptedCount;
+                    result.probeTraceFailures = farQuery.traceFailures;
+                    if (farQuery.hasSupport != 0 && all(isfinite(farQuery.radiance)))
+                    {
+                        result.radiance = farQuery.radiance;
+                        result.sourceValid = 1;
+                    }
+                    return result;
+                }
+                if (refined.status != VXGI_THRESHOLD_MISS) return result;
+                result.distance = fineEnd;
+                if (fineEnd >= farEnd) return result;
+                // Only a completed all-instance MISS allows this window to
+                // be skipped, even when the rejected coarse point had SH.
+                if (!(fineEnd > farStart)) break;
+                farStart = fineEnd;
+            }
+            result.worldTraceStatus = VXGI_GLOBAL_SDF_EXHAUSTED;
+            result.status = SSGI_SCREEN_INVALID;
+        }
+#endif
         return result;
     }
 #else
@@ -281,5 +423,39 @@ SSGIHybridRayResult SSGIWorldRaySource(float3 origin, float3 direction, float ra
     }
     return result;
 }
+
+#ifdef VXGI_SSGI_THRESHOLD
+// Only models containing the original launch point can cause an immediate
+// threshold hit. Use their local spacing and conservative instance scale;
+// distant candidate models must not enlarge the receiver's launch offset.
+// A zero-length interval makes this a point query, independent of ray direction.
+float SSGIWorldReceiverNormalBias(float3 origin, SSGIHybridParameters parameters,
+    float screenNormalBias)
+{
+    VXGIMeshSDFThresholdCounts counts;
+    counts.nodeCount = parameters.nodeCount;
+    counts.assetCount = parameters.assetCount;
+    counts.instanceCount = parameters.instanceCount;
+    counts.bvhNodeCount = parameters.bvhNodeCount;
+    VXGIMeshSDFThresholdCandidates candidates = VXGIMeshSDFThresholdClosestTwo(
+        origin, float3(1, 0, 0), 0.0, 0.0, counts);
+    float bias = screenNormalBias;
+    if (candidates.valid == 0) return bias;
+    [loop] for (uint i = 0; i < candidates.count; ++i)
+    {
+        VXGIMeshSDFInstance instance = VXGIMeshSDFInstances[candidates.candidates[i].instanceIndex];
+        if (instance.assetIndex >= parameters.assetCount) continue;
+        VXGIMeshSDFAsset asset = VXGIMeshSDFAssets[instance.assetIndex];
+        // Instance transforms are TRS. The largest basis length also covers
+        // nonuniform scale, instead of assuming that local units equal world units.
+        float maximumScale = max(length(instance.worldFromLocal[0].xyz),
+            max(length(instance.worldFromLocal[1].xyz), length(instance.worldFromLocal[2].xyz)));
+        float threshold = SSGI_WORLD_HIT_THRESHOLD_CELLS * asset.cellSize * maximumScale;
+        if (isfinite(threshold) && threshold > 0.0)
+            bias = max(bias, threshold * SSGI_WORLD_NORMAL_BIAS_SCALE);
+    }
+    return bias;
+}
+#endif
 
 #endif

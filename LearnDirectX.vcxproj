@@ -1,4 +1,4 @@
-﻿<?xml version="1.0" encoding="utf-8"?>
+<?xml version="1.0" encoding="utf-8"?>
 <Project DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
   <Import Project="packages\Microsoft.Direct3D.D3D12.1.619.1\build\native\Microsoft.Direct3D.D3D12.props" Condition="Exists('packages\Microsoft.Direct3D.D3D12.1.619.1\build\native\Microsoft.Direct3D.D3D12.props')" />
   <ItemGroup Label="ProjectConfigurations">
@@ -10,10 +10,6 @@
       <Configuration>Release</Configuration>
       <Platform>x64</Platform>
     </ProjectConfiguration>
-    <None Include="Tests\SummarizeVXGILazyPerformance.py" />
-    <None Include="Tests\VXGIRenderTailPerformance.cpp" />
-    <None Include="Tests\RunVXGIRenderTailPerformance.ps1" />
-    <None Include="Tests\SummarizeVXGIWorldAB.py" />
   </ItemGroup>
   <PropertyGroup Label="Globals">
     <VCProjectVersion>18.0</VCProjectVersion>
@@ -109,6 +105,10 @@
     <ClInclude Include="Resources\VXGIInstanceBVH.h" />
     <ClInclude Include="Resources\VXGISDFThreshold.h" />
     <ClInclude Include="Resources\VXGIMeshSDFThreshold.h" />
+    <ClInclude Include="Resources\VXGIGlobalSDF.h" />
+    <ClInclude Include="Resources\VXGIGlobalSDFState.h" />
+    <ClInclude Include="Resources\VXGIGlobalSDFRuntime.h" />
+    <ClInclude Include="Passes\VXGIGlobalSDFPass.h" />
     <ClInclude Include="Resources\VXGIMeshSDFGPUData.h" />
     <ClInclude Include="Resources\VXGISurface.h" />
     <ClInclude Include="Resources\VXGIGPUScene.h" />
@@ -121,6 +121,11 @@
     <ClInclude Include="Resources\VXGIProbeTopology.h" />
     <ClInclude Include="Resources\SSGIHybridState.h" />
     <ClInclude Include="Resources\RenderDebugPass.h" />
+    <ClInclude Include="Resources\RenderPassView.h" />
+    <ClInclude Include="Passes\RenderPassPreview.h" />
+    <ClInclude Include="Passes\RenderPassViewer.h" />
+    <ClInclude Include="Core\RenderPassCapture.h" />
+    <ClInclude Include="Core\RenderPassRunOptions.h" />
     <ClInclude Include="Resources\VXGITraceAcceleration.h" />
     <ClInclude Include="Resources\SceneEditState.h" />
     <ClInclude Include="Editor\VXGIProbeDebugRenderer.h" />
@@ -131,9 +136,6 @@
     <ClInclude Include="Core\D3D12App.h" />
     <ClInclude Include="Core\ErrorLog.h" />
     <ClInclude Include="Core\InitializationProgress.h" />
-    <ClInclude Include="Core\FrameDiagnostics.h" />
-    <ClInclude Include="Core\TraceOutputDiagnostics.h" />
-    <ClInclude Include="Core\D3D12ValidationDiagnostics.h" />
     <ClInclude Include="Passes\DeferredLightingPass.h" />
     <ClInclude Include="Passes\GBufferPass.h" />
     <ClInclude Include="Passes\HBAOPass.h" />
@@ -192,12 +194,6 @@
     <None Include="Shaders\ColorCommon.hlsli" />
     <None Include="Shaders\SSGICommon.hlsli" />
     <None Include="Shaders\SSGIHybridCommon.hlsli" />
-    <None Include="Shaders\VXGIHybridValidate.hlsl" />
-    <None Include="Tests\SSGIHybridStateTests.cpp" />
-    <None Include="Tests\RunSSGIHybridStateTests.ps1" />
-    <None Include="Tests\VXGIHybridGPUTests.cpp" />
-    <None Include="Tests\VXGIHybridRDGAcceptance.h" />
-    <None Include="Tests\RunVXGIHybridGPUTests.ps1" />
     <None Include="Shaders\BlueNoise.hlsli" />
     <None Include="ThirdParty\NVIDIA\STBN\stbn_vec2_128x128x64.rg8" />
     <None Include="ThirdParty\NVIDIA\STBN\License.txt" />
@@ -210,101 +206,29 @@
     <None Include="ThirdParty\NVIDIA\NRD\RelaxAtrous.hlsli" />
     <None Include="Shaders\EditorSelection.hlsl" />
     <None Include="Shaders\Shaders_For_VXGI_Debug.hlsl" />
-    <None Include="Tests\VXGIWorldTests.cpp" />
-    <None Include="Tests\VXGISDFTests.cpp" />
-    <None Include="Tests\VXGIMeshSDFTests.cpp" />
-    <None Include="Tests\RunVXGIMeshSDFTests.ps1" />
-    <None Include="Tests\VXGIMeshSDFSceneTests.cpp" />
-    <None Include="Tests\RunVXGIMeshSDFSceneTests.ps1" />
-    <None Include="Tests\VXGIInstanceBVHTests.cpp" />
-    <None Include="Tests\RunVXGIInstanceBVHTests.ps1" />
     <None Include="Shaders\VXGISDFThresholdCommon.hlsli" />
     <None Include="Shaders\VXGIMeshSDFData.hlsli" />
     <None Include="Shaders\VXGIMeshSDFThresholdCommon.hlsli" />
+    <None Include="Shaders\VXGIGlobalSDFCommon.hlsli" />
+    <None Include="Shaders\Shaders_For_VXGI_GlobalSDF.hlsl" />
     <None Include="Shaders\VXGIProbeData.hlsli" />
-    <None Include="Tests\RunVXGILazyProbeGPUTests.ps1" />
-    <None Include="Tests\VXGILazyProbeGPUTests.cpp" />
-    <None Include="Tests\RunVXGIProbeInvalidationTests.ps1" />
-    <None Include="Tests\VXGIProbeInvalidationTests.cpp" />
     <None Include="Shaders\VXGIProbeDependency.hlsli" />
     <None Include="Shaders\VXGIProbeRadianceCommon.hlsli" />
-    <None Include="Shaders\VXGIMeshSDFThresholdValidate.hlsl" />
-    <None Include="Tests\VXGIMeshSDFThresholdGPUValidation.cpp" />
-    <None Include="Tests\RunVXGIMeshSDFThresholdGPUValidation.ps1" />
-    <None Include="Tests\VXGIMeshSDFThresholdAcceptance.cpp" />
-    <None Include="Tests\RunVXGIMeshSDFThresholdAcceptance.ps1" />
-    <None Include="Tests\SummarizeVXGIThresholdAcceptance.py" />
-    <None Include="Tests\SummarizeVXGIThresholdStep4.py" />
-    <None Include="Shaders\VXGISDFThresholdValidate.hlsl" />
-    <None Include="Tests\VXGISDFThresholdTests.cpp" />
-    <None Include="Tests\RunVXGISDFThresholdTests.ps1" />
-    <None Include="Tests\VXGISDFThresholdGPUValidation.cpp" />
-    <None Include="Tests\RunVXGISDFThresholdGPUValidation.ps1" />
-    <None Include="Tests\VXGIMeshSDFGPUDataTests.cpp" />
-    <None Include="Tests\RunVXGIMeshSDFGPUDataTests.ps1" />
-    <None Include="Tests\VXGIMeshSDFGPUValidation.cpp" />
-    <None Include="Tests\RunVXGIMeshSDFGPUValidation.ps1" />
-    <None Include="Tests\VXGIMeshSDFAcceptance.cpp" />
-    <None Include="Tests\RunVXGIMeshSDFAcceptance.ps1" />
-    <None Include="Tests\VXGIMeshSDFEditGPUTests.cpp" />
-    <None Include="Tests\RunVXGIMeshSDFEditGPUTests.ps1" />
-    <None Include="Tests\SummarizeVXGIMeshSDFAcceptance.py" />
-    <None Include="Tests\VXGISDFGPUTests.cpp" />
-    <None Include="Tests\VXGISurfaceTests.cpp" />
-    <None Include="Tests\VXGISurfaceGPUTests.cpp" />
-    <None Include="Tests\RunVXGISurfaceGPUTests.ps1" />
     <None Include="Shaders\GISourceCommon.hlsli" />
     <None Include="Shaders\VXGISurfaceCommon.hlsli" />
-    <None Include="Shaders\VXGISurfaceValidate.hlsl" />
-    <None Include="Tests\RunVXGISDFGPUTests.ps1" />
     <None Include="Shaders\VXGISDFCommon.hlsli" />
     <None Include="Shaders\Shaders_For_VXGI_SDF_Debug.hlsl" />
-    <None Include="Shaders\VXGISDFValidate.hlsl" />
     <None Include="VXGI.md" />
     <None Include="VXGI_PLAN.md" />
     <None Include="Shaders\VXGIProbeCommon.hlsli" />
     <None Include="Shaders\VXGIProbeQueryCommon.hlsli" />
     <None Include="Shaders\Shaders_For_VXGI_Probe_Filter.hlsl" />
-    <None Include="Shaders\VXGIProbeQueryValidate.hlsl" />
-    <None Include="Tests\VXGIProbeQueryTests.cpp" />
-    <None Include="Tests\RunVXGIProbeQueryTests.ps1" />
-    <None Include="Tests\VXGIProbeQueryGPUTests.cpp" />
-    <None Include="Tests\RunVXGIProbeQueryGPUTests.ps1" />
     <None Include="Shaders\Shaders_For_VXGI_Probe_Update.hlsl" />
     <None Include="Shaders\Shaders_For_VXGI_Probe_Debug.hlsl" />
-    <None Include="Shaders\VXGIProbeValidate.hlsl" />
-    <None Include="Tests\VXGIProbeTests.cpp" />
-    <None Include="Tests\VXGIProbeSceneTests.cpp" />
-    <None Include="Tests\RunVXGIProbeSceneTests.ps1" />
-    <None Include="Tests\VXGIEditGPUTests.cpp" />
-    <None Include="Tests\RunVXGIEditGPUTests.ps1" />
-    <None Include="Tests\VXGIStage7Benchmark.cpp" />
-    <None Include="Tests\RunVXGIStage7Benchmark.ps1" />
-    <None Include="Tests\VXGIAlphaCutoutGPUTests.cpp" />
-    <None Include="Tests\RunVXGIAlphaCutoutGPUTests.ps1" />
-    <None Include="Shaders\VXGIAlphaCutoutValidate.hlsl" />
     <None Include="Shaders\VXGIMaterialCommon.hlsli" />
     <None Include="Shaders\VXGISDFTraceBody.hlsli" />
     <None Include="Shaders\VXGIMeshSDFCommon.hlsli" />
     <None Include="Shaders\VXGIMeshSDFTraceBody.hlsli" />
-    <None Include="Shaders\VXGIMeshSDFValidate.hlsl" />
-    <None Include="Shaders\VXGIMeshSDFAcceptance.hlsl" />
-    <None Include="Shaders\VXGIStage74SupportValidate.hlsl" />
-    <None Include="Shaders\VXGIStage74RasterValidate.hlsl" />
-    <None Include="Tests\VXGIStage74RenderAcceptance.cpp" />
-    <None Include="Tests\RunVXGIStage74RenderAcceptance.ps1" />
-    <None Include="Tests\VXGITraceAccelerationTests.cpp" />
-    <None Include="Tests\RunVXGITraceAccelerationTests.ps1" />
-    <None Include="Tests\VXGIDenseBVHGPUTests.cpp" />
-    <None Include="Tests\RunVXGIDenseBVHGPUTests.ps1" />
-    <None Include="Shaders\VXGIDenseBVHValidate.hlsl" />
-    <None Include="Tests\VXGIStage75Performance.cpp" />
-    <None Include="Tests\RunVXGIStage75Performance.ps1" />
-    <None Include="Tests\CompareVXGIStage75Performance.ps1" />
-    <None Include="Tests\SSGIResolutionConfigTests.cpp" />
-    <None Include="Tests\RunSSGIResolutionConfigTests.ps1" />
-    <None Include="Tests\VXGIProbeGPUTests.cpp" />
-    <None Include="Tests\RunVXGIProbeGPUTests.ps1" />
     <None Include="Settings\Pipeline.json" />
     <None Include="Settings\Scene.json" />
     <None Include="Settings\Window.json" />
@@ -369,6 +293,7 @@
     <None Include="Shaders\Shaders_For_GBuffer.hlsl">
       <FileType>Document</FileType>
     </None>
+    <None Include="Shaders\Shaders_For_RenderPassPreview.hlsl"><FileType>Document</FileType></None>
   </ItemGroup>
   <ItemGroup>
     <None Include="Shaders\Shaders_For_Deferred.hlsl">

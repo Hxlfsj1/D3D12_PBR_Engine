@@ -244,11 +244,16 @@ Visual Studio 调试时，应把 Working Directory 设置为 `$(ProjectDir)`。�
 | `DLSS SR.dlss_quality` | `DLAA` / `Quality` / `Balanced` / `Performance` / `UltraPerformance` | `Quality` | 仅 DLSS 模式使用；不支持时初始化失败。 |
 
 GI 配置继续使用同一 `Settings/Pipeline.json`：`ssgi.trace_downsample_factor` 当前为 2（原半分辨率），
-`vxgi.debug_view` 默认为 0。顶部 **Debug → Pass** 选择默认正常合成、关闭 VXGI、仅 SSGI 或仅 GI；
-关闭 VXGI 保留正常合成和 SSGI，只关闭世界探针补充。
-仅 SSGI 关闭世界回退，仅 GI 显示带世界探针补充的纯间接照明，不乘接收表面原色。
+`vxgi.debug_view` 默认为 0。顶部 **Debug → Pass** 按完整 Pass 选择本步结果或截至本步的累计画面，
+未启用项置灰。抗锯齿四选一、与后处理一样只提供累计结果；ToneMap 归后处理。
+GI 内只有三个条目，依次为：默认（SSGI + Mesh SDF VXGI + Global SDF GI）、SSGI、SSGI + Mesh SDF VXGI。
+三档按屏幕、近段 Mesh SDF、远段 Global SDF 的顺序累加；默认项显示当前已启用的层级。
+纯 GI 显示经过配置中的抗锯齿和 ToneMap；CLI 累计捕获保留 GI 边界快照。抗锯齿 `None` 保持关闭，GI 菜单明确标注纯 GI 输出的抗锯齿启用状态。
+后台验收可通过命令行导出 PNG、原始数据与元信息至 `Captures/`，详见 [阶段查看与后台导出](Editor/README.md)。
 T 快捷键、Details 的旧 source 选择、JSON 的 `gi_only` 和 `vxgi.hybrid.mode` 已移除；启动为默认正常合成。
-世界回退保留原起点、方向和射线长度；世界命中后只读取邻近缓存、插值并求值 SH，
+世界回退保留原射线方向；起点沿深度重建的几何法线偏移，目标偏移自动取
+`max(SSGI 原偏移, 模型世界空间 SDF 命中阈值 × 1.1)`，新增位移从原有限长度中扣除。
+SSGI 屏幕追踪仍使用原偏移。世界命中后只读取邻近缓存、插值并求值 SH，
 不发出逐探针遮挡射线，也不在命中点计算直接光或太阳阴影。
 `vxgi.surface.max_ray_distance` 用于缓存更新/诊断，不是 SSGI 回退射线的长度。具体契约与后台报告见 [VXGI.md](VXGI.md)。
 
@@ -290,7 +295,6 @@ TAA 和 TSR 共用 jitter 逻辑及一套双缓冲 temporal history，但拥有�
 | 键 | 类型 | 说明 |
 | --- | --- | --- |
 | `skybox_path` | string | 本地 HDR 环境贴图相对路径。 |
-| `stress_test` | boolean | `true` 时使用第一个实例的模型生成 `20×20×20`，即 8000 个实例。 |
 | `instances` | array | 场景实例列表。 |
 | `instances[].name` | string | 实例名称。 |
 | `instances[].model_path` | string | 本地 `.glb` 相对路径。 |

@@ -16,6 +16,10 @@
     <ClInclude Include="Resources\VXGIInstanceBVH.h"><Filter>Resources</Filter></ClInclude>
     <ClInclude Include="Resources\VXGISDFThreshold.h"><Filter>Resources</Filter></ClInclude>
     <ClInclude Include="Resources\VXGIMeshSDFThreshold.h"><Filter>Resources</Filter></ClInclude>
+    <ClInclude Include="Resources\VXGIGlobalSDF.h"><Filter>Resources</Filter></ClInclude>
+    <ClInclude Include="Resources\VXGIGlobalSDFState.h"><Filter>Resources</Filter></ClInclude>
+    <ClInclude Include="Resources\VXGIGlobalSDFRuntime.h"><Filter>Resources</Filter></ClInclude>
+    <ClInclude Include="Passes\VXGIGlobalSDFPass.h"><Filter>Passes</Filter></ClInclude>
     <ClInclude Include="Resources\VXGIMeshSDFGPUData.h"><Filter>Resources</Filter></ClInclude>
     <ClInclude Include="Resources\VXGITraceAcceleration.h"><Filter>Resources</Filter></ClInclude>
     <ClInclude Include="Resources\VXGISurface.h"><Filter>Resources</Filter></ClInclude>
@@ -31,11 +35,9 @@
     <None Include="Shaders\VXGISDFThresholdCommon.hlsli"><Filter>Shaders</Filter></None>
     <None Include="Shaders\VXGIMeshSDFData.hlsli"><Filter>Shaders</Filter></None>
     <None Include="Shaders\VXGIMeshSDFThresholdCommon.hlsli"><Filter>Shaders</Filter></None>
+    <None Include="Shaders\VXGIGlobalSDFCommon.hlsli"><Filter>Shaders</Filter></None>
+    <None Include="Shaders\Shaders_For_VXGI_GlobalSDF.hlsl"><Filter>Shaders</Filter></None>
     <None Include="Shaders\VXGIProbeData.hlsli"><Filter>Shaders</Filter></None>
-    <None Include="Tests\RunVXGILazyProbeGPUTests.ps1" />
-    <None Include="Tests\VXGILazyProbeGPUTests.cpp" />
-    <None Include="Tests\RunVXGIProbeInvalidationTests.ps1" />
-    <None Include="Tests\VXGIProbeInvalidationTests.cpp" />
     <None Include="Shaders\VXGIProbeDependency.hlsli" />
     <None Include="Shaders\VXGIProbeRadianceCommon.hlsli"><Filter>Shaders</Filter></None>
     <None Include="Shaders\VXGIMeshSDFThresholdValidate.hlsl"><Filter>Shaders</Filter></None>
@@ -52,10 +54,6 @@
     <None Include="Shaders\VXGIStage74SupportValidate.hlsl"><Filter>Shaders</Filter></None>
     <None Include="Shaders\VXGIStage74RasterValidate.hlsl"><Filter>Shaders</Filter></None>
     <None Include="Shaders\VXGIDenseBVHValidate.hlsl"><Filter>Shaders</Filter></None>
-    <None Include="Tests\SummarizeVXGILazyPerformance.py" />
-    <None Include="Tests\VXGIRenderTailPerformance.cpp" />
-    <None Include="Tests\RunVXGIRenderTailPerformance.ps1" />
-    <None Include="Tests\SummarizeVXGIWorldAB.py" />
   </ItemGroup>
   <ItemGroup>
     <Filter Include="Shaders">
@@ -219,9 +217,6 @@
       <Filter>Core</Filter>
     </ClInclude>
     <ClInclude Include="Core\InitializationProgress.h"><Filter>Core</Filter></ClInclude>
-    <ClInclude Include="Core\FrameDiagnostics.h"><Filter>Core</Filter></ClInclude>
-    <ClInclude Include="Core\TraceOutputDiagnostics.h"><Filter>Core</Filter></ClInclude>
-    <ClInclude Include="Core\D3D12ValidationDiagnostics.h"><Filter>Core</Filter></ClInclude>
     <ClInclude Include="Core\ErrorLog.h">
       <Filter>Core</Filter>
     </ClInclude>
@@ -407,6 +402,12 @@
     <ClInclude Include="Resources\VXGIProbeTopology.h"><Filter>Resources</Filter></ClInclude>
     <ClInclude Include="Resources\SSGIHybridState.h"><Filter>Resources</Filter></ClInclude>
     <ClInclude Include="Resources\RenderDebugPass.h"><Filter>Resources</Filter></ClInclude>
+    <ClInclude Include="Resources\RenderPassView.h"><Filter>Resources</Filter></ClInclude>
+    <ClInclude Include="Passes\RenderPassPreview.h"><Filter>Passes</Filter></ClInclude>
+    <ClInclude Include="Passes\RenderPassViewer.h"><Filter>Passes</Filter></ClInclude>
+    <ClInclude Include="Core\RenderPassCapture.h"><Filter>Core</Filter></ClInclude>
+    <ClInclude Include="Core\RenderPassRunOptions.h"><Filter>Core</Filter></ClInclude>
+    <None Include="Shaders\Shaders_For_RenderPassPreview.hlsl"><Filter>Shaders</Filter></None>
     <ClInclude Include="Resources\SceneEditState.h"><Filter>Resources</Filter></ClInclude>
     <ClInclude Include="Editor\VXGIProbeDebugRenderer.h"><Filter>Editor</Filter></ClInclude>
   </ItemGroup>

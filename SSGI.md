@@ -1,6 +1,6 @@
 # SSGI
 
-Independent half-resolution screen-space diffuse GI for the deferred pipeline.
+Diffuse GI for the deferred pipeline, using screen tracing and optional world-space fallback.
 
 ## Settings
 
@@ -9,6 +9,7 @@ Settings are nested in `Settings/Pipeline.json` and read at startup:
 ```json
 "ssgi": {
   "enabled": true,
+  "checkerboard": true,
   "intensity": 1.0,
   "quality": 4,
   "radius": 2.0
@@ -19,11 +20,18 @@ Settings are nested in `Settings/Pipeline.json` and read at startup:
   BounceSource and every SSGI pass. `true` enables the chain in the deferred pipeline.
   Change the JSON value and restart to apply it; no debug hotkey overrides this setting.
 - `intensity`: nonnegative multiplier applied once during final HDR composition.
+- `checkerboard`: alternate trace-grid pixels each submitted GI frame. A skipped
+  pixel reuses reprojected GI color only when the current depth/normal passes the
+  existing history surface test; rejected history is traced immediately. Disabling
+  it restores tracing every grid pixel. Ray counts, resolution and filter parameters
+  are unchanged. The checked-in pipeline enables this option.
+  Rejected history can raise tracing above half coverage. Savings depend on the
+  avoided trace work and shared-history cache traffic, especially during motion.
 - `quality`: 1..4 selects 4/8/16/32 rays with 64/64/64/96 maximum traversal iterations.
-- `radius`: positive finite ray distance in scene world units.
+- `radius`: positive finite screen/near-world ray distance in scene world units.
 
-Ray counts follow UE SSGI; traversal budgets are project choices. Settings are not
-modified by diagnostics. SSGI runs at half the internal scene resolution, including
+Ray counts follow UE SSGI; traversal budgets are project choices. Settings are read
+from JSON without a runtime override. SSGI runs at half the internal scene resolution, including
 when DLSS reduces that resolution further.
 
 ## Rendering
@@ -48,7 +56,18 @@ when DLSS reduces that resolution further.
    indexed on the half-resolution receiver grid and advanced one slice per frame.
    Multiple rays use fixed R2 spatial offsets. Raw data, conversion and licensing
    live in `ThirdParty/NVIDIA/STBN`; the shared loader uploads it once on SSGI startup.
+   Checkerboard Trace groups pack the two pixel phases into contiguous 32-thread
+   halves to reduce divergent ray work on common 32-lane hardware. Logical pixel
+   coordinates, noise coordinates and edge coverage do not depend on wave size.
+   Before ray work, Trace performs the existing current-geometry history test once
+   per valid receiver and stores its reprojected slow/fast results in two transient
+   RGBA32_FLOAT textures. Rejected histories store zero. No pass is added; float32
+   avoids introducing an extra half-float rounding before temporal accumulation.
 4. A 5x5 binomial spatial reconstruction uses normal and symmetric tangent-plane weights.
+   With checkerboard enabled, reused centers bypass this current-sample reconstruction
+   and reused neighbors do not count as new observations. Raw/reconstructed alpha
+   `-1` identifies reused color; freshly traced alpha remains the hit fraction `[0,1]`,
+   including valid zero-radiance misses.
 5. Independent temporal history uses geometry-checked reprojection and two accumulation
    speeds. Previous bilinear taps are checked against normal agreement and symmetric
    tangent-plane distance. No Euclidean `3 * footprint` cutoff is applied: it rejected
@@ -58,6 +77,11 @@ when DLSS reduces that resolution further.
    YCoCg clamp, bounded update acceleration and noise-aware reset. No single-frame RGB
    threshold shortens history to three samples. See `ThirdParty/NVIDIA/NRD/README.md`
    for the pinned source, license, port scope and validation.
+   Checkerboard reuse preserves slow/fast history and its sample count, while depth
+   and normal history always store the current frame's geometry. Reused pixels bypass
+   current-observation clamping; the following spatial filter still uses current
+   geometry. Temporal directly consumes Trace's reprojected history and validity;
+   it does not repeat reprojection, surface testing or previous-history gathering.
 6. Two half-resolution variance-guided A-trous passes (steps 1 and 2) filter the clamped
    temporal signal. Luminance second moments use the slow accumulation weight and are
    corrected when clamping changes its color. Depth/normal weights preserve geometry
@@ -76,6 +100,51 @@ odd image sizes remain aligned. Different ray mips use nonuniform descriptor ind
 
 Each bindless pass binds the intended descriptor heap before its root signature and
 arguments. SSGI history remains independent of HBAO and anti-aliasing.
+
+## Global SDF continuation
+
+Debug > Pass > GI offers three cumulative pure-light views: SSGI only,
+SSGI + near Mesh SDF, and the default including Global SDF GI (GDF GI).
+Reduced views use a separate diagnostic history; switching tiers clears that
+history and the color AA histories. Normal full GI continues to run while
+displaying a reduced tier. `--pass-view=gi --pass-result=output` accepts
+`--pass-gi-source=ssgi`, `mesh-sdf` or `default` for the same views.
+
+With VXGI and `vxgi.global_sdf.enabled` enabled, a screen miss first checks the
+existing finite near Mesh SDF segment. Only a completed near MISS continues along
+the same world direction through Global SDF; invalid or unfinished queries stop.
+The existing world normal offset is spent out of both distance budgets. A consumed
+near segment may still have a valid far continuation.
+
+Global SDF finds coarse geometric candidates. Each candidate is confirmed along
+the original ray with the existing fine Mesh SDF before reading SH: tight instance
+AABBs skip proven empty gaps, and short windows test every intersecting instance.
+This avoids accepting the coarse distance shell as a surface, including grazing
+rays leaving a floor. Confirmation is bounded to eight windows and 512 shared
+fine samples; the Global SDF queries share `max_trace_steps`. Unfinished work
+returns an explicit failure, never a proven miss.
+
+A confirmed hit reads the existing neighboring raw SH at that fine hit position
+and evaluates incoming radiance along the original ray direction. Black or
+unsupported hits terminate the ray. There is no search for a brighter surface,
+new surface shading, or Surface Cache. Complete misses add zero GI; the existing
+IBL base remains in deferred lighting.
+
+The `vxgi.global_sdf` object also accepts `trace_distance` (finite positive world
+distance, default 128) and `max_trace_steps` (integer 1..1024, default 256).
+The range is clipped by the outer clipmap's actual bounds. Disabling this object
+restores the prior near-only world path; screen-only mode does not sample it.
+The current three cubes have edge lengths 1/4/8 metres, with cell sizes
+0.25/0.5/1 metre. `cells_per_axis: [4, 8, 8]` selects the independent layer
+counts; `cell_size: 0.25` is doubled per layer. A scalar cell count still applies
+to every layer. Each cube follows the camera on its own world-aligned grid.
+Configuration changes invalidate world GI history. Ordinary clipmap scrolling
+keeps history and uses the current frame's pending layout.
+
+Trace constants append 192 bytes at byte 784, for a total of 976 bytes. Existing
+history offsets and the world-mode alias at byte 604 remain unchanged. The GDF
+texture is an explicit `R32_FLOAT Texture3D` SRV declared as an RDG read; Trace
+uses its normal bindless heap and adds no production diagnostic pass.
 
 ## C++ organization
 
@@ -125,9 +194,10 @@ under `ThirdParty/NVIDIA/NRD`, with their licenses and source references.
 
 ## Limits
 
-Single-layer screen information cannot represent off-screen or hidden surfaces. Small
-bright sources remain difficult to sample. Iteration exhaustion returns a miss; no sky
-fallback is added. Temporal reprojection currently uses camera matrices rather than
+Single-layer screen information cannot represent off-screen or hidden surfaces;
+the optional world path is limited by clipmap coverage, Mesh SDF detail and SH support.
+Small bright sources remain difficult to sample. Exhaustion contributes zero GI;
+no sky fallback is added. Temporal reprojection currently uses camera matrices rather than
 per-object motion vectors. Coarse-cell depth ranges and the seven-level hierarchy can
 limit traversal efficiency in complex views.
 

@@ -238,4 +238,119 @@ VXGIMeshSDFThresholdResult VXGIMeshSDFTraceThreshold(float3 origin,
     return result;
 }
 
+// Validate a short coarse-field candidate on the original ray. Unlike the near
+// query above, a completed MISS must cover every overlapping instance: two
+// empty model boxes cannot hide a third surface. maxSteps is a shared sample
+// budget across all instances, rather than a separate allowance for each one.
+VXGIMeshSDFThresholdResult VXGIMeshSDFTraceThresholdAll(float3 origin,
+    float3 direction, float rayMin, float rayMax, VXGIMeshSDFThresholdCounts counts,
+    VXGIThresholdParameters parameters, StructuredBuffer<float> nodes)
+{
+    VXGIMeshSDFThresholdResult result = (VXGIMeshSDFThresholdResult)0;
+    result.status = VXGI_THRESHOLD_INVALID;
+    result.instanceIndex = 0xffffffffu;
+    float3 unitDirection;
+    if (!all(isfinite(origin)) || !isfinite(rayMin) || !isfinite(rayMax) ||
+        rayMin < 0.0 || rayMax < rayMin ||
+        !isfinite(parameters.hitThresholdCells) ||
+        parameters.hitThresholdCells <= VXGI_THRESHOLD_MAX_INTERPOLATION_ERROR_CELLS ||
+        !isfinite(parameters.stepScale) || parameters.stepScale <= 0.0 ||
+        parameters.stepScale > 1.0 || parameters.maxSteps == 0 ||
+        !VXGIThresholdNormalize(direction, unitDirection) ||
+        ((counts.instanceCount == 0) != (counts.bvhNodeCount == 0))) return result;
+    result.status = VXGI_THRESHOLD_MISS;
+    uint index = 0;
+    [loop] while (index < counts.bvhNodeCount)
+    {
+        VXGIMeshSDFBVHNode node = VXGIMeshSDFBVH[index];
+        if (node.escapeIndex <= index || node.escapeIndex > counts.bvhNodeCount)
+        {
+            result.status = VXGI_THRESHOLD_INVALID;
+            return result;
+        }
+        float entry, exit;
+        float nearest = result.status == VXGI_THRESHOLD_HIT ? result.distance : rayMax;
+        if (!VXGIMeshSDFThresholdBounds(origin, unitDirection, node.boundsMinimum,
+            node.boundsMaximum, rayMin, nearest, entry, exit))
+        {
+            index = node.escapeIndex;
+            continue;
+        }
+        if (node.instanceIndex == 0xffffffffu)
+        {
+            ++index;
+            continue;
+        }
+        if (node.instanceIndex >= counts.instanceCount)
+        {
+            result.status = VXGI_THRESHOLD_INVALID;
+            return result;
+        }
+        ++result.candidateCount;
+        VXGIMeshSDFInstance instance = VXGIMeshSDFInstances[node.instanceIndex];
+        if (instance.assetIndex >= counts.assetCount)
+        {
+            result.status = VXGI_THRESHOLD_INVALID;
+            return result;
+        }
+        // A previous hit is only final after every potentially nearer model
+        // has completed. A depleted budget cannot become a clear interval.
+        if (result.sampleCount >= parameters.maxSteps)
+        {
+            result.status = VXGI_THRESHOLD_EXHAUSTED;
+            return result;
+        }
+        VXGIMeshSDFAsset asset = VXGIMeshSDFAssets[instance.assetIndex];
+        float3 localOrigin = mul(float4(origin, 1.0), instance.localFromWorld).xyz;
+        float3 localVector = mul(float4(unitDirection, 0.0), instance.localFromWorld).xyz;
+        float largest = max(abs(localVector.x), max(abs(localVector.y), abs(localVector.z)));
+        if (!isfinite(largest) || largest <= 0.0)
+        {
+            result.status = VXGI_THRESHOLD_INVALID;
+            return result;
+        }
+        float3 scaled = localVector / largest;
+        float distanceScale = largest * sqrt(dot(scaled, scaled));
+        if (!isfinite(distanceScale) || distanceScale <= 0.0)
+        {
+            result.status = VXGI_THRESHOLD_INVALID;
+            return result;
+        }
+        VXGIThresholdGrid grid;
+        grid.origin = asset.origin;
+        grid.cellSize = asset.cellSize;
+        grid.cellDimensions = asset.cellDimensions;
+        grid.nodeOffset = asset.nodeOffset;
+        grid.boundsMaximum = asset.boundsMaximum;
+        grid.padding = 0;
+        VXGIThresholdParameters localParameters = parameters;
+        localParameters.maxSteps = parameters.maxSteps - result.sampleCount;
+        VXGIThresholdResult local = VXGIThresholdTraceLocal(nodes, counts.nodeCount, grid,
+            localOrigin, localVector, entry * distanceScale, exit * distanceScale, localParameters);
+        result.sampleCount += local.sampleCount;
+        if (local.status >= VXGI_THRESHOLD_INVALID)
+        {
+            result.status = local.status;
+            return result;
+        }
+        if (local.status == VXGI_THRESHOLD_HIT)
+        {
+            float distance = max(entry, min(exit, local.distance / distanceScale));
+            if (result.status != VXGI_THRESHOLD_HIT || distance < result.distance ||
+                (distance == result.distance && (instance.instanceId < result.instanceId ||
+                (instance.instanceId == result.instanceId && node.instanceIndex < result.instanceIndex))))
+            {
+                result.status = VXGI_THRESHOLD_HIT;
+                result.position = origin + unitDirection * distance;
+                result.distance = distance;
+                result.fieldDistance = local.fieldDistance;
+                result.instanceIndex = node.instanceIndex;
+                result.instanceId = instance.instanceId;
+            }
+        }
+        ++index;
+    }
+    return result;
+}
+
 #endif

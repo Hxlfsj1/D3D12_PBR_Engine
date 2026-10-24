@@ -7,9 +7,8 @@
 #include "PipelineManager.h"
 #include "Settings_Manager.h"
 #include "VXGIGPUScene.h"
-#include "VXGISurface.h"
-#include <functional>
-#include <span>
+#include "VXGIGlobalSDF.h"
+#include "VXGIGlobalSDFRuntime.h"
 
 // Keep these layouts in sync with the SSGI shader cbuffers.
 constexpr uint32_t SSGIMaxLevels = 7; // Reduced mips 1..7; original depth is mip 0.
@@ -33,7 +32,7 @@ struct SSGIHybridParameters
     DirectX::XMFLOAT3 gridOrigin; float cellSize;
     DirectX::XMUINT3 cellDimensions; uint32_t triangleCount;
     DirectX::XMFLOAT3 boundsMaximum; uint32_t materialCount;
-    // Reserved to preserve the shared validation constant-buffer layout.
+    // Reserved to preserve the shared shader constant-buffer layout.
     // World fallback reads cached radiance; it has no per-hit light/range inputs.
     DirectX::XMFLOAT3 reservedLighting0; float materialMipLevel;
     DirectX::XMFLOAT3 reservedLighting1; float reservedLighting2;
@@ -41,6 +40,15 @@ struct SSGIHybridParameters
     uint32_t nodeCount, assetCount, instanceCount, bvhNodeCount;
 };
 static_assert(sizeof(SSGIHybridParameters) == 112);
+
+struct SSGIGlobalParameters
+{
+    uint32_t enabled = 0, textureIndex = 0;
+    float maxTraceDistance = 0;
+    uint32_t maxSteps = 0;
+    VXGIGlobalSDF::Constants constants;
+};
+static_assert(sizeof(SSGIGlobalParameters) == 192 && offsetof(SSGIGlobalParameters, constants) == 16);
 
 struct SSGITraceConstants
 {
@@ -72,13 +80,30 @@ struct SSGITraceConstants
     DirectX::XMFLOAT4X4 invView;
     DirectX::XMFLOAT4X4 invViewProj;
     SSGIHybridParameters hybrid;
+    // Appended to preserve the worldMode SRV alias at byte 604.
+    DirectX::XMFLOAT4X4 previousViewProj;
+    DirectX::XMFLOAT4X4 previousInvViewProj;
+    uint32_t previousGIIndex;
+    uint32_t previousDepthIndex;
+    uint32_t previousNormalIndex;
+    uint32_t historyValid;
+    uint32_t checkerboardEnabled;
+    uint32_t previousFastIndex;
+    uint32_t reprojectedGIIndex;
+    uint32_t reprojectedFastIndex;
+    SSGIGlobalParameters global;
 };
 static_assert(offsetof(SSGITraceConstants, albedoIndex) == 264);
 static_assert(offsetof(SSGITraceConstants, traceDownsampleFactor) == 268);
 static_assert(offsetof(SSGITraceConstants, invView) == 384);
 static_assert(offsetof(SSGITraceConstants, hybrid) == 512);
 static_assert(offsetof(SSGITraceConstants, hybrid) + offsetof(SSGIHybridParameters, worldMode) == 604);
-static_assert(sizeof(SSGITraceConstants) == 624);
+static_assert(offsetof(SSGITraceConstants, previousViewProj) == 624);
+static_assert(offsetof(SSGITraceConstants, previousGIIndex) == 752);
+static_assert(offsetof(SSGITraceConstants, checkerboardEnabled) == 768);
+static_assert(offsetof(SSGITraceConstants, reprojectedGIIndex) == 776);
+static_assert(offsetof(SSGITraceConstants, global) == 784);
+static_assert(sizeof(SSGITraceConstants) == 976);
 
 struct SSGIReconstructConstants
 {
@@ -101,9 +126,6 @@ static_assert(offsetof(SSGIReconstructConstants, traceDownsampleFactor) == 164);
 
 struct SSGITemporalConstants
 {
-    DirectX::XMFLOAT4X4 invViewProj;
-    DirectX::XMFLOAT4X4 previousViewProj;
-    DirectX::XMFLOAT4X4 previousInvViewProj;
     uint32_t width;
     uint32_t height;
     uint32_t outputWidth;
@@ -112,21 +134,21 @@ struct SSGITemporalConstants
     uint32_t normalIndex;
     uint32_t ormIndex;
     uint32_t currentIndex;
-    uint32_t previousGIIndex;
-    uint32_t previousDepthIndex;
-    uint32_t previousNormalIndex;
-    uint32_t historyValid;
+    uint32_t reprojectedGIIndex;
+    uint32_t reprojectedFastIndex;
     uint32_t outputGIIndex;
     uint32_t outputDepthIndex;
     uint32_t outputNormalIndex;
-    uint32_t previousFastIndex;
     uint32_t outputFastIndex;
     float maxHistoryFrames;
     float maxFastAccumulatedFrames;
     uint32_t traceDownsampleFactor;
+    uint32_t padding[3];
 };
-static_assert(sizeof(SSGITemporalConstants) == 272);
-static_assert(offsetof(SSGITemporalConstants, traceDownsampleFactor) == 268);
+static_assert(sizeof(SSGITemporalConstants) == 80);
+static_assert(offsetof(SSGITemporalConstants, reprojectedGIIndex) == 32);
+static_assert(offsetof(SSGITemporalConstants, outputGIIndex) == 40);
+static_assert(offsetof(SSGITemporalConstants, traceDownsampleFactor) == 64);
 
 struct SSGIHistoryClampConstants
 {
@@ -195,18 +217,14 @@ public:
     struct WorldInput
     {
         const VXGIGPUScene* scene = nullptr;
-        const VXGISDF* sdf = nullptr;
-        const VXGISurface* surface = nullptr;
         ID3D12Resource* rawRecords = nullptr;
         ID3D12Resource* materialBuffer = nullptr;
         uint32_t probeCount = 0;
         float voxelSize = 1.0f;
         uint32_t mode = 0;
-        std::function<void(SSGITraceConstants&, D3D12_GPU_VIRTUAL_ADDRESS,
-            std::span<const D3D12_GPU_VIRTUAL_ADDRESS>)> traceDiagnostics;
-        std::function<void(std::span<ID3D12Resource* const>)> traceResources;
-        std::function<void(ID3D12GraphicsCommandList*, bool)> traceExecution;
-        std::function<void(ID3D12GraphicsCommandList*, ID3D12Resource*, uint32_t, uint32_t)> traceOutput;
+        const VXGIGlobalSDFRuntime* globalSDF = nullptr;
+        float globalTraceDistance = 128.0f;
+        uint32_t globalMaxSteps = 256;
     };
     static uint32_t EffectiveWorldMode(const WorldInput* world, int frameIndex)
     {
@@ -214,13 +232,7 @@ public:
             !world->scene->IsMeshBackend(frameIndex) || !world->scene->GetGrid(frameIndex).valid ||
             !world->scene->GetDistanceNodeCount(frameIndex) || !world->scene->GetAssetCount(frameIndex) ||
             !world->scene->GetInstanceCount(frameIndex) || !world->scene->GetInstanceBVHNodeCount(frameIndex)) return 0;
-#ifdef VXGI_ACCEPTANCE_EXACT_FALLBACK
-        for (const UINT i : {0u, 1u, 2u, 3u, 4u, 5u, 7u, 8u, 9u}) if (!world->scene->Get(frameIndex, i)) return 0;
-        if (!world->surface || world->surface->GetMaterials().empty() || !world->materialBuffer ||
-            !world->scene->GetTriangleCount(frameIndex)) return 0;
-#else
         for (const UINT i : {0u, 7u, 8u, 10u}) if (!world->scene->Get(frameIndex, i)) return 0;
-#endif
         if (!world->rawRecords || !world->probeCount ||
             !world->scene->Get(frameIndex, 5)) return 0;
         return world->mode;
@@ -238,6 +250,7 @@ public:
     {
         RDGTextureHandle sceneColor;
         RDGPassHandle pass;
+        RDGTextureHandle indirectLighting; // Final filtered E/pi, before receiver material response.
     };
 
     struct TextureViews
@@ -254,6 +267,92 @@ public:
         int frameIndex, UINT sampleFrame, const SSGIConfig& config, const Input& input,
         const WorldInput* world = nullptr)
     {
+        auto lighting = AddLightingToGraph(graph, resourceManager, pipelineManager, history, view, proj,
+            invProj, invViewProj, width, height, frameIndex, sampleFrame, config, input, world, false);
+        if (!lighting.gi.IsValid() || !lighting.pass.IsValid()) return {};
+        const auto factor = static_cast<uint32_t>(config.traceDownsampleFactor);
+        auto composite = AddCompositeToGraph(graph, resourceManager, pipelineManager, view, invProj, width, height,
+            frameIndex, factor, lighting.views, {input.sceneColor, lighting.gi}, config.intensity, config.giOnly);
+        if (!composite.IsValid()) return {};
+        return {input.sceneColor, composite, lighting.gi};
+    }
+
+    // Diagnostic output only. The normal mixed GI and its SceneColor/history
+    // continue unchanged; this branch uses a separate temporal history pair.
+    // EnsureSSGIPreviewHistoryResources must have succeeded before recording it.
+    static RDGTextureHandle AddLightingPreviewToGraph(RDGBuilder& graph, ResourceManager* resourceManager,
+        PipelineManager* pipelineManager, const SSGIHistoryState& history,
+        const DirectX::XMFLOAT4X4& view, const DirectX::XMFLOAT4X4& proj,
+        const DirectX::XMFLOAT4X4& invProj, const DirectX::XMFLOAT4X4& invViewProj, UINT width, UINT height,
+        int frameIndex, UINT sampleFrame, const SSGIConfig& config, const Input& input,
+        const WorldInput* world = nullptr)
+    {
+        auto lighting = AddLightingToGraph(graph, resourceManager, pipelineManager, history, view, proj,
+            invProj, invViewProj, width, height, frameIndex, sampleFrame, config, input, world, true);
+        return lighting.pass.IsValid() ? lighting.gi : RDGTextureHandle{};
+    }
+
+    struct IrradiancePreviewOutput
+    {
+        RDGTextureHandle texture;
+        RDGPassHandle pass;
+    };
+
+    // Use the production composite's geometry-guided upsample and intensity for
+    // pure GI. Its full-resolution HDR output can then follow the configured AA
+    // and tone mapping without changing normal SceneColor or GI histories.
+    static IrradiancePreviewOutput AddIrradiancePreviewToGraph(RDGBuilder& graph,
+        ResourceManager* resourceManager, PipelineManager* pipelineManager,
+        const DirectX::XMFLOAT4X4& view, const DirectX::XMFLOAT4X4& invProj,
+        UINT width, UINT height, int frameIndex, uint32_t traceDownsampleFactor,
+        const Input& input, RDGTextureHandle filteredGI, float intensity)
+    {
+        if (!resourceManager || !pipelineManager || !width || !height || !filteredGI.IsValid() ||
+            !SSGIConfig::IsValidTraceDownsampleFactor(static_cast<int>(traceDownsampleFactor))) return {};
+        D3D12_SHADER_RESOURCE_VIEW_DESC depthDesc = {};
+        depthDesc.Format = RenderFormats::DepthSRV;
+        depthDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+        depthDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+        depthDesc.Texture2D.MipLevels = 1;
+        TextureViews views;
+        views.depth = graph.CreateTextureSRVView(input.depth, &depthDesc);
+        views.normal = graph.CreateTextureSRVView(input.normal);
+        views.orm = graph.CreateTextureSRVView(input.orm);
+        views.albedo = graph.CreateTextureSRVView(input.albedo);
+        if (!views.depth.IsValid() || !views.normal.IsValid() || !views.orm.IsValid() || !views.albedo.IsValid())
+            return {};
+        RDGTextureDesc desc;
+        desc.width = width;
+        desc.height = height;
+        desc.format = RenderFormats::SceneColor;
+        desc.flags = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
+        const auto target = graph.CreateTexture(desc, D3D12_RESOURCE_STATE_COMMON,
+            D3D12_RESOURCE_STATE_COMMON, "SSGI.IrradiancePreview");
+        if (!target.IsValid()) return {};
+        const auto pass = AddCompositeToGraph(graph, resourceManager, pipelineManager, view, invProj,
+            width, height, frameIndex, traceDownsampleFactor, views, {target, filteredGI}, intensity, true);
+        return pass.IsValid() ? IrradiancePreviewOutput{target, pass} : IrradiancePreviewOutput{};
+    }
+
+private:
+    using WorldAddresses = std::array<D3D12_GPU_VIRTUAL_ADDRESS, 6>;
+    static UINT TraceExtent(UINT dimension, uint32_t factor)
+    {
+        return dimension / factor + (dimension % factor != 0 ? 1u : 0u);
+    }
+    struct LightingOutput
+    {
+        RDGTextureHandle gi;
+        RDGPassHandle pass;
+        TextureViews views;
+    };
+    static LightingOutput AddLightingToGraph(RDGBuilder& graph, ResourceManager* resourceManager,
+        PipelineManager* pipelineManager, const SSGIHistoryState& history,
+        const DirectX::XMFLOAT4X4& view, const DirectX::XMFLOAT4X4& proj,
+        const DirectX::XMFLOAT4X4& invProj, const DirectX::XMFLOAT4X4& invViewProj, UINT width, UINT height,
+        int frameIndex, UINT sampleFrame, const SSGIConfig& config, const Input& input,
+        const WorldInput* world, bool previewHistory)
+    {
         if (!resourceManager || !pipelineManager || width == 0 || height == 0 ||
             !SSGIConfig::IsValidTraceDownsampleFactor(config.traceDownsampleFactor)) return {};
         const uint32_t traceDownsampleFactor = static_cast<uint32_t>(config.traceDownsampleFactor);
@@ -262,7 +361,7 @@ public:
         // pass is recorded. Refuse mismatched resources rather than writing OOB.
         for (int index = 0; index < 2; ++index)
         {
-            const auto& textures = resourceManager->GetSSGIHistoryTextures(index);
+            const auto& textures = resourceManager->GetSSGIHistoryTextures(index, previewHistory);
             for (ID3D12Resource* texture : {textures.gi.Get(), textures.fastGI.Get(), textures.depth.Get(), textures.normal.Get()})
             {
                 if (!texture) return {};
@@ -286,13 +385,14 @@ public:
             return {};
         }
         auto trace = AddTraceToGraph(graph, resourceManager, pipelineManager, view, proj, invProj, invViewProj, width, height,
-            frameIndex, sampleFrame, config, views, {input.bounceSource}, world);
+            frameIndex, sampleFrame, config, views, {input.bounceSource}, world, history, previewHistory);
         if (!trace.reconstructedGI.IsValid() || !trace.reconstructionPass.IsValid())
         {
             return {};
         }
-        auto temporal = AddTemporalToGraph(graph, resourceManager, pipelineManager, history, invViewProj, width, height,
-            frameIndex, traceDownsampleFactor, views, {trace.reconstructedGI});
+        auto temporal = AddTemporalToGraph(graph, resourceManager, pipelineManager, width, height,
+            frameIndex, traceDownsampleFactor, views,
+            {trace.reconstructedGI, trace.reprojectedGI, trace.reprojectedFast}, previewHistory);
         if (!temporal.gi.IsValid() || !temporal.pass.IsValid())
         {
             return {};
@@ -303,25 +403,9 @@ public:
         {
             return {};
         }
-        auto composite = AddCompositeToGraph(graph, resourceManager, pipelineManager, view, invProj, width, height,
-            frameIndex, traceDownsampleFactor, views, {input.sceneColor, spatial.gi}, config.intensity, config.giOnly);
-        if (!composite.IsValid())
-        {
-            return {};
-        }
-        return {input.sceneColor, composite};
+        return {spatial.gi, spatial.pass, views};
     }
 
-private:
-#ifdef VXGI_ACCEPTANCE_EXACT_FALLBACK
-    using WorldAddresses = std::array<D3D12_GPU_VIRTUAL_ADDRESS, 11>;
-#else
-    using WorldAddresses = std::array<D3D12_GPU_VIRTUAL_ADDRESS, 6>;
-#endif
-    static UINT TraceExtent(UINT dimension, uint32_t factor)
-    {
-        return dimension / factor + (dimension % factor != 0 ? 1u : 0u);
-    }
     struct TraceInput
     {
         RDGTextureHandle bounceSource;
@@ -332,19 +416,33 @@ private:
         RDGPassHandle tracePass;
         RDGTextureHandle reconstructedGI;
         RDGPassHandle reconstructionPass;
+        RDGTextureHandle reprojectedGI;
+        RDGTextureHandle reprojectedFast;
     };
 
     static TraceOutput AddTraceToGraph(RDGBuilder& graph, ResourceManager* resourceManager,
         PipelineManager* pipelineManager, const DirectX::XMFLOAT4X4& view, const DirectX::XMFLOAT4X4& proj,
         const DirectX::XMFLOAT4X4& invProj, const DirectX::XMFLOAT4X4& invViewProj,
         UINT width, UINT height, int frameIndex, UINT sampleFrame,
-        const SSGIConfig& config, const TextureViews& views, const TraceInput& input, const WorldInput* world)
+        const SSGIConfig& config, const TextureViews& views, const TraceInput& input, const WorldInput* world,
+        const SSGIHistoryState& history, bool previewHistory)
     {
         auto depth = views.depth;
         auto normal = views.normal;
         auto orm = views.orm;
         auto source = graph.CreateTextureSRVView(input.bounceSource);
-        if (!depth.IsValid() || !normal.IsValid() || !orm.IsValid() || !source.IsValid())
+        const int historyIndex = resourceManager->GetSSGICurrentHistoryIdx(previewHistory);
+        const auto& previous = resourceManager->GetSSGIHistoryTextures(1 - historyIndex, previewHistory);
+        const auto importHistory = [&](ID3D12Resource* texture, const char* name) {
+            return graph.CreateTextureSRVView(graph.RegisterExternalTexture(
+                texture, D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_COMMON, name));
+        };
+        auto previousGI = importHistory(previous.gi.Get(), "SSGI.PreviousGI");
+        auto previousFast = importHistory(previous.fastGI.Get(), "SSGI.PreviousFastGI");
+        auto previousHistoryDepth = importHistory(previous.depth.Get(), "SSGI.PreviousDepth");
+        auto previousNormal = importHistory(previous.normal.Get(), "SSGI.PreviousNormal");
+        if (!depth.IsValid() || !normal.IsValid() || !orm.IsValid() || !source.IsValid() ||
+            !previousGI.IsValid() || !previousFast.IsValid() || !previousHistoryDepth.IsValid() || !previousNormal.IsValid())
         {
             return {};
         }
@@ -371,12 +469,24 @@ private:
         traceParams.ReadComputeSRV(views.albedo);
         traceParams.ReadComputeSRV(source);
         traceParams.ReadComputeSRV(noise);
+        traceParams.ReadComputeSRV(previousGI);
+        traceParams.ReadComputeSRV(previousFast);
+        traceParams.ReadComputeSRV(previousHistoryDepth);
+        traceParams.ReadComputeSRV(previousNormal);
         SSGITraceConstants trace = {};
         trace.view = view;
         trace.proj = proj;
         trace.invProj = invProj;
         DirectX::XMStoreFloat4x4(&trace.invView, DirectX::XMMatrixInverse(nullptr, DirectX::XMLoadFloat4x4(&view)));
         trace.invViewProj = invViewProj;
+        trace.previousViewProj = history.previousViewProj;
+        trace.previousInvViewProj = history.previousInvViewProj;
+        trace.previousGIIndex = previousGI.descriptorIndex;
+        trace.previousFastIndex = previousFast.descriptorIndex;
+        trace.previousDepthIndex = previousHistoryDepth.descriptorIndex;
+        trace.previousNormalIndex = previousNormal.descriptorIndex;
+        trace.historyValid = history.valid;
+        trace.checkerboardEnabled = config.checkerboard;
         trace.width = width;
         trace.height = height;
         trace.traceDownsampleFactor = static_cast<uint32_t>(config.traceDownsampleFactor);
@@ -416,10 +526,6 @@ private:
             trace.hybrid.assetCount = world->scene->GetAssetCount(frameIndex);
             trace.hybrid.instanceCount = world->scene->GetInstanceCount(frameIndex);
             trace.hybrid.bvhNodeCount = world->scene->GetInstanceBVHNodeCount(frameIndex);
-#ifdef VXGI_ACCEPTANCE_EXACT_FALLBACK
-            trace.hybrid.triangleCount = world->scene->GetTriangleCount(frameIndex);
-            trace.hybrid.materialCount = static_cast<uint32_t>(world->surface->GetMaterials().size());
-#endif
             const auto bind = [&](UINT binding, ID3D12Resource* buffer, const char* name) {
                 const auto handle = graph.RegisterExternalBuffer(buffer, VXGIGPUScene::ReadState,
                     VXGIGPUScene::ReadState, name);
@@ -427,24 +533,34 @@ private:
                 worldAddresses[binding] = buffer->GetGPUVirtualAddress();
             };
             bind(0, world->scene->Get(frameIndex, 0), "SSGI.SDFNodes");
-#ifdef VXGI_ACCEPTANCE_EXACT_FALLBACK
-            bind(1, world->scene->Get(frameIndex, 1), "SSGI.SDFCellOffsets");
-            bind(2, world->scene->Get(frameIndex, 2), "SSGI.SDFReferences");
-            bind(3, world->scene->Get(frameIndex, 3), "SSGI.SDFTriangles");
-            bind(4, world->materialBuffer, "SSGI.Materials");
-            bind(5, world->scene->Get(frameIndex, 4), "SSGI.ProbeCenters");
-            bind(6, world->scene->Get(frameIndex, 5), "SSGI.ProbeLookup");
-            bind(7, world->rawRecords, "SSGI.RawProbeSH");
-            bind(8, world->scene->Get(frameIndex, 7), "SSGI.MeshSDFAssets");
-            bind(9, world->scene->Get(frameIndex, 8), "SSGI.MeshSDFInstances");
-            bind(10, world->scene->Get(frameIndex, 9), "SSGI.MeshSDFMaterials");
-#else
             bind(1, world->scene->Get(frameIndex, 5), "SSGI.ProbeLookup");
             bind(2, world->rawRecords, "SSGI.RawProbeSH");
             bind(3, world->scene->Get(frameIndex, 7), "SSGI.MeshSDFAssets");
             bind(4, world->scene->Get(frameIndex, 8), "SSGI.MeshSDFInstances");
             bind(5, world->scene->Get(frameIndex, 10), "SSGI.InstanceBVH");
-#endif
+            if (world->globalSDF && world->globalSDF->GetPass().GetTexture() &&
+                (world->globalSDF->GetState().HasPendingPlan() || world->globalSDF->GetState().IsInitialized()))
+            {
+                const auto texture = graph.RegisterExternalTexture(world->globalSDF->GetPass().GetTexture(),
+                    D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
+                    "SSGI.GlobalSDF");
+                D3D12_SHADER_RESOURCE_VIEW_DESC globalDesc{};
+                globalDesc.Format = DXGI_FORMAT_R32_FLOAT;
+                globalDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE3D;
+                globalDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+                globalDesc.Texture3D.MipLevels = 1;
+                const auto globalView = graph.CreateTextureSRVView(texture, &globalDesc);
+                if (!globalView.IsValid() || !std::isfinite(world->globalTraceDistance) ||
+                    world->globalTraceDistance <= 0 || !world->globalMaxSteps) return {};
+                traceParams.ReadComputeSRV(globalView);
+                trace.global.enabled = 1;
+                trace.global.textureIndex = globalView.descriptorIndex;
+                trace.global.maxTraceDistance = world->globalTraceDistance;
+                trace.global.maxSteps = world->globalMaxSteps;
+                const auto& state = world->globalSDF->GetState();
+                trace.global.constants = state.HasPendingPlan() ?
+                    state.GetPendingPlan().layout.constants : state.GetLayout().constants;
+            }
         }
 
         auto previousDepth = depth;
@@ -500,49 +616,36 @@ private:
         auto raw = CreateUAVTexture(
             graph, trace.outputWidth, trace.outputHeight, RenderFormats::IndirectLighting, "SSGI.RawGI");
         auto rawUav = graph.CreateTextureUAVView(raw);
-        if (!rawUav.IsValid())
+        // Reprojection is computed once in Trace and consumed by Temporal.
+        // Float32 preserves its interpolated colors, moments and sample count.
+        auto reprojectedGI = CreateUAVTexture(graph, trace.outputWidth, trace.outputHeight,
+            DXGI_FORMAT_R32G32B32A32_FLOAT, "SSGI.ReprojectedGI");
+        auto reprojectedFast = CreateUAVTexture(graph, trace.outputWidth, trace.outputHeight,
+            DXGI_FORMAT_R32G32B32A32_FLOAT, "SSGI.ReprojectedFastGI");
+        auto reprojectedGIUav = graph.CreateTextureUAVView(reprojectedGI);
+        auto reprojectedFastUav = graph.CreateTextureUAVView(reprojectedFast);
+        if (!rawUav.IsValid() || !reprojectedGIUav.IsValid() || !reprojectedFastUav.IsValid())
         {
             return {};
         }
-        if (world && world->traceResources)
-        {
-            const std::array<ID3D12Resource*, 7> resources = {
-                graph.GetTextureResource(depth.texture), graph.GetTextureResource(normal.texture),
-                graph.GetTextureResource(orm.texture), graph.GetTextureResource(source.texture),
-                graph.GetTextureResource(rawUav.texture), graph.GetTextureResource(noise.texture),
-                graph.GetTextureResource(views.albedo.texture)
-            };
-            world->traceResources(std::span<ID3D12Resource* const>(resources));
-        }
         trace.outputIndex = rawUav.descriptorIndex;
+        trace.reprojectedGIIndex = reprojectedGIUav.descriptorIndex;
+        trace.reprojectedFastIndex = reprojectedFastUav.descriptorIndex;
         auto allocation = resourceManager->AllocatePassConstants(frameIndex, sizeof(trace));
         if (!allocation)
         {
             return {};
         }
-        if (world && world->traceDiagnostics)
-            world->traceDiagnostics(trace, allocation.gpuAddress,
-                std::span<const D3D12_GPU_VIRTUAL_ADDRESS>(worldAddresses));
         memcpy(allocation.cpuAddress, &trace, sizeof(trace));
         auto address = allocation.gpuAddress;
         auto* tracePipeline = pipelineManager->GetSSGITracePSO();
-        auto traceExecution = world ? world->traceExecution : std::function<void(ID3D12GraphicsCommandList*, bool)>{};
-        auto traceOutput = world ? world->traceOutput : std::function<void(ID3D12GraphicsCommandList*, ID3D12Resource*, uint32_t, uint32_t)>{};
-        auto* rawResource = graph.GetTextureResource(raw);
         traceParams.WriteUAV(rawUav);
+        traceParams.WriteUAV(reprojectedGIUav);
+        traceParams.WriteUAV(reprojectedFastUav);
         auto pass =
             graph.AddPass("SSGI.Trace", ERDGPassFlags::Compute, traceParams, [=](ID3D12GraphicsCommandList* cmdList) {
-            if (trace.padding2 == 1) cmdList->ClearState(nullptr);
-            if (trace.padding2 == 2)
-            {
-                const auto barrier = CD3DX12_RESOURCE_BARRIER::UAV(nullptr);
-                cmdList->ResourceBarrier(1, &barrier);
-            }
-            if (traceExecution) traceExecution(cmdList, true);
             ExecuteComputeNoBarrier(cmdList, resourceManager, pipelineManager, tracePipeline,
                 address, trace.outputWidth, trace.outputHeight, &worldAddresses);
-            if (traceExecution) traceExecution(cmdList, false);
-            if (traceOutput) traceOutput(cmdList, rawResource, trace.frameIndex, trace.hybrid.worldMode);
         });
         auto reconstructed = CreateUAVTexture(
             graph, trace.outputWidth, trace.outputHeight, RenderFormats::IndirectLighting, "SSGI.ReconstructedGI");
@@ -584,7 +687,7 @@ private:
             ExecuteComputeNoBarrier(cmdList, resourceManager, pipelineManager, pipelineManager->GetSSGIReconstructPSO(),
                 reconstructionAddress, reconstruction.outputWidth, reconstruction.outputHeight);
         });
-        return {raw, pass, reconstructed, reconstructionPass};
+        return {raw, pass, reconstructed, reconstructionPass, reprojectedGI, reprojectedFast};
     }
 
     static RDGTextureHandle CreateUAVTexture(
@@ -610,10 +713,8 @@ private:
         if (worldAddresses)
         {
             for (UINT i = 0; i < worldAddresses->size(); ++i) cmdList->SetComputeRootShaderResourceView(i + 1, (*worldAddresses)[i]);
-#ifndef VXGI_ACCEPTANCE_EXACT_FALLBACK
             // Temporary worldMode SRV alias; see SSGIWorldMode() for the performance workaround rationale.
             cmdList->SetComputeRootShaderResourceView(7, constants);
-#endif
         }
         cmdList->Dispatch((w + 7) / 8, (h + 7) / 8, 1);
     }
@@ -621,6 +722,8 @@ private:
     struct TemporalInput
     {
         RDGTextureHandle reconstructedGI;
+        RDGTextureHandle reprojectedGI;
+        RDGTextureHandle reprojectedFast;
     };
     struct TemporalOutput
     {
@@ -630,20 +733,18 @@ private:
     };
 
     static TemporalOutput AddTemporalToGraph(RDGBuilder& graph, ResourceManager* resourceManager,
-        PipelineManager* pipelineManager, const SSGIHistoryState& history, const DirectX::XMFLOAT4X4& invViewProj,
-        UINT width, UINT height, int frameIndex, uint32_t traceDownsampleFactor, const TextureViews& views, const TemporalInput& input)
+        PipelineManager* pipelineManager, UINT width, UINT height, int frameIndex,
+        uint32_t traceDownsampleFactor, const TextureViews& views,
+        const TemporalInput& input, bool previewHistory)
     {
         auto import = [&](ID3D12Resource* texture, const char* name) {
             return graph.RegisterExternalTexture(
                 texture, D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_COMMON, name);
         };
-        const int historyIndex = resourceManager->GetSSGICurrentHistoryIdx();
-        const auto& previous = resourceManager->GetSSGIHistoryTextures(1 - historyIndex);
-        const auto& output = resourceManager->GetSSGIHistoryTextures(historyIndex);
-        auto previousGI = graph.CreateTextureSRVView(import(previous.gi.Get(), "SSGI.PreviousGI"));
-        auto previousFast = graph.CreateTextureSRVView(import(previous.fastGI.Get(), "SSGI.PreviousFastGI"));
-        auto previousDepth = graph.CreateTextureSRVView(import(previous.depth.Get(), "SSGI.PreviousDepth"));
-        auto previousNormal = graph.CreateTextureSRVView(import(previous.normal.Get(), "SSGI.PreviousNormal"));
+        const int historyIndex = resourceManager->GetSSGICurrentHistoryIdx(previewHistory);
+        const auto& output = resourceManager->GetSSGIHistoryTextures(historyIndex, previewHistory);
+        auto reprojectedGI = graph.CreateTextureSRVView(input.reprojectedGI);
+        auto reprojectedFast = graph.CreateTextureSRVView(input.reprojectedFast);
         auto outputGITexture = import(output.gi.Get(), "SSGI.TemporalGI");
         auto outputFastTexture = import(output.fastGI.Get(), "SSGI.FastGI");
         auto outputDepthTexture = import(output.depth.Get(), "SSGI.HistoryDepth");
@@ -662,17 +763,14 @@ private:
         auto normal = views.normal;
         auto orm = views.orm;
         auto current = graph.CreateTextureSRVView(input.reconstructedGI);
-        if (!previousGI.IsValid() || !previousDepth.IsValid() || !previousNormal.IsValid() || !outputGI.IsValid() ||
-            !outputDepth.IsValid() || !outputNormal.IsValid() || !previousFast.IsValid() || !outputFast.IsValid() ||
+        if (!reprojectedGI.IsValid() || !reprojectedFast.IsValid() || !outputGI.IsValid() ||
+            !outputDepth.IsValid() || !outputNormal.IsValid() || !outputFast.IsValid() ||
             !depth.IsValid() || !normal.IsValid() || !orm.IsValid() || !current.IsValid())
         {
             return {};
         }
 
         SSGITemporalConstants constants = {};
-        constants.invViewProj = invViewProj;
-        constants.previousViewProj = history.previousViewProj;
-        constants.previousInvViewProj = history.previousInvViewProj;
         constants.width = width;
         constants.height = height;
         constants.outputWidth = halfWidth;
@@ -682,14 +780,11 @@ private:
         constants.normalIndex = normal.descriptorIndex;
         constants.ormIndex = orm.descriptorIndex;
         constants.currentIndex = current.descriptorIndex;
-        constants.previousGIIndex = previousGI.descriptorIndex;
-        constants.previousDepthIndex = previousDepth.descriptorIndex;
-        constants.previousNormalIndex = previousNormal.descriptorIndex;
-        constants.historyValid = history.valid;
+        constants.reprojectedGIIndex = reprojectedGI.descriptorIndex;
+        constants.reprojectedFastIndex = reprojectedFast.descriptorIndex;
         constants.outputGIIndex = outputGI.descriptorIndex;
         constants.outputDepthIndex = outputDepth.descriptorIndex;
         constants.outputNormalIndex = outputNormal.descriptorIndex;
-        constants.previousFastIndex = previousFast.descriptorIndex;
         constants.outputFastIndex = outputFast.descriptorIndex;
         // Keep the project-tested 16-sample main cap; NRD fast weight remains 1/7.
         constants.maxHistoryFrames = 16.0f;
@@ -706,13 +801,11 @@ private:
         params.ReadComputeSRV(normal);
         params.ReadComputeSRV(orm);
         params.ReadComputeSRV(current);
-        params.ReadComputeSRV(previousGI);
-        params.ReadComputeSRV(previousDepth);
-        params.ReadComputeSRV(previousNormal);
+        params.ReadComputeSRV(reprojectedGI);
+        params.ReadComputeSRV(reprojectedFast);
         params.WriteUAV(outputGI);
         params.WriteUAV(outputDepth);
         params.WriteUAV(outputNormal);
-        params.ReadComputeSRV(previousFast);
         params.WriteUAV(outputFast);
         auto pass =
             graph.AddPass("SSGI.Temporal", ERDGPassFlags::Compute, params, [=](ID3D12GraphicsCommandList* cmdList) {

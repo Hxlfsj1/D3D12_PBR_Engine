@@ -774,43 +774,48 @@ public:
             !SSGIConfig::IsValidTraceDownsampleFactor(static_cast<int>(traceDownsampleFactor))) return false;
         const UINT traceWidth = (width - 1) / traceDownsampleFactor + 1;
         const UINT traceHeight = (height - 1) / traceDownsampleFactor + 1;
+        if (!AllocateSSGIHistoryTextures(dc->GetDevice(), traceWidth, traceHeight, m_ssgiHistoryTextures))
+            return false;
         m_ssgiCurrentHistoryIdx = 0;
-        auto create = [&](DXGI_FORMAT format, Microsoft::WRL::ComPtr<ID3D12Resource>& texture) {
-            texture.Reset();
-            auto desc = CD3DX12_RESOURCE_DESC::Tex2D(
-                format, traceWidth, traceHeight, 1, 1, 1, 0, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
-            auto heap = CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_DEFAULT);
-            HRESULT hr = dc->GetDevice()->CreateCommittedResource(
-                &heap, D3D12_HEAP_FLAG_NONE, &desc, D3D12_RESOURCE_STATE_COMMON, nullptr, IID_PPV_ARGS(&texture));
-            if (FAILED(hr))
-            {
-                ErrorLog::HRESULT("ResourceManager: SSGI history allocation failed.", hr);
-            }
-            return SUCCEEDED(hr);
-        };
-        for (auto& set : m_ssgiHistoryTextures)
-        {
-            if (!create(RenderFormats::IndirectLighting, set.gi) ||
-                !create(RenderFormats::IndirectLighting, set.fastGI) || !create(RenderFormats::DepthSRV, set.depth) ||
-                !create(RenderFormats::GBufferNormal, set.normal))
-            {
-                return false;
-            }
-        }
+        // The caller already holds the GPU-idle boundary used for resize/init.
+        // A diagnostic history is recreated lazily at the new trace dimensions.
+        for (auto& set : m_ssgiPreviewHistoryTextures) set = {};
+        m_ssgiPreviewCurrentHistoryIdx = 0;
         return true;
     }
 
-    const SSGIHistoryTextures& GetSSGIHistoryTextures(int index) const
+    // First selection only allocates new resources; it never replaces in-flight
+    // history. Resolution changes must use InitSSGIHistoryResources at GPU idle.
+    bool EnsureSSGIPreviewHistoryResources(RenderDevice* dc, UINT width, UINT height,
+        UINT traceDownsampleFactor = 2)
     {
-        return m_ssgiHistoryTextures[index];
+        if (!dc || !dc->GetDevice() || width == 0 || height == 0 ||
+            !SSGIConfig::IsValidTraceDownsampleFactor(static_cast<int>(traceDownsampleFactor))) return false;
+        const UINT traceWidth = (width - 1) / traceDownsampleFactor + 1;
+        const UINT traceHeight = (height - 1) / traceDownsampleFactor + 1;
+        if (m_ssgiPreviewHistoryTextures[0].gi)
+        {
+            const auto desc = m_ssgiPreviewHistoryTextures[0].gi->GetDesc();
+            return desc.Width == traceWidth && desc.Height == traceHeight;
+        }
+        if (!AllocateSSGIHistoryTextures(dc->GetDevice(), traceWidth, traceHeight, m_ssgiPreviewHistoryTextures))
+            return false;
+        m_ssgiPreviewCurrentHistoryIdx = 0;
+        return true;
     }
-    int GetSSGICurrentHistoryIdx() const
+
+    const SSGIHistoryTextures& GetSSGIHistoryTextures(int index, bool preview = false) const
     {
-        return m_ssgiCurrentHistoryIdx;
+        return preview ? m_ssgiPreviewHistoryTextures[index] : m_ssgiHistoryTextures[index];
     }
-    void FlipSSGIHistoryIndex()
+    int GetSSGICurrentHistoryIdx(bool preview = false) const
     {
-        m_ssgiCurrentHistoryIdx = 1 - m_ssgiCurrentHistoryIdx;
+        return preview ? m_ssgiPreviewCurrentHistoryIdx : m_ssgiCurrentHistoryIdx;
+    }
+    void FlipSSGIHistoryIndex(bool preview = false)
+    {
+        int& index = preview ? m_ssgiPreviewCurrentHistoryIdx : m_ssgiCurrentHistoryIdx;
+        index = 1 - index;
     }
 
     bool InitTemporalHistoryResources(RenderDevice* dc, int width, int height)
@@ -1486,6 +1491,26 @@ public:
     }
 
 private:
+    static bool AllocateSSGIHistoryTextures(ID3D12Device* device, UINT width, UINT height,
+        SSGIHistoryTextures (&destination)[2])
+    {
+        SSGIHistoryTextures created[2];
+        auto create = [&](DXGI_FORMAT format, Microsoft::WRL::ComPtr<ID3D12Resource>& texture) {
+            auto desc = CD3DX12_RESOURCE_DESC::Tex2D(
+                format, width, height, 1, 1, 1, 0, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
+            auto heap = CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_DEFAULT);
+            const HRESULT hr = device->CreateCommittedResource(
+                &heap, D3D12_HEAP_FLAG_NONE, &desc, D3D12_RESOURCE_STATE_COMMON, nullptr, IID_PPV_ARGS(&texture));
+            if (FAILED(hr)) ErrorLog::HRESULT("ResourceManager: SSGI history allocation failed.", hr);
+            return SUCCEEDED(hr);
+        };
+        for (auto& set : created)
+            if (!create(RenderFormats::IndirectLighting, set.gi) ||
+                !create(RenderFormats::IndirectLighting, set.fastGI) || !create(RenderFormats::DepthSRV, set.depth) ||
+                !create(RenderFormats::GBufferNormal, set.normal)) return false;
+        for (int index = 0; index < 2; ++index) destination[index] = std::move(created[index]);
+        return true;
+    }
     bool CreatePersistentTexture2DFromMemory(
         RenderDevice* deviceContext,
         ID3D12GraphicsCommandList* commandList,
@@ -1677,6 +1702,8 @@ private:
     ComPtr<ID3D12Resource> m_smaaAreaTexture;
     SSGIHistoryTextures m_ssgiHistoryTextures[2];
     int m_ssgiCurrentHistoryIdx = 0;
+    SSGIHistoryTextures m_ssgiPreviewHistoryTextures[2];
+    int m_ssgiPreviewCurrentHistoryIdx = 0;
     BlueNoiseTexture m_blueNoise;
     ComPtr<ID3D12Resource> m_smaaAreaUpload;
     ComPtr<ID3D12Resource> m_smaaSearchTexture;

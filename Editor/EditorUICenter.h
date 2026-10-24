@@ -6,6 +6,7 @@
 #include "imgui_internal.h"
 #include <string>
 #include <vector>
+#include <cstring>
 
 // The only creation/drawing layer for editor panels and controls. Functional panels
 // supply IDs, values and callbacks; they must not supply colors or layout metrics.
@@ -294,28 +295,124 @@ namespace EditorUICenter
             ImGui::SetClipboardText(camera.ToJson().c_str());
         Muted("Copy the full camera data to share this view.", true);
     }
-    inline void DebugPassMenu(RenderDebugPass& pass, bool giAvailable = true)
+    inline bool WrappedMenuItem(const char* text, const char* stableId, bool selected,
+        bool enabled = true, const char* shortcut = nullptr)
     {
+        const auto& style = ImGui::GetStyle();
+        const float statusWidth = ImGui::CalcTextSize("\xe6\x9c\xaa\xe5\x90\xaf\xe7\x94\xa8").x;
+        const float width = (std::max)(ImGui::GetFontSize(), ImGui::GetMainViewport()->WorkSize.x -
+            2 * Px(EditorTheme::Padding) - 2 * style.WindowPadding.x -
+            1.2f * ImGui::GetFontSize() - 2 * style.ItemSpacing.x - statusWidth);
+        const char* end = text + std::strlen(text);
+        std::string label;
+        for (const char* begin = text; begin < end;)
+        {
+            const char* lineEnd = ImGui::GetFont()->CalcWordWrapPosition(ImGui::GetFontSize(), begin, end, width);
+            if (lineEnd <= begin)
+            {
+                unsigned int character = 0;
+                lineEnd = begin + (std::max)(1, ImTextCharFromUtf8(&character, begin, end));
+            }
+            label.append(begin, lineEnd);
+            begin = lineEnd;
+            while (begin < end && (*begin == ' ' || *begin == '\t' || *begin == '\r' || *begin == '\n')) ++begin;
+            if (begin < end) label += '\n';
+        }
+        label += "###";
+        label += stableId;
+        return ImGui::MenuItem(label.c_str(), shortcut, selected, enabled);
+    }
+    inline void DebugPassMenu(RenderDebugPass& pass, RenderPassView& view,
+        const RenderPassAvailability& available, bool accumulatedReady = false)
+    {
+        NormalizeRenderPassView(view, available);
+        NormalizeRenderDebugPass(pass, available);
+        if (view.pass != RenderPassId::Default) pass = RenderDebugPass::Default;
         if (ImGui::BeginMenu("Pass##debug-pass-menu"))
         {
-            if (ImGui::MenuItem("\xe9\xbb\x98\xe8\xae\xa4##debug-pass-default", nullptr,
-                pass == RenderDebugPass::Default))
-                pass = RenderDebugPass::Default;
-            if (ImGui::MenuItem("\xe5\x85\xb3\xe9\x97\xad VXGI##debug-pass-vxgi-off", nullptr,
-                pass == RenderDebugPass::VXGIOff, giAvailable))
-                pass = RenderDebugPass::VXGIOff;
-            if (ImGui::MenuItem("\xe4\xbb\x85 SSGI##debug-pass-ssgi", nullptr,
-                pass == RenderDebugPass::SSGIOnly, giAvailable))
-                pass = RenderDebugPass::SSGIOnly;
-            if (ImGui::MenuItem("\xe4\xbb\x85 GI##debug-pass-gi", nullptr,
-                pass == RenderDebugPass::GIOnly, giAvailable))
-                pass = RenderDebugPass::GIOnly;
+            if (ImGui::MenuItem("\xe9\xbb\x98\xe8\xae\xa4##pass-view-default", nullptr,
+                view.pass == RenderPassId::Default && pass == RenderDebugPass::Default))
+                { view = {}; pass = RenderDebugPass::Default; }
+            ImGui::Separator();
+            for (const auto& info : RenderPassCatalog)
+            {
+                if (info.pass == RenderPassId::Default || (!info.passOutput && !accumulatedReady)) continue;
+                const std::string label = std::string(info.label) + "##pass-view-stage-" + info.id;
+                if (!IsRenderPassAvailable(info.pass, available))
+                {
+                    ImGui::MenuItem(label.c_str(), "\xe6\x9c\xaa\xe5\x90\xaf\xe7\x94\xa8", false, false);
+                    continue;
+                }
+                if (!ImGui::BeginMenu(label.c_str())) continue;
+                const auto select = [&](RenderPassResult result, RenderPassChannel channel = RenderPassChannel::Albedo,
+                    RenderPassGISource giSource = RenderPassGISource::Default) {
+                    view = {info.pass, result, channel, giSource};
+                    pass = RenderDebugPass::Default;
+                };
+                if (info.pass == RenderPassId::GI)
+                {
+                    const char* defaultLabel = IsGlobalGIAvailable(available) ?
+                        "\xe9\xbb\x98\xe8\xae\xa4\xef\xbc\x88SSGI + Mesh SDF VXGI + Global SDF GI\xef\xbc\x89" : IsWorldGIAvailable(available) ?
+                        "\xe9\xbb\x98\xe8\xae\xa4\xef\xbc\x88SSGI + Mesh SDF VXGI\xef\xbc\x89" :
+                        "\xe9\xbb\x98\xe8\xae\xa4\xef\xbc\x88SSGI\xef\xbc\x89";
+                    if (WrappedMenuItem(defaultLabel, "pass-view-gi-default",
+                        view.pass == info.pass && view.result == RenderPassResult::PassOutput &&
+                        view.giSource == RenderPassGISource::Default))
+                        select(RenderPassResult::PassOutput);
+                    if (WrappedMenuItem("SSGI", "pass-view-gi-ssgi",
+                        view.pass == info.pass && view.result == RenderPassResult::PassOutput &&
+                        view.giSource == RenderPassGISource::SSGIOnly))
+                        select(RenderPassResult::PassOutput, RenderPassChannel::Albedo, RenderPassGISource::SSGIOnly);
+                    if (WrappedMenuItem("SSGI + Mesh SDF VXGI", "pass-view-gi-mesh",
+                        view.pass == info.pass && view.result == RenderPassResult::PassOutput &&
+                        view.giSource == RenderPassGISource::SSGIAndMeshSDF, IsWorldGIAvailable(available),
+                        IsWorldGIAvailable(available) ? nullptr : "\xe6\x9c\xaa\xe5\x90\xaf\xe7\x94\xa8"))
+                        select(RenderPassResult::PassOutput, RenderPassChannel::Albedo, RenderPassGISource::SSGIAndMeshSDF);
+                    ImGui::Separator();
+                    ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + Px(160));
+                    Muted(available.antiAliasing ?
+                        "\xe7\xba\xaf GI \xe8\xbe\x93\xe5\x87\xba\xef\xbc\x9a\xe6\x8a\x97\xe9\x94\xaf\xe9\xbd\xbf\xe5\xb7\xb2\xe5\x90\xaf\xe7\x94\xa8" :
+                        "\xe7\xba\xaf GI \xe8\xbe\x93\xe5\x87\xba\xef\xbc\x9a\xe6\x8a\x97\xe9\x94\xaf\xe9\xbd\xbf\xe6\x9c\xaa\xe5\x90\xaf\xe7\x94\xa8", true);
+                    ImGui::PopTextWrapPos();
+                }
+                else if (info.pass == RenderPassId::GBuffer)
+                {
+                    Muted("\xe6\x9c\xac\xe6\xad\xa5\xe7\xbb\x93\xe6\x9e\x9c");
+                    for (const auto& channel : RenderPassChannels)
+                    {
+                        const std::string channelLabel = std::string(channel.label) + "##pass-view-channel-" + channel.id;
+                        if (ImGui::MenuItem(channelLabel.c_str(), nullptr,
+                            view.pass == info.pass && view.channel == channel.channel))
+                            select(RenderPassResult::PassOutput, channel.channel);
+                    }
+                }
+                else if (info.passOutput && ImGui::MenuItem(
+                    "\xe6\x9c\xac\xe6\xad\xa5\xe7\xbb\x93\xe6\x9e\x9c##pass-view-output", nullptr,
+                    view.pass == info.pass && view.result == RenderPassResult::PassOutput))
+                    select(RenderPassResult::PassOutput);
+                if (info.pass != RenderPassId::GI && accumulatedReady && info.accumulated && ImGui::MenuItem(
+                    "\xe6\x88\xaa\xe8\x87\xb3\xe6\x9c\xac\xe6\xad\xa5##pass-view-accumulated", nullptr,
+                    view.pass == info.pass && view.result == RenderPassResult::Accumulated))
+                    select(RenderPassResult::Accumulated);
+                if (info.pass == RenderPassId::Skybox || info.pass == RenderPassId::Transparent)
+                {
+                    ImGui::Separator();
+                    ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + Px(160));
+                    Muted("\xe6\x9c\xac\xe6\xad\xa5\xe9\xa2\x9c\xe8\x89\xb2\xe5\x8f\x98\xe5\x8c\x96\xef\xbc\x9a\xe6\xa9\x99\xe8\x89\xb2\xe4\xb8\xba\xe5\x8f\x98\xe4\xba\xae\xef\xbc\x8c\xe8\x93\x9d\xe8\x89\xb2\xe4\xb8\xba\xe5\x8f\x98\xe6\x9a\x97\xe3\x80\x82", true);
+                    ImGui::PopTextWrapPos();
+                }
+                ImGui::EndMenu();
+            }
             ImGui::EndMenu();
         }
     }
     inline bool MainMenu(float& height, const EditorCameraSnapshot& camera,
-        RenderDebugPass& pass, bool giAvailable = true)
+        RenderDebugPass& pass, RenderPassView& view, const RenderPassAvailability& available,
+        bool accumulatedReady = false)
     {
+        NormalizeRenderPassView(view, available);
+        NormalizeRenderDebugPass(pass, available);
+        if (view.pass != RenderPassId::Default) pass = RenderDebugPass::Default;
         bool quit = false; height = 0;
         if (ImGui::BeginMainMenuBar())
         {
@@ -338,7 +435,7 @@ namespace EditorUICenter
             }
             if (ImGui::BeginMenu("Debug"))
             {
-                DebugPassMenu(pass, giAvailable);
+                DebugPassMenu(pass, view, available, accumulatedReady);
                 ImGui::EndMenu();
             }
             ImGui::EndMainMenuBar();
@@ -348,7 +445,8 @@ namespace EditorUICenter
     inline bool MainMenu(float& height, const EditorCameraSnapshot& camera)
     {
         RenderDebugPass pass = RenderDebugPass::Default;
-        return MainMenu(height, camera, pass);
+        RenderPassView view;
+        return MainMenu(height, camera, pass, view, RenderPassAvailability{});
     }
     inline void Splitter(const char* id, ImVec2 centre,ImVec2 size,bool vertical,float& value,float direction)
     {
@@ -423,21 +521,47 @@ namespace EditorUICenter
         if(!open)return;
         static double loadingPreviewUntil = 0;
         static RenderDebugPass debugPass = RenderDebugPass::Default;
-        static bool giAvailable = true;
-        ImGui::SetNextWindowSize(ImVec2(Px(540),Px(640)),ImGuiCond_FirstUseEver);
+        static RenderPassView passView;
+        static RenderPassAvailability available = [] {
+            RenderPassAvailability value;
+            value.deferred = true;
+            value.ssgi = true;
+            value.vxgi = true;
+            value.globalSDF = true;
+            value.zPrepass = true;
+            value.hbao = true;
+            value.antiAliasing = true;
+            value.motionVectors = true;
+            value.transparent = true;
+            return value;
+        }();
+        const auto* viewport = ImGui::GetMainViewport();
+        const float margin = Px(EditorTheme::Padding);
+        const ImVec2 limit((std::max)(1.0f, viewport->WorkSize.x - 2 * margin),
+            (std::max)(1.0f, viewport->WorkSize.y - 2 * margin));
+        const auto* guide = ImGui::FindWindowByName("UI Creation Center - UE 5.4.4");
+        const ImVec2 size((std::min)(guide ? guide->Size.x : Px(540), limit.x),
+            (std::min)(guide ? guide->Size.y : Px(640), limit.y));
+        const ImVec2 minimum(viewport->WorkPos.x + margin, viewport->WorkPos.y + margin);
+        const ImVec2 position(guide ? guide->Pos.x : minimum.x, guide ? guide->Pos.y : minimum.y);
+        ImGui::SetNextWindowPos(ImVec2(
+            (std::max)(minimum.x, (std::min)(position.x, viewport->WorkPos.x + viewport->WorkSize.x - size.x - margin)),
+            (std::max)(minimum.y, (std::min)(position.y, viewport->WorkPos.y + viewport->WorkSize.y - size.y - margin))));
+        ImGui::SetNextWindowSizeConstraints(ImVec2(1, 1), limit);
+        ImGui::SetNextWindowSize(size, ImGuiCond_FirstUseEver);
         if(ImGui::Begin("UI Creation Center - UE 5.4.4",&open,ImGuiWindowFlags_MenuBar))
         {
             if (ImGui::BeginMenuBar())
             {
                 if (ImGui::BeginMenu("Debug"))
                 {
-                    DebugPassMenu(debugPass, giAvailable);
+                    DebugPassMenu(debugPass, passView, available, true);
                     ImGui::EndMenu();
                 }
                 ImGui::EndMenuBar();
             }
             ObjectHeading("Editor component template");
-            Muted("The same components used by every editor panel.");
+            Muted("The same components used by every editor panel.", true);
             static char query[128]{};Search("guide",query,sizeof(query),"Search field");
             if(Section("Outliner")){ListHeader("Item Label");ImGui::PushID("example1");ObjectRow("StaticMesh",false,0);ImGui::PopID();
                 ImGui::PushID("example2");ObjectRow("SelectedMesh",true,1);ImGui::PopID();
@@ -453,7 +577,14 @@ namespace EditorUICenter
             }
             if(Section("Debug pass"))
             {
-                BoolProperty("GI available", giAvailable);
+                BoolProperty("SSGI enabled", available.ssgi);
+                BoolProperty("VXGI enabled", available.vxgi);
+                BoolProperty("GDF enabled", available.globalSDF);
+                BoolProperty("Deferred enabled", available.deferred);
+                BoolProperty("HBAO enabled", available.hbao);
+                BoolProperty("AA enabled", available.antiAliasing);
+                NormalizeRenderDebugPass(debugPass, available);
+                NormalizeRenderPassView(passView, available);
                 Muted("Use Debug > Pass above to inspect selected and disabled menu items.", true);
             }
             if(Section("Properties")){static float roughness=.5f;static bool visible=true;static int mode=0,sampleCount=256;
@@ -468,7 +599,7 @@ namespace EditorUICenter
                 if(Button("Preview startup screen")) loadingPreviewUntil = ImGui::GetTime() + 3.0;
                 Muted("Preview lasts three seconds. Long loading details wrap at narrow widths.",true);
             }
-            Muted("F10 closes this template. Hover / focus controls to inspect states.");
+            Muted("F10 closes this template. Hover / focus controls to inspect states.", true);
         }
         ImGui::End();
         if(ImGui::GetTime() < loadingPreviewUntil)

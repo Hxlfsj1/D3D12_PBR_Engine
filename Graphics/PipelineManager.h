@@ -127,9 +127,9 @@ public:
         return true;
     }
 
-    bool InitializeSSGI(RenderDevice* dc, bool modeFromSRV = true)
+    bool InitializeSSGI(RenderDevice* dc)
     {
-        return BuildSSGIPipeline(dc, modeFromSRV);
+        return BuildSSGIPipeline(dc);
     }
 
     ID3D12RootSignature* GetSSGIRootSignature()
@@ -1020,20 +1020,9 @@ private:
         return true;
     }
 
-    bool BuildSSGIPipeline(RenderDevice* dc, bool modeFromSRV)
+    bool BuildSSGIPipeline(RenderDevice* dc)
     {
         auto* device = dc->GetDevice();
-#ifdef VXGI_ACCEPTANCE_EXACT_FALLBACK
-        // Acceptance-only A/B reference. Production keeps the compact root below.
-        CD3DX12_ROOT_PARAMETER parameters[12];
-        parameters[0].InitAsConstantBufferView(0);
-        for (UINT i = 0; i < 8; ++i) parameters[i + 1].InitAsShaderResourceView(i);
-        for (UINT i = 0; i < 3; ++i) parameters[i + 9].InitAsShaderResourceView(i, 1);
-        const D3D12_STATIC_SAMPLER_DESC sampler = CD3DX12_STATIC_SAMPLER_DESC(0,
-            D3D12_FILTER_MIN_MAG_MIP_LINEAR);
-        CD3DX12_ROOT_SIGNATURE_DESC desc(12, parameters, 1, &sampler,
-                                           D3D12_ROOT_SIGNATURE_FLAG_CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED);
-#else
         // Six world resources and a raw view of the trace constants for the
         // mode flag. Other SSGI stages use b0 and the bindless texture heap.
         CD3DX12_ROOT_PARAMETER parameters[8];
@@ -1047,7 +1036,6 @@ private:
         parameters[7].InitAsShaderResourceView(4, 1);
         CD3DX12_ROOT_SIGNATURE_DESC desc(8, parameters, 0, nullptr,
                                          D3D12_ROOT_SIGNATURE_FLAG_CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED);
-#endif
         Microsoft::WRL::ComPtr<ID3DBlob> blob;
         HRESULT hr = D3D12SerializeRootSignature(&desc, D3D_ROOT_SIGNATURE_VERSION_1, &blob, nullptr);
         if (SUCCEEDED(hr))
@@ -1063,13 +1051,7 @@ private:
         return BuildSSGIComputePipeline(device, L"Shaders/Shaders_For_SSGI.hlsl", L"CSMain_Pyramid", ssgiPyramidPSO,
                                         {L"SSGI_PASS_PYRAMID=1"}) &&
                BuildSSGIComputePipeline(device, L"Shaders/Shaders_For_SSGI.hlsl", L"CSMain_Trace", ssgiTracePSO,
-#ifdef VXGI_ACCEPTANCE_EXACT_FALLBACK
-                                         {L"SSGI_PASS_TRACE=1",L"VXGI_MESH_SDF=1"}) &&
-#else
-                                        modeFromSRV ?
-                                            std::vector<std::wstring>{L"SSGI_PASS_TRACE=1",L"VXGI_SSGI_THRESHOLD=1",L"SSGI_MODE_FROM_SRV=1"} :
-                                            std::vector<std::wstring>{L"SSGI_PASS_TRACE=1",L"VXGI_SSGI_THRESHOLD=1"}) &&
-#endif
+                                        {L"SSGI_PASS_TRACE=1",L"VXGI_SSGI_THRESHOLD=1",L"SSGI_MODE_FROM_SRV=1",L"VXGI_SSGI_GLOBAL=1"}) &&
                BuildSSGIComputePipeline(device, L"Shaders/Shaders_For_SSGI_Spatial.hlsl", L"CSMain_Reconstruct",
                                         ssgiReconstructPSO, {L"SSGI_PASS_RECONSTRUCT=1"}) &&
                BuildSSGIComputePipeline(device, L"Shaders/Shaders_For_SSGI_Temporal.hlsl", L"CSMain_Temporal",

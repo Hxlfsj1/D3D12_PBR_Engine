@@ -81,6 +81,19 @@ cbuffer SSGITraceConstants : register(b0)
     float4x4 invViewMat;
     float4x4 invViewProjMat;
     SSGIHybridParameters hybrid;
+    float4x4 prevJitteredViewProj;
+    float4x4 prevJitteredInvViewProj;
+    uint previousGITextureIdx;
+    uint previousDepthTextureIdx;
+    uint previousNormalTextureIdx;
+    uint historyValid;
+    uint checkerboardEnabled;
+    uint previousFastTextureIdx;
+    uint reprojectedGITextureIdx;
+    uint reprojectedFastTextureIdx;
+#ifdef VXGI_SSGI_GLOBAL
+    SSGIGlobalParameters global;
+#endif
 };
 
 StructuredBuffer<float> hybridNodes : register(t0);
@@ -182,7 +195,8 @@ float SSGIViewRayLength(float3 origin, float3 direction)
 
 // Transform the original biased SSGI origin and finite direction vector. The
 // normalized world ray and its length describe the same two endpoints; no
-// receiver re-anchoring, added offset or scene-sized range is introduced.
+// receiver re-anchoring is introduced. Global SDF can continue the same world
+// direction beyond this finite near segment, including a zero near-clip span.
 bool SSGIWorldRaySegment(float3 viewOrigin, float3 viewDirection,
     out float3 worldOrigin, out float3 unitWorldDirection, out float worldRayLength)
 {
@@ -194,9 +208,101 @@ bool SSGIWorldRaySegment(float3 viewOrigin, float3 viewDirection,
     float3 transformedDirection = mul(float4(viewDirection, 0.0), invViewMat).xyz;
     worldOrigin = mul(float4(viewOrigin, 1.0), invViewMat).xyz;
     if (!all(isfinite(worldOrigin)) || !SSGINormalizeDirection(transformedDirection, unitWorldDirection)
-        || !isfinite(viewRayLength) || viewRayLength <= 0.0) return false;
+        || !isfinite(viewRayLength)
+#ifdef VXGI_SSGI_GLOBAL
+        || (viewRayLength <= 0.0 && (viewRayLength < 0.0 || global.enabled == 0))
+#else
+        || viewRayLength <= 0.0
+#endif
+        ) return false;
     worldRayLength = viewRayLength * length(transformedDirection);
-    return isfinite(worldRayLength) && worldRayLength > 0.0;
+    return isfinite(worldRayLength) && (worldRayLength > 0.0
+#ifdef VXGI_SSGI_GLOBAL
+        || (worldRayLength == 0.0 && global.enabled != 0)
+#endif
+        );
+}
+
+float3 SSGIReceiverGeometricNormal(uint2 receiver, float3 shadingNormal)
+{
+    Texture2D<float> depth = ResourceDescriptorHeap[depthTextureIdx];
+    int2 p = int2(receiver);
+    int2 last = int2(sceneSize) - 1;
+    int2 left = max(p - int2(1, 0), 0);
+    int2 right = min(p + int2(1, 0), last);
+    int2 up = max(p - int2(0, 1), 0);
+    int2 down = min(p + int2(0, 1), last);
+    float z = depth.Load(int3(p, 0));
+    float zl = depth.Load(int3(left, 0));
+    float zr = depth.Load(int3(right, 0));
+    float zu = depth.Load(int3(up, 0));
+    float zd = depth.Load(int3(down, 0));
+    // Prefer the neighbor on the same depth surface at object silhouettes.
+    float dl = zl < 1.0 && left.x != p.x ? abs(zl - z) : 1e20;
+    float dr = zr < 1.0 && right.x != p.x ? abs(zr - z) : 1e20;
+    float du = zu < 1.0 && up.y != p.y ? abs(zu - z) : 1e20;
+    float dd = zd < 1.0 && down.y != p.y ? abs(zd - z) : 1e20;
+    if (min(dl, dr) == 1e20 || min(du, dd) == 1e20) return shadingNormal;
+    bool useRight = dr <= dl;
+    bool useDown = dd <= du;
+    int2 px = useRight ? right : left;
+    int2 py = useDown ? down : up;
+    float3 center = ReconstructPosition((p + 0.5) / sceneSize, z, invViewProjMat);
+    float3 x = ReconstructPosition((px + 0.5) / sceneSize, useRight ? zr : zl, invViewProjMat);
+    float3 y = ReconstructPosition((py + 0.5) / sceneSize, useDown ? zd : zu, invViewProjMat);
+    float3 dx = useRight ? x - center : center - x;
+    float3 dy = useDown ? y - center : center - y;
+    float3 geometricNormal;
+    if (!SSGINormalizeDirection(cross(dx, dy), geometricNormal)) return shadingNormal;
+    return dot(geometricNormal, shadingNormal) < 0.0 ? -geometricNormal : geometricNormal;
+}
+
+// Screen tracing retains its small offset. Only its world fallback moves the
+// launch point outside the local SDF threshold shell. Cache the point query per
+// receiver, lazily on the first screen miss, and reuse it for the other rays.
+bool SSGIApplyWorldNormalBias(uint2 receiver, inout float3 worldOrigin,
+    inout float worldRayLength, inout float4 cachedWorldOffset)
+{
+#ifdef VXGI_SSGI_THRESHOLD
+    if (cachedWorldOffset.w < 0.0)
+    {
+        float worldBias = SSGIWorldReceiverNormalBias(worldOrigin, hybrid, normalBias);
+        cachedWorldOffset = 0.0;
+        if (worldBias > normalBias)
+        {
+            Texture2D<float4> normals = ResourceDescriptorHeap[normalTextureIdx];
+            float3 shadingNormal;
+            if (!SSGINormalizeDirection(DecodeGBufferNormal(normals.Load(int3(receiver, 0)).xyz), shadingNormal))
+            {
+                cachedWorldOffset.w = -1.0;
+                return false;
+            }
+            float3 geometricNormal = SSGIReceiverGeometricNormal(receiver, shadingNormal);
+            // Replace the screen's shading-normal offset, rather than stacking
+            // another offset onto it. Normal-map bumps must not aim the launch.
+            cachedWorldOffset.xyz = geometricNormal * worldBias - shadingNormal * normalBias;
+            cachedWorldOffset.w = length(cachedWorldOffset.xyz);
+        }
+    }
+    if (cachedWorldOffset.w == 0.0) return true;
+    // Spend the offset out of both ranges. A consumed near segment still has
+    // a valid far continuation when Global SDF is enabled.
+    if (cachedWorldOffset.w >= worldRayLength)
+    {
+#ifdef VXGI_SSGI_GLOBAL
+        if (global.enabled != 0)
+        {
+            worldOrigin += cachedWorldOffset.xyz;
+            worldRayLength = 0.0;
+            return true;
+        }
+#endif
+        return false;
+    }
+    worldOrigin += cachedWorldOffset.xyz;
+    worldRayLength -= cachedWorldOffset.w;
+#endif
+    return true;
 }
 
 // Stackless hierarchical grid traversal, ordinary Z. Mip 0 is the full-resolution depth;
@@ -318,18 +424,15 @@ float4 TraceRay(uint2 receiver, float3 origin, float3 direction)
     return float4(source.Load(int3(screen.hitPixel, 0)).rgb, 1.0);
 }
 
-// This per-ray helper is also called directly by headless validation. A valid
-// screen hit ALWAYS returns the original SSGI source, including black hits.
-SSGIHybridRayResult TraceHybridRay(uint2 receiver, float3 viewOrigin, float3 viewDirection)
+// A valid screen hit always returns the original SSGI source, including black hits.
+SSGIHybridRayResult TraceHybridRay(uint2 receiver, float3 viewOrigin, float3 viewDirection,
+    inout float4 cachedWorldOffset)
 {
     SSGIHybridRayResult result = (SSGIHybridRayResult)0;
     result.triangleIndex = VXGI_PROBE_MISSING_INDEX;
     result.worldTraceStatus = 0xffffffffu;
     result.status = SSGI_SCREEN_INVALID;
     SSGIScreenRayResult screen = TraceScreenRay(receiver, viewOrigin, viewDirection);
-#ifdef SSGI_RAY_ROUTING_DIAGNOSTICS
-    SSGIRoutingScreenStatus(screen.status);
-#endif
     result.status = screen.status;
     result.distance = screen.distance;
     result.confidence = screen.confidence;
@@ -345,43 +448,62 @@ SSGIHybridRayResult TraceHybridRay(uint2 receiver, float3 viewOrigin, float3 vie
     }
     if (SSGIWorldMode() == 0)
     {
-#ifdef SSGI_RAY_ROUTING_DIAGNOSTICS
-        SSGIRoutingDisabled();
-#endif
         return result;
     }
-#ifdef SSGI_RAY_ROUTING_DIAGNOSTICS
-    SSGIRoutingFallback();
-#endif
     float3 worldOrigin;
     float3 unitWorldDirection;
     float worldRayLength;
-    if (!SSGIWorldRaySegment(viewOrigin, viewDirection, worldOrigin, unitWorldDirection, worldRayLength))
+    if (!SSGIWorldRaySegment(viewOrigin, viewDirection, worldOrigin, unitWorldDirection, worldRayLength)
+        || !SSGIApplyWorldNormalBias(receiver, worldOrigin, worldRayLength, cachedWorldOffset))
     {
-#ifdef SSGI_RAY_ROUTING_DIAGNOSTICS
-        SSGIRoutingInvalidSegment();
-#endif
         result.status = SSGI_SCREEN_INVALID;
         result.worldTraceStatus = 2;
         return result;
     }
+#ifdef VXGI_SSGI_GLOBAL
+    SSGIGlobalParameters rayGlobal = global;
+    if (isfinite(global.maxTraceDistance) && global.maxTraceDistance >= 0.0)
+        rayGlobal.maxTraceDistance = max(0.0, global.maxTraceDistance - cachedWorldOffset.w);
+#endif
     return SSGIWorldRaySource(worldOrigin, unitWorldDirection, worldRayLength, hybrid, hybridNodes,
 #ifndef VXGI_SSGI_THRESHOLD
         hybridOffsets, hybridReferences, hybridTriangles, hybridMaterials,
-        hybridLookup, hybridRawRecords, hybridMaterialSampler);
+        hybridLookup, hybridRawRecords, hybridMaterialSampler
 #else
-        hybridLookup, hybridRawRecords);
+        hybridLookup, hybridRawRecords
 #endif
+#ifdef VXGI_SSGI_GLOBAL
+        , rayGlobal
+#endif
+        );
+}
+
+SSGIHybridRayResult TraceHybridRay(uint2 receiver, float3 viewOrigin, float3 viewDirection)
+{
+    float4 cachedWorldOffset = float4(0, 0, 0, -1);
+    return TraceHybridRay(receiver, viewOrigin, viewDirection, cachedWorldOffset);
 }
 
 [numthreads(8, 8, 1)]
-void CSMain_Trace(uint3 id : SV_DispatchThreadID)
+void CSMain_Trace(uint3 id : SV_DispatchThreadID, uint3 group : SV_GroupID, uint lane : SV_GroupIndex)
 {
+    if (checkerboardEnabled)
+    {
+        // Put each checker phase in a contiguous half of the group so common
+        // 32-lane waves can either trace or reuse together. Coverage and parity
+        // are independent of the hardware wave size and lane ordering.
+        uint compact = lane & 31u;
+        uint y = compact >> 2;
+        uint x = (compact & 3u) * 2u + ((y + frameIndex + (lane >> 5)) & 1u);
+        id.xy = group.xy * 8u + uint2(x, y);
+    }
     if (any(id.xy >= outputSize))
     {
         return;
     }
     RWTexture2D<float4> output = ResourceDescriptorHeap[outputTextureIdx];
+    RWTexture2D<float4> reprojectedGI = ResourceDescriptorHeap[reprojectedGITextureIdx];
+    RWTexture2D<float4> reprojectedFast = ResourceDescriptorHeap[reprojectedFastTextureIdx];
     Texture2D<float> depth = ResourceDescriptorHeap[depthTextureIdx];
     Texture2D<float4> normals = ResourceDescriptorHeap[normalTextureIdx];
     Texture2D<float4> orm = ResourceDescriptorHeap[ormTextureIdx];
@@ -389,15 +511,41 @@ void CSMain_Trace(uint3 id : SV_DispatchThreadID)
     uint2 pixel = id.xy * factor;
     float z = depth.Load(int3(pixel, 0));
     output[id.xy] = 0;
+    reprojectedGI[id.xy] = 0;
+    reprojectedFast[id.xy] = 0;
     if (z >= 1 || orm.Load(int3(pixel, 0)).a < 0.5)
     {
         return;
+    }
+
+    if (historyValid)
+    {
+        float4 history;
+        float4 fastHistory;
+        float3 worldNormal = normalize(DecodeGBufferNormal(normals.Load(int3(pixel, 0)).xyz));
+        if (SSGIReprojectHistory(pixel, sceneSize, outputSize, factor, z, worldNormal, invViewProjMat,
+            prevJitteredViewProj, prevJitteredInvViewProj, previousGITextureIdx, previousDepthTextureIdx,
+            previousNormalTextureIdx, previousFastTextureIdx, history, fastHistory))
+        {
+            // Preserve float32 reprojection results for Temporal without a second
+            // validity test or another bilinear gather of the previous textures.
+            reprojectedGI[id.xy] = history;
+            reprojectedFast[id.xy] = fastHistory;
+            if (checkerboardEnabled && ((id.x + id.y + frameIndex) & 1u) != 0)
+            {
+                // Negative alpha marks history reuse; real traces retain hit fraction [0,1].
+                output[id.xy] = float4(history.rgb, -1);
+                return;
+            }
+        }
+        // Newly exposed or rejected history receives the unchanged full ray budget.
     }
 
     float3 position = ReconstructPosition((pixel + 0.5) / sceneSize, z, invProjMat);
     float3 n = SSGIDecodeViewNormal(normals.Load(int3(pixel, 0)).xyz, viewMat);
     Texture2DArray<uint2> blueNoise = ResourceDescriptorHeap[blueNoiseTextureIdx];
     float4 sum = 0;
+    float4 cachedWorldOffset = float4(0, 0, 0, -1);
     [loop]
     for (uint ray = 0; ray < rayCount; ++ray)
     {
@@ -408,7 +556,8 @@ void CSMain_Trace(uint3 id : SV_DispatchThreadID)
             sum += TraceRay(pixel, position + n * normalBias, viewDirection);
             continue;
         }
-        SSGIHybridRayResult sample = TraceHybridRay(pixel, position + n * normalBias, viewDirection);
+        SSGIHybridRayResult sample = TraceHybridRay(pixel, position + n * normalBias, viewDirection,
+            cachedWorldOffset);
         sum += float4(sample.radiance, float(sample.hit));
     }
     // Cosine-weighted sampling: RGB is E/pi. Normalize by ALL rays, including misses.

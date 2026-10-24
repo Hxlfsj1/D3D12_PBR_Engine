@@ -1,5 +1,8 @@
 # VXGI：固定探针、距离场追踪与混合 SSGI
 
+2026-10-21：独立测试工具与主程序中的测试诊断入口已移除。下文测试命令、验收宏和报告保留为历史记录，不代表当前可运行工具或本次验证结果。
+固定车内诊断相机数据保留于 `Settings/CameraPresets/VXGICavityCamera.json`。本次 Debug/Release 构建、UI 架构检查及隐藏正常启动、实际渲染、DLSS 首次求值和关闭均通过；验证记录见 `tmp/test-removal-validation/summary.json`。本次未做清理前后性能或图像对比。
+
 阶段 1 建立 CPU 世界几何缓存，并绘制占据格子和探针；阶段 2 加入距离场与 GPU 表面追踪；
 阶段 3 按真实命中 UV 查询材质、计算直接漫反射与自发光 `Lo0`；
 阶段 4 在 GPU 上分类固定探针、采集 `Lo0` 并保存 4 个 RGB SH 系数。
@@ -2106,3 +2109,222 @@ Debug 主程序构建、UI 架构检查及隐藏完整程序验证通过。实�
 后台复现：`Tests/RunVXGIStage75Performance.ps1 -NativeDebug -DebugShaderPolicy -GIOnly
 -ProbePaddingLayers 1 -WarmupRounds 32 -Width 640 -Height 400 -Samples 24 -Camera 0 -Mode 2 -Label <新标签>`。
 `-ProbePaddingLayers` 是测试进程配置覆盖，不改交互配置。正式程序继续使用 Pipeline.json 的一层默认值。
+
+## 世界查询起点随命中阈值偏移（2026-10-20）
+
+当前生产世界回退在原 SSGI 线段转为世界空间后，单独调整起点：
+
+```text
+世界命中阈值 = 0.9 × Mesh SDF 局部格距 × 实例最大轴缩放
+目标法线偏移 = max(SSGI 原偏移, 世界命中阈值 × 1.1)
+新增位移 = 几何法线 × 目标偏移 − 着色法线 × SSGI 原偏移
+世界线段长度 -= length(新增位移)
+```
+
+因此当前汽车局部格距0.1、实例缩放1时，阈值为0.09，目标偏移为0.099；屏幕 SSGI 仍使用0.02。
+两个系数集中在 `Shaders/SSGIHybridCommon.hlsli`，没有增加需要手工同步的 JSON 参数。
+最大轴缩放是对 TRS 非均匀缩放的保守换算。候选来自原起点的 BVH 点查询，最多两个包含起点的模型；
+这仍是近似，不能保证在大量重叠实例下识别接收面所属模型。
+
+每个接收点第一次屏幕失败时才计算偏移，后续射线复用。几何法线从深度邻居重建，
+每轴选深度更接近中心的邻居，再按着色法线定向；无有效邻居或切线退化时回退到着色法线。
+这样避免直接用法线贴图方向放大偏移。若新增位移已耗尽有限线段，世界分支结束。
+原屏幕射线方向、屏幕求交和探针缓存不变，世界查询仍是最近两个 AABB → Mesh SDF 阈值 → 八邻探针 SH，
+没有加入实时材质着色、直接光或额外遮挡射线。早期章节“保留原起点”的说明描述当时版本，现由本节更新。
+
+后台冻结同一份已完成0.1缓存，对外景、车前和固定车内相机各运行64帧生产流程和计数重放。
+车内近似车体区域的零距离命中占世界查询比例从100%降为43.39%，世界命中率降为48.33%；
+仍被接受的命中中89.79%距离为零。该机位没有因偏移导致线段无效，屏幕命中数保持一致。
+所以偏移确实减少了起点阈值命中，但不能据此宣称完全消除了几何自相交；残留还可能来自邻近表面。
+已实际检查三机位纯 GI：部分外露车面明显变暗，原先的近起点补光减少；亮度下降本身不证明准确性。
+不继续单纯为清零距离统计而放大偏移，以免越过薄壁或近接触几何。
+
+当前1707×1067隐藏计时使用同进程 mode0/2 ABBA，各保留192帧，未开启计数重放。
+外景混合 Trace 中位数0.935ms、GI总计1.436ms；车内2.452ms、3.155ms。
+这是新实现的当前开关对照，不能作为旧偏移与新偏移的同进程性能差值，也不能换算成主程序 FPS。
+生产 HLSL、Native Debug 测试构建和真实离屏渲染通过，D3D12错误与未知警告均为零。
+
+- [计数、对照和图像分析](tmp/vxgi-derived-bias/结论.md)
+- [全部工作量计数](tmp/vxgi-derived-bias/report.md)
+- [固定车内新纯 GI](tmp/vxgi-stage75-performance/bias-geom11-work-cavity-640x400-camera0_mode2.png)
+
+## 小型 Global SDF：第一步，生成与查询
+
+参考本地 UE 5.8.4 的 GDF clipmap/合成结构，新增独立组件，尚未进入生产 SSGI 的消费路径。
+四步边界见 `VXGI_PLAN.md` 的“小型 Global SDF：远段几何追踪”。
+
+`Resources/VXGIGlobalSDF.h` 定义最多三层世界对齐网格和 128B CPU/HLSL 常量。
+默认每层 64 个格子/65 个节点，格距 0.5/1/2，覆盖边长 32/64/128。
+三层节点沿同一张 `R32_FLOAT Texture3D` 的 Z 轴排列，尺寸 65×65×195，payload 3,295,500B（约 3.14MiB）。
+每层单独拥有两端边界节点；查询用手动三线性读取，避免在存储相邻层之间插值。
+
+`Passes/VXGIGlobalSDFPass.h` 执行完整 GPU 构建；`Shaders_For_VXGI_GlobalSDF.hlsl::CSCompose`
+在每个世界节点遍历全部 Mesh SDF 实例取最小距离，不使用生产近段追踪的最近两个 AABB 限制。
+沿用 unsigned 距离语义：源网格插值减去误差上界，网格外用包围盒距离和边界下界保守延拓，
+TRS 非均匀/镜像缩放取最小轴尺度。合成节点及全局插值的误差分别处理，几何命中仍是粗略阈值命中。
+`VXGIGlobalSDFCommon.hlsli` 提供最细覆盖层点查询和有限区间射线查询；步进在各层进入/离开边界截断，
+防止外层大步跨过整个内层。空场景写有限远值，覆盖外点查询无效，射线区分 HIT/MISS/INVALID/EXHAUSTED。
+
+组件自行绑定计算 heap/root/pipeline，输出状态为 `NON_PIXEL_SHADER_RESOURCE`；公开 SRV 位于 CPU-only heap，
+可复制到消费者的 shader-visible heap。后续 pass 重新绑定自己的 heap 和 root 状态；重建资源前由调用者等待 GPU 退休。
+本步每次完整写入，尚无环形滚动、局部脏区或分帧更新；这些属于第二步。
+粗命中位置与现有探针支持的关系属于第三步，当前组件不保存辐亮度，也不改 IBL 组合。
+
+定向验收使用新增独立 runner，不恢复先前删除的历史 Tests：
+
+```powershell
+./Tests/RunVXGIGlobalSDFTests.ps1
+./Tests/RunVXGIGlobalSDFTests.ps1 -Debug
+./Tests/RunVXGIGlobalSDFGPUTests.ps1 -EnableGPUValidation
+```
+
+CPU runner 使用 `/W4 /WX`，含实际 Mesh SDF 资产和独立解析矩形距离对照。
+GPU runner 使用真实硬件、生产合成 Pass/Shader、独立查询入口和 D3D12 debug layer；上面命令额外启用 GBV。
+报告存于 `tmp/global-sdf-step1/cpu/{debug,release}/report.json` 和 `tmp/global-sdf-step1/gpu/report.json`。
+这些组件验收不代表真实场景画质、实时更新成本或 GI 帧率收益；相应验收安排在第四步。
+
+2026-10-24 第一步验收完成：CPU Debug/Release `/W4 /WX` 均通过，旋转/负非均匀缩放矩形的 15,625 个解析距离对照点无过估。
+RTX 5070 Laptop GPU + debug layer/GBV 共 8 组夹具，1,854,096 次节点 CPU/GPU 对照、656 次点/射线查询及 8 次同纹理重建通过。
+最大节点绝对误差 1.525879e-5；625 个平面点的全局 safeDistance 无解析距离过估。
+覆盖空场景、有限区间/非法射线/步数耗尽、负坐标、镜像与非均匀缩放、第三个重叠 AABB 目标、跨层进入和离开、默认尺寸。
+最终 D3D12/GBV warning/error 均 0；初轮公开 SRV 的 descriptor 复制问题已修为 CPU-only 源 heap，并保留初轮诊断报告。
+主工程 Debug/Release 与 Editor UI 架构检查通过，生产 `PBR_Render.cpp` 和 `Settings/Pipeline.json` 保持本轮开始时内容。
+
+## 小型 Global SDF：第二步，随相机滚动与局部更新
+
+`VXGIGlobalSDFState` 为已提交的每层网格保留 scroll offset、几何快照及尚未更新的 dirty bounds。
+相机位置先按格距取整，跨格时以 `(logicalNode + scrollOffset) % nodeResolution` 映射到原物理节点，
+重叠世界区域不搬运、不重算；只更新 XYZ 方向新暴露 slab。点查询的八个角分别取模，跨环形边界时仍从同一层读取。
+默认近/中/远三层按 1/2/4 帧调度；未轮到的层保持自己的原 origin/scroll，几何事件持续累积。
+如内层即将越出旧外层，外层提前更新以保证查询使用的嵌套约束。
+
+距离存储现在按每层 `4 * cellSize` 截断为窄带。合成时把实例世界 AABB 距离与原模型空间距离下界取 max，
+从而即使存在非均匀缩放，超出世界包围盒外扩窄带的节点也必然饱和。
+因此移动、缩放及删除事件只需重算旧/新包围盒外扩窄带及数值余量；同一网格上的材质修改不触发几何更新。
+没有这个有限影响范围，仅重算模型附近无法清理远处受旧模型影响的距离。
+初次、相机大跳、设置或资产布局变化全量刷新；过大/过多脏区合并为完整层。
+
+CPU/HLSL 常量从第一步的 128B 扩为 **176B**；每层从 32B 扩为 48B，新增 `scrollOffset` 与 `distanceLimit`。
+局部更新以 32B `UpdateRegion` 指定逻辑节点盒子；full/partial 共用 `CSCompose`。
+Root signature 总计 59 DWORD。`RecordRegions` 对空工作不绑定 heap、不插屏障、不 dispatch，重叠写区域之间加入 UAV 屏障。
+`updatedNodeCount` 统计派发的写节点数，重叠脏区可重复计数，并非 unique changed nodes。
+
+`VXGIGlobalSDFRuntime` 在主程序每帧 GPU scene 准备之后使用真实 `camera.Position` 生成计划并录制，
+帧 Execute + fence Signal 成功后才 `Commit`。未执行的命令列表被丢弃后，可 `CancelRecording` 恢复 Pass 状态并重试。
+纹理与描述符跨帧常驻，单 direct queue 保证先前读取/更新的顺序；重配纹理前等待全部旧帧退休。
+空场景使用有效 dummy 根地址，零实例数避免读取；删除最后物体仍会把字段清回饱和值。
+此步已在主程序维护 Global SDF，但生产 SSGI 尚未读取它，GI 接续和探针支持属于第三步。
+
+配置复用现有 `Settings/Pipeline.json`：
+
+```json
+"global_sdf": {
+  "enabled": true,
+  "cells_per_axis": [4, 8, 8],
+  "clipmaps": 3,
+  "cell_size": 0.25
+}
+```
+
+该对象位于 `vxgi` 内；格子数须为 2..256 的偶数，层数 1..3，格距须为有限正数。
+`cells_per_axis` 数组逐层指定格数，长度必须等于 `clipmaps`；标量仍表示各层使用同一格数。
+`cell_size` 从内到外每层翻倍。当前配置的格距为 0.25/0.5/1 米、覆盖立方体边长为 1/4/8 米，
+每轴格数 4/8/8，节点数 5/9/9。各层独立滚动并沿 Z 紧凑排列，纹理尺寸 9×9×23，
+距离数据 payload 为 7,452B（不代表 D3D12 实际分配大小）；有效节点共 1,583，XY 补齐区域不参与采样。
+下面的第二步历史验收数字使用旧 64³ 格、0.5/1/2 格距布局。可按以下命令运行当前配置的验收：
+
+```powershell
+./Tests/RunVXGIGlobalSDFStateTests.ps1
+./Tests/RunVXGIGlobalSDFStateTests.ps1 -Debug
+./Tests/RunVXGIGlobalSDFGPUTests.ps1 -EnableGPUValidation -OutputDirectory tmp/global-sdf-step2/gpu
+./Tests/RunVXGIGlobalSDFRuntimeSmoke.ps1
+```
+
+独立 GPU 验收每帧另外生成零 scroll 的完整字段，再与增量字段及 CPU 参考逐节点比较；未更新层逐 bit 检查保持不变。
+主程序 smoke 以 640×400、真实场景和原探针预算隐藏运行，检查三帧槽连续提交与静止无派发；运行前保存并在 finally 精确恢复配置与编辑器持久文件。
+有限运行的 `PassViewRun.json` 追加 `global_sdf` 统计和各层已提交 origin/scroll，便于确认真实生产路径是否更新。
+
+第二步最终验收：
+
+- CPU planner Debug/Release `/W4 /WX` 各通过 55 次提交、7,307,085 次节点对照；基础 CPU 几何测试两模式继续通过。
+- RTX 5070 Laptop、D3D12 debug layer + GBV，114 帧增量场景的 5,158,193 次节点对照、13,405 次环绕采样对照通过。
+  实际更新层与独立完整 GPU 重建最大误差为 0；3,076,810 个未更新层物理节点逐 bit 保持。原八组基础 GPU 查询继续通过。
+- 真实录制后不 Execute、丢弃命令列表、回滚并重试，初次 COMMON 与后续 SRV 两种状态均通过。
+- 默认 65³×3：单轴滚动一格仅写 4,225 个节点；局部物体移动写 4,394 个节点；全量为 823,875。
+  静止及仅材质变化为 0 更新。写量降低不等于完整 GI/FPS 收益。
+- 主程序 Debug/Release 各 640×400 隐藏运行 16 帧，使用真实场景及原探针预算；均提交 16 个 GDF 计划，只在首帧派发 3 次，
+  随后 15 帧 idle，总写 823,875 节点且仅创建一次纹理。Debug 验证 warning/error 0；Release 未启用验证层。
+- 主工程两种构建及 Editor UI 架构检查通过；工程 XML、runner 语法和差异检查通过，运行使用的配置与持久文件已原字节恢复。
+
+结果在 `tmp/global-sdf-step2/`：`gpu/report.json`、`gpu/metadata.json`、`cpu/{debug,release}/report.json`、
+`runtime/{Debug,Release}.json` 与 `runtime/manifest.json`。独立 GPU 编译前、编译后及运行后源码哈希一致。
+
+## 小型 Global SDF：第三步，接续远段并读取 SH
+
+生产 Trace 现使用 `屏幕 → 原有限近段 Mesh SDF → 有限远段 Global SDF`。
+屏幕、近段命中均直接终止；只有近段完成 MISS 才从其终点继续同一世界方向。
+原世界法线偏移同时从近/远预算扣除；近段被偏移或近平面裁完时，远段仍可继续。
+远距由 `vxgi.global_sdf.trace_distance` 指定，默认 128 世界单位；实际区间裁到最外 clipmap，
+`max_trace_steps` 默认 256、允许 1..1024，各次 GDF 查询共享该预算。
+禁用 Global SDF 恢复原近段路径，纯屏幕模式不消费它。IBL 仍在原延迟光照中打底。
+
+粗 Global SDF 命中不能直接当作表面位置取光。实际首轮回放中，默认/固定车内视图分别有
+94.17%/97.35% 的粗命中就在近段终点；粗壳内的位置即使有探针支持，也不足以证明射线碰到了表面。
+因此粗候选只触发原射线上的局部细化：用最近 tight AABB 跳过已证明为空的区间，再以
+`4 × 候选层 cellSize` 的短窗口检查全部相交实例的细 Mesh SDF；不使用近段的最近两个候选限制。
+完整 fine MISS 才跳过窗口，最多 8 窗口、全程共享 512 个 fine 样本；无效/停滞/耗尽保持明确失败。
+窗口也裁到远距及最外 clipmap 边界，预算耗尽不会被当成无遮挡。
+
+确认的细命中位置只查询八邻 raw SH 并沿原方向求入射辐亮度。黑色、无支持均立即终止，
+不投影到射线外、不继续搜索亮面，不增加 Surface Cache、材质着色或命中点直接光。
+完整未命中和失败均增加零 GI。细化使用现有 Mesh SDF，仍受其细节与 unsigned 阈值精度限制。
+
+`SSGITraceConstants` 在原 784B 后附加 192B global 参数，总长 976B；byte604 worldMode alias 和历史偏移保持不变。
+Trace 以显式 `R32_FLOAT Texture3D` SRV 导入 GDF 并声明 RDG 读取，使用当帧已录制的 pending layout，
+避免相机滚动后读到旧 origin/scroll。SSGI 保持原 heap/root 绑定顺序。
+Global 配置变化重置世界 GI 历史，正常相机滚动和更新帧号不触发整段清历史。
+
+定向验收入口：
+
+```powershell
+./Tests/RunVXGIGlobalSDFHybridTests.ps1 -EnableGPUValidation -OutputDirectory tmp/global-sdf-step3/gpu-refined
+```
+
+RTX 5070 Laptop、D3D12 debug layer + GBV，26 组/50 次查询通过，warning/error 均 0。
+包含粗壳有 SH 但细查询 MISS、细命中与粗点支持不同、向上/平行地面掠射、空粗候选后真面、
+两个空 AABB 后的第三实例、有限终点、跨层/环绕和 520 个空候选触发共享 fine 预算耗尽。
+21 条实际 hybrid HIT 与解析夹具的精确三角交点比较，最大距离误差 8.92e-5 世界单位；
+该误差仅代表这些夹具，不是任意 Mesh SDF 的通用精度上界。
+禁用 GDF 的 5 条结果与独立 near-only shader 逐字节相同，3 条环绕/不环绕查询逐字节相同。
+shader global/near-only 生产与独立 hybrid 入口均以 `cs_6_6 -O3 -WX` 编译通过。
+
+实际场景诊断在 `tmp/global-sdf-step3/actual/` 使用临时副本重放同一 `TraceHybridRay`、STBN 和偏移后射线，
+不向生产图增加诊断资源。帧 33..96 的 8×8 稀疏相位抽样将历史复用与新射线分开；
+相位与 checkerboard 相关，计数仅为条件抽样，不代表全部接收像素或完整 STBN 分布。
+以生产 raw alpha 交叉检查命中数量，并在最终细命中位置重查 SH 支持。
+这些带重放的运行不是性能测量。完整运动/编辑画质、各层 GPU 耗时和完整 GI 性能留在第四步。
+
+第三步实际验收：默认与固定车内 fixture 各隐藏运行 96 帧，当前 shader 与临时回放源码哈希固定；
+默认 2560×1600、radius1，车内 640×400、radius0.5，checkerboard 均保持启用。
+
+| 条件抽样视图 | 远段查询 | 确认 hit | hit 距离均值/最大值 | 无有效探针支持 | 耗尽 |
+|---|---:|---:|---:|---:|---:|
+| 默认 | 315,651 | 51,846 | 4.86645 / 53.84875 | 282（0.54%） | 69 |
+| 固定车内 | 47,545 | 47,096 | 1.71595 / 4.81727 | 9,653（20.50%） | 0 |
+
+默认/车内在近段终点的 hit 从粗壳 baseline 的 191,689/46,283 降为 2/0；所有计数为抽样，不能换算全帧覆盖率。
+最终 101,287/14,443 组 raw alpha 交叉检查均零差异，直接细命中点 SH 支持重查均零差异；invalid/stalled 均 0。
+初轮诊断车内有 1 条支持重查差异：frame68、GI[59,28]、ray1，细命中 Y 为 1.7500001192，
+由 distance 重建为 1.75，相差 1 ULP，将约 2.38e-7 的有效权重舍为 0。
+失败报告保留；最终仅在诊断 shader 副本携带原 `refined.position`，保留两种坐标及 float bits 对照，未改生产 ABI/算法。
+该修正后的默认/车内计数与修正前完全一致；最后两张纯 GI 已实际查看。
+
+原生主程序 Debug/Release 各 640×400、16 帧隐藏运行通过；只有首帧 3 层派发，后 15 帧 idle，
+共写 823,875 个节点、仅分配一次纹理。原生 Debug 验证 warning/error 0，Release 未启用验证层。
+两种主工程构建、Editor UI 架构、工程 XML、runner 语法及差异检查通过，配置与编辑器持久文件已原字节恢复。
+车内的有效探针支持缺口仍然存在，本步没有通过偏移取光点、忽略黑色或搜索后方亮面来填它。
+原近段最近两个 AABB 的近似限制仍保留，远段细化才遍历全部相交候选。
+
+汇总与哈希：`tmp/global-sdf-step3/report.md`、`verification.json`、`gpu-refined/{report,metadata}.json`、
+`runtime/manifest.json`、`actual/final-verification.json`。最终截图为
+`Captures/gi-96-131402828/preview.png` 与 `Captures/gi-96-131437562/preview.png`。
