@@ -45,6 +45,8 @@
     <None Include="Shaders\VXGIProbeCommon.hlsli"><Filter>Shaders</Filter></None>
     <None Include="Shaders\VXGIProbeQueryCommon.hlsli"><Filter>Shaders</Filter></None>
     <None Include="Shaders\SSGIHybridCommon.hlsli"><Filter>Shaders</Filter></None>
+    <None Include="Shaders\SSGICameraQuality.hlsli"><Filter>Shaders</Filter></None>
+    <None Include="Shaders\SSGIWorldOwnerCache.hlsli"><Filter>Shaders</Filter></None>
     <None Include="Shaders\VXGIHybridValidate.hlsl"><Filter>Shaders</Filter></None>
     <None Include="Shaders\Shaders_For_VXGI_Probe_Filter.hlsl"><Filter>Shaders</Filter></None>
     <None Include="Shaders\VXGIProbeQueryValidate.hlsl"><Filter>Shaders</Filter></None>

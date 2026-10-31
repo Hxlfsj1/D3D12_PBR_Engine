@@ -1,4 +1,4 @@
-﻿#ifndef RESOURCE_MANAGER_H
+#ifndef RESOURCE_MANAGER_H
 #define RESOURCE_MANAGER_H
 
 #include <stb_image.h>
@@ -763,6 +763,22 @@ public:
         // gi.a = history length; fastGI.a = slow-history luminance second moment.
         Microsoft::WRL::ComPtr<ID3D12Resource> gi;
         Microsoft::WRL::ComPtr<ID3D12Resource> fastGI;
+        // Independent screen / Mesh / Global contributions: RGB + cache age.
+        // Reprojection reads these only when the submitted history is valid.
+        Microsoft::WRL::ComPtr<ID3D12Resource> screenBand;
+        Microsoft::WRL::ComPtr<ID3D12Resource> meshBand;
+        Microsoft::WRL::ComPtr<ID3D12Resource> globalBand;
+        // World owner-domain observations preserve independent raw cache ages.
+        // Packed bands: Mesh occupies the left atlas, Global the right atlas.
+        // Each band has one slot per 2x2 GI pixels; coarse owners repeat their
+        // identity in four slots without creating additional observations.
+        Microsoft::WRL::ComPtr<ID3D12Resource> globalOwnerRaw;
+        // float2: fresh-batch count capped at two, and last fresh frame stamp.
+        Microsoft::WRL::ComPtr<ID3D12Resource> globalOwnerState;
+        // uint2: current receiver address and original raw-batch receiver address.
+        Microsoft::WRL::ComPtr<ID3D12Resource> globalOwnerReceiver;
+        // Camera-quality hysteresis and independent world cache provenance tags.
+        Microsoft::WRL::ComPtr<ID3D12Resource> worldPolicy;
         Microsoft::WRL::ComPtr<ID3D12Resource> depth;
         Microsoft::WRL::ComPtr<ID3D12Resource> normal;
     };
@@ -1495,9 +1511,11 @@ private:
         SSGIHistoryTextures (&destination)[2])
     {
         SSGIHistoryTextures created[2];
-        auto create = [&](DXGI_FORMAT format, Microsoft::WRL::ComPtr<ID3D12Resource>& texture) {
+        auto create = [&](DXGI_FORMAT format, Microsoft::WRL::ComPtr<ID3D12Resource>& texture,
+                          UINT textureWidth = 0, UINT textureHeight = 0) {
             auto desc = CD3DX12_RESOURCE_DESC::Tex2D(
-                format, width, height, 1, 1, 1, 0, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
+                format, textureWidth ? textureWidth : width, textureHeight ? textureHeight : height,
+                1, 1, 1, 0, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
             auto heap = CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_DEFAULT);
             const HRESULT hr = device->CreateCommittedResource(
                 &heap, D3D12_HEAP_FLAG_NONE, &desc, D3D12_RESOURCE_STATE_COMMON, nullptr, IID_PPV_ARGS(&texture));
@@ -1506,7 +1524,15 @@ private:
         };
         for (auto& set : created)
             if (!create(RenderFormats::IndirectLighting, set.gi) ||
-                !create(RenderFormats::IndirectLighting, set.fastGI) || !create(RenderFormats::DepthSRV, set.depth) ||
+                !create(RenderFormats::IndirectLighting, set.fastGI) ||
+                !create(RenderFormats::IndirectLighting, set.screenBand) ||
+                !create(RenderFormats::IndirectLighting, set.meshBand) ||
+                !create(RenderFormats::IndirectLighting, set.globalBand) ||
+                !create(RenderFormats::IndirectLighting, set.globalOwnerRaw, 2u * ((width + 1u) / 2u), (height + 1u) / 2u) ||
+                !create(DXGI_FORMAT_R32G32_FLOAT, set.globalOwnerState, 2u * ((width + 1u) / 2u), (height + 1u) / 2u) ||
+                !create(DXGI_FORMAT_R32G32_UINT, set.globalOwnerReceiver, 2u * ((width + 1u) / 2u), (height + 1u) / 2u) ||
+                !create(DXGI_FORMAT_R32_UINT, set.worldPolicy) ||
+                !create(RenderFormats::DepthSRV, set.depth) ||
                 !create(RenderFormats::GBufferNormal, set.normal)) return false;
         for (int index = 0; index < 2; ++index) destination[index] = std::move(created[index]);
         return true;

@@ -193,6 +193,8 @@
     <None Include="Shaders\GeometryCommon.hlsli" />
     <None Include="Shaders\ColorCommon.hlsli" />
     <None Include="Shaders\SSGICommon.hlsli" />
+    <None Include="Shaders\SSGICameraQuality.hlsli" />
+    <None Include="Shaders\SSGIWorldOwnerCache.hlsli" />
     <None Include="Shaders\SSGIHybridCommon.hlsli" />
     <None Include="Shaders\BlueNoise.hlsli" />
     <None Include="ThirdParty\NVIDIA\STBN\stbn_vec2_128x128x64.rg8" />

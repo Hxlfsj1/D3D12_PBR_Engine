@@ -2,6 +2,188 @@
 
 Diffuse GI for the deferred pipeline, using screen tracing and optional world-space fallback.
 
+The current implementation applies camera-distance quality to Mesh SDF and Global
+SDF contributions together. Screen-space SSGI retains its original receiver
+positions, 0-1 m interval, member directions and refresh policy. The
+retained behavior and final checks are recorded in
+[the closeout](Docs/SSGIOptimizationCloseout.md).
+[The camera-quality design record](Docs/SSGICameraQualityPlan.md) describes the
+initial implementation; the policies below and current settings take precedence.
+As of 2026-10-31, the fine/coarse unified interpolation experiment is removed;
+native coarse reconstruction (policy 9) remains. Optimization experiments are
+paused. Temporary experiment sources, reports and captures have been cleared.
+
+## Camera quality and ray-distance bands
+
+Camera distance is the Euclidean distance from the camera to the current GBuffer
+receiver, computed from view position. It selects world sampling density only.
+Ray path distance still controls screen/Mesh/Global coverage and first-hit
+contribution. Pixel blocks below refer to the GI trace grid after scene-resolution
+reduction; they do not move screen receiver origins.
+
+| Contribution | Camera quality | Shared observations per estimate | Normal refresh interval |
+|---|---|---|---|
+| Screen SSGI, 0-1 m | Fixed 2x2 | One direction per valid member, up to four | Two frames |
+| Mesh SDF, 0-2 m | Near: 2x2; far: 4x4 | Configurable near/far count; both default to eight | Two frames |
+| Global SDF, (2,8] m | Near: 2x2; far: 4x4 | Configurable near/far count; both default to eight | Four frames |
+
+The current Pipeline.json sets near/far counts to 16/8; the loader defaults remain
+8/8. The checked-in near threshold is 2 m, with an exit threshold of 2.2 m. A
+representative at distance <= 2 m requests fine 2x2 world sampling. Beyond 2.2 m
+it requests coarse 4x4 sampling. In the intervening shell, a geometry-checked
+reprojection inherits the previous surface's layout; without valid matching
+history it starts coarse. The classification examines the first valid
+representative of each 2x2 child. If any valid child requests fine sampling, its
+4x4 parent uses four fine children. This promotes layout rather than invalidating
+the parent; it does not restore the tile-wide geometry veto. Representative
+classification can miss a thinner near surface elsewhere in a child; local
+geometry checks and Repair retain their existing role.
+
+For a configured count R, fine world estimates trace R/4 directions per valid
+member, average those directions, then average by the valid member count. A
+coarse 4x4 estimate selects one valid origin from each nonempty 2x2 quadrant using
+STBN and traces R/4 directions there. Its quadrant contributes with weight Nq/N,
+where Nq is that quadrant's valid member count and N is the whole parent's valid
+member count. Thus a fully valid block uses R directions, while partial blocks
+do not divide by sixteen or by the number of hits. Black hits and misses remain
+zero observations. Selection follows the submitted frame's STBN slice; it is not
+a new per-cache update counter.
+
+### World ray counts and disabled guiding
+
+The bright-probe guide is disabled. The main shader no longer includes or calls
+its helper: there is no target search, direction cone, mixture PDF, role selection
+or extra guide group memory. The unused standalone helper has been removed.
+All active world directions use STBN cosine-hemisphere sampling. The user reported
+no visible gain and worse performance for the top-1 trial. That route remains
+removed; its temporary experiment files have been cleared.
+
+Near and far refer to the camera-selected 2x2/4x4 quality layouts, not the Mesh and
+Global ray-distance intervals. Both world backends use near_ray_count in the fine
+layout and far_ray_count in the coarse layout. Each count defaults to 8 and must
+be an integer from 4 to 64 divisible by 4. A full block at 8 uses two directions
+at each of its original four sampling slots; empty members/strata do not add rays.
+Point Repair uses the entire configured R for its receiver's quality. Screen
+SSGI stays at its original four observations and has separate normalization.
+
+The first matching direction still shares the screen/Mesh prefix; additional
+world directions check screen visibility without adding screen radiance. Mesh
+and Global share actual identical world prefixes. Geometry/noise handles and the
+lazy world bias are prepared once per origin and reused across its ray loop.
+The main budgets, bias and first-hit rules are otherwise unchanged. Changing
+either configured count invalidates world-source history through the CPU source
+key; screen-only mode ignores these world fields. Configurable ray counts do not
+add a pass or group barrier, and normal cache periods remain 2/2/4 frames.
+The removed Global 50/50 temporal average and A-trous phi=4 remain removed.
+
+### Shared-owner raw cache for Mesh and Global
+
+World sharing retains a packed ping-pong raw-owner atlas: Mesh on the left,
+Global on the right. Separate textures hold RGB and true integer age (RGBA16F),
+fresh-batch state (RG32F), and receiver identities (RG32_UINT). The state holds
+only a batch count capped at two and the last fresh frame stamp. It has no
+luminance moments or denoising weights. Reused frames copy this state unchanged;
+coarse-slot replication does not count as additional observations.
+
+Cold owners choose their first refresh interval from 1..2 (Mesh) or 1..4 (Global)
+from a stable hash of a 32x32 GI region. This keeps complete SharedWorld thread
+groups together. Later deadlines remain two/four frames, with real raw ages.
+The scheduling region does not change the 2x2/4x4 sampling layout, ray counts,
+checker parity, or aligned Mesh/Global direction prefixes.
+
+Owner reprojection selects one compatible previous owner with the same fine/coarse
+layout. Raw colors, counts, stamps and ages are never interpolated. An expired
+observation retains its maturity state for the next fresh batch without delaying
+tracing. Point Repair keeps its independent per-receiver raw cache.
+
+The additional 3x3 owner spatial filter, its luminance moments, filtered atlas,
+compute pipeline, tuning constants and temporary T switch have been removed after
+the runtime comparison showed limited visible benefit. World display now reuses
+the normalized raw Mesh/Global gather directly. This matches the former T-OFF
+path while eliminating its redundant raw/display texture reads.
+
+For active pixels, RawGI contains screen and WorldDisplay contains raw Mesh+Global.
+Reconstruct applies its existing 5x5 kernel to screen, then adds the world value
+once at the center. Checker-skipped pixels still carry combined history unchanged.
+The final Temporal, HistoryClamp and both A-trous passes retain their existing
+parameters and behavior.
+
+The trace constants stay 1024 bytes. Policy version 7 introduced compact owner
+state; version 8 added coupled dual-world Repair directions, and version 9 adds
+native coarse reconstruction. At 1280x800 GI, the three packed owner textures total about
+23.44 MiB across both history buffers, down from 31.25 MiB with luminance moments.
+The full-GI world display texture remains; there is no filtered-owner allocation
+or WorldOwnerFilter dispatch.
+
+Screen, Mesh and Global shared atlases all use the finest GI/2 storage layout.
+A coarse world estimate and its representative are replicated into four slots,
+but coarse reconstruction reads that owner once using its native four-GI spacing.
+Coarse tent nodes use phase 4*k+1 and half-width four; this is centered between the
+existing fine lattice nodes at 4*k and 4*k+2, retaining their historical phase.
+It is not a change to ray origins or a claim that the original fine phase was the
+physical footprint center.
+
+A coarse receiver visits four native parent cells. Each coarse parent supplies
+one owner. A fine parent supplies only the fine nodes whose two-GI tent covers the
+receiver; an empty first fine child does not hide its valid siblings. The same
+normal/plane geometry weights, finite-value rejection and final normalization
+apply. Uniform coarse planar affine data reconstructs linearly in the interior;
+mixed levels preserve constants and use continuously varying spatial weights on
+compatible surfaces, but do not promise exact affine reproduction on the adaptive
+grid. Geometry rejection can still create a discontinuity. Pure coarse
+work has four candidate owners, with at most seven positive-weight geometry taps
+at mixed neighborhoods. Atlas storage bounds are checked before the Global offset.
+
+Fine receivers and screen retain the previous two-GI Gather path. A fine world
+receiver rejects coarse world taps. A coarse receiver may use geometrically
+compatible fine neighbors, and its result remains tagged coarse. Screen taps have no
+world-quality tag. Per-receiver normal/plane tests and geometry weights remain;
+there is no all-member normal/position prepass or whole-tile compatibility veto.
+Mixed-surface tiles can still average lighting from different member surfaces;
+these checks do not guarantee elimination of all cross-surface mixing.
+
+There are now three independent full-GI-resolution RGB/age histories: screen,
+Mesh and Global. The former combined screen+Mesh near cache has been separated.
+RGB stores only the corresponding contribution, and alpha stores integer cache
+age. World history additionally uses a ping-pong R32_UINT policy texture: bit 0
+stores fine/coarse layout; bits 1-2 and 3-4 independently store Mesh and Global
+cache kinds (invalid, fine shared, coarse shared or point Repair). Reprojection
+rejects mismatched shared kinds. A shared owner cannot inherit a point Repair
+estimate; per-receiver Repair may reuse a geometrically valid point history.
+A single world reprojection cannot mix point and shared estimates, so a coarse
+shared value cannot lose its layout identity by being relabeled as point history.
+A refresh cannot reset an old observation's age merely to relabel its quality.
+
+Final-color checkerboarding remains hardcoded on, without a JSON, UI or runtime
+switch. Valid final surface history plus frame parity decides a skip independently
+of the three band ages. A skipped receiver carries screen/Mesh/Global cache values
+and their world kinds; a failed transfer does not turn the skip into new tracing.
+An active receiver gathers the three contributions independently. Repair packs
+three independent request flags and traces only missing contributions when their
+own histories cannot be reused: four screen directions and the configured R
+each for Mesh and Global, with 2/2/4-frame periods. At the default R=8, a receiver
+whose three histories all fail can request twenty Repair observations; common
+prefixes, checker and cache success determine actual work. Diagnostic nonshared
+tracing uses the same separated contributions and configured world counts.
+
+Repair resolves all requested histories before tracing. When Mesh and Global both
+need fresh samples, the same R index16 directions provide both estimates through
+the existing shared-prefix query. Screen, if also fresh, contributes only its
+original first four observations. Each world estimate is still normalized by R,
+including zero observations, and only fresh estimates get age zero / point kind.
+If either world history is reusable, its age and kind are retained and no coupled
+trace is forced. In particular, fresh screen plus fresh Global with cached Mesh
+keeps independent screen index16 and Global index32 paths. Legacy/Mesh-only Repair,
+SharedWorld, the serial owner layout, and nonshared diagnostic tracing are unchanged.
+This changes the correlation of dual-fresh world estimates; it does not promise
+pixel-identical noise or a measured performance gain.
+
+The band limits accept lighting only from a hit in that distance interval. A
+nearer surface still occludes the ray, including black or unsupported hits: a
+far-band ray must not simply start at 2 m and skip foreground geometry. Misses
+and unfinished queries add zero. The original screen/scene cache supplies hit
+radiance; no proxy emitter or sphere-light estimate is added.
+
 ## Settings
 
 Settings are nested in `Settings/Pipeline.json` and read at startup:
@@ -9,30 +191,55 @@ Settings are nested in `Settings/Pipeline.json` and read at startup:
 ```json
 "ssgi": {
   "enabled": true,
-  "checkerboard": true,
-  "intensity": 1.0,
-  "quality": 4,
-  "radius": 2.0
+  "world_sharing": {
+    "enabled": true
+  },
+  "world_sampling": {
+    "near_distance": 2.0,
+    "near_exit_distance": 2.2,
+    "near_ray_count": 8,
+    "far_ray_count": 8
+  },
+  "trace_downsample_factor": 2,
+  "intensity": 1.0
 }
 ```
 
-- `enabled`: the pipeline switch. `false` skips SSGI initialization, history allocation,
-  BounceSource and every SSGI pass. `true` enables the chain in the deferred pipeline.
-  Change the JSON value and restart to apply it; no debug hotkey overrides this setting.
-- `intensity`: nonnegative multiplier applied once during final HDR composition.
-- `checkerboard`: alternate trace-grid pixels each submitted GI frame. A skipped
-  pixel reuses reprojected GI color only when the current depth/normal passes the
-  existing history surface test; rejected history is traced immediately. Disabling
-  it restores tracing every grid pixel. Ray counts, resolution and filter parameters
-  are unchanged. The checked-in pipeline enables this option.
-  Rejected history can raise tracing above half coverage. Savings depend on the
-  avoided trace work and shared-history cache traffic, especially during motion.
-- `quality`: 1..4 selects 4/8/16/32 rays with 64/64/64/96 maximum traversal iterations.
-- `radius`: positive finite screen/near-world ray distance in scene world units.
+There is one automatic world-sampling policy, with no manual quality tiers or
+checkerboard switch. Screen sampling does not participate in camera-distance
+classification. HBAO and DLSS retain their separate quality settings.
 
-Ray counts follow UE SSGI; traversal budgets are project choices. Settings are read
-from JSON without a runtime override. SSGI runs at half the internal scene resolution, including
-when DLSS reduces that resolution further.
+- `world_sampling.near_ray_count / far_ray_count`: world directions per complete
+  shared estimate, not per pixel. Both default to 8; accepted values are 4, 8,
+  12, ... 64. Both Mesh and Global use these camera-quality counts. Restart after
+  editing the JSON. Invalid values report an error rather than being clamped.
+
+- `enabled`: the pipeline switch. `false` skips SSGI initialization, history
+  allocation, BounceSource and all SSGI passes. Restart to apply JSON changes.
+- `intensity`: nonnegative multiplier applied once during final HDR composition.
+- `world_sharing.enabled`: the checked-in `true` enables shared screen/world
+  estimates and the corresponding caches. Diagnostic `false` traces independent
+  per-receiver contributions while retaining the same geometry coverage.
+- `world_sampling.near_distance`: finite positive camera distance, default 2 m.
+- `world_sampling.near_exit_distance`: finite distance >= near_distance, default
+  2.2 m; its square must remain finite. These fields affect both world backends,
+  not the fixed screen interval. Policy changes invalidate the relevant source
+  identity rather than reinterpreting an old shared estimate as a new quality.
+- `trace_downsample_factor`: integer 2, 4 or 8 relative to internal scene
+  resolution, including the reduction from DLSS. The checked-in value is 2.
+  Larger factors reduce GI grid resolution; block sizes are in that grid.
+
+The production program can load the saved cavity pose for a bounded capture:
+
+```powershell
+.\x64\Release\LearnDirectX.exe --hidden --frames=2112 --capture-frame=2048 --pass-view=gi --pass-result=output --pass-gi-source=default --camera-preset=Settings/CameraPresets/VXGICavityCamera.json
+```
+
+`--camera-preset` changes the initial pose only. Ordinary launches retain their
+usual camera. The saved pose remains available after cleanup. The final retained
+version passed Debug/Release builds, shader checks and a 64-frame hidden run with
+D3D12 validation. Historical captures and experiment snapshots have been cleared;
+the closeout records the retained behavior and validation limits.
 
 ## Rendering
 
@@ -49,25 +256,32 @@ when DLSS reduces that resolution further.
 3. Cosine-weighted hemisphere rays traverse Hi-Z grid cells. Start at full resolution
    and leave the origin cell. Intersect the complete in-cell ray segment with the
    conservative depth interval; skip disjoint cells and coarsen, refine potential hits.
-   At full resolution, verify radius and facing before reading source color. This
+   At full resolution, verify the fixed near distance and facing before reading source color. This
    follows the stackless traversal structure in UE's `LumenScreenTracing.ush`, adapted
    to this project's min/max depth hierarchy and ordinary device Z.
    Ray directions use NVIDIA vector-2 spatiotemporal blue noise (128x128x64 RG8),
-   indexed on the half-resolution receiver grid and advanced one slice per frame.
-   Multiple rays use fixed R2 spatial offsets. Raw data, conversion and licensing
+   indexed on the GI receiver grid and advanced one slice per frame.
+   Shared blocks use their member pixels as ray origins. Raw data, conversion and licensing
    live in `ThirdParty/NVIDIA/STBN`; the shared loader uploads it once on SSGI startup.
-   Checkerboard Trace groups pack the two pixel phases into contiguous 32-thread
-   halves to reduce divergent ray work on common 32-lane hardware. Logical pixel
-   coordinates, noise coordinates and edge coverage do not depend on wave size.
+   SharedWorld keeps screen, Mesh and Global requests independent and reuses a
+   screen/Mesh prefix only for an actually identical member origin and cosine
+   direction. A screen hit reads BounceSource only when `needScreen` is true;
+   extra world directions use that hit solely to block world continuation. Black
+   screen hits block as well. A Mesh hit contributes only to the requested Mesh
+   estimate and blocks Global; only a completed Mesh MISS can continue to (2,8] m.
+   Screen member directions and the two-frame period remain fixed. World fine and
+   coarse estimates use their configured world count, with Mesh/Global periods
+   of two/four frames. Each contribution has independent normalization and age.
+   Repair and diagnostic nonshared paths use independent configured world counts
+   for all three contributions; no extra screen observations are added by world
+   quality. The new cache/policy resources and unchanged CB ABI are described below.
    Before ray work, Trace performs the existing current-geometry history test once
    per valid receiver and stores its reprojected slow/fast results in two transient
    RGBA32_FLOAT textures. Rejected histories store zero. No pass is added; float32
    avoids introducing an extra half-float rounding before temporal accumulation.
 4. A 5x5 binomial spatial reconstruction uses normal and symmetric tangent-plane weights.
-   With checkerboard enabled, reused centers bypass this current-sample reconstruction
-   and reused neighbors do not count as new observations. Raw/reconstructed alpha
-   `-1` identifies reused color; freshly traced alpha remains the hit fraction `[0,1]`,
-   including valid zero-radiance misses.
+   Shared-band reconstruction uses current surface geometry to reject incompatible
+   cached receivers. Raw RGB stores the combined estimate.
 5. Independent temporal history uses geometry-checked reprojection and two accumulation
    speeds. Previous bilinear taps are checked against normal agreement and symmetric
    tangent-plane distance. No Euclidean `3 * footprint` cutoff is applied: it rejected
@@ -77,9 +291,7 @@ when DLSS reduces that resolution further.
    YCoCg clamp, bounded update acceleration and noise-aware reset. No single-frame RGB
    threshold shortens history to three samples. See `ThirdParty/NVIDIA/NRD/README.md`
    for the pinned source, license, port scope and validation.
-   Checkerboard reuse preserves slow/fast history and its sample count, while depth
-   and normal history always store the current frame's geometry. Reused pixels bypass
-   current-observation clamping; the following spatial filter still uses current
+   Depth and normal history always store the current frame's
    geometry. Temporal directly consumes Trace's reprojected history and validity;
    it does not repeat reprojection, surface testing or previous-history gathering.
 6. Two half-resolution variance-guided A-trous passes (steps 1 and 2) filter the clamped
@@ -110,11 +322,16 @@ history and the color AA histories. Normal full GI continues to run while
 displaying a reduced tier. `--pass-view=gi --pass-result=output` accepts
 `--pass-gi-source=ssgi`, `mesh-sdf` or `default` for the same views.
 
-With VXGI and `vxgi.global_sdf.enabled` enabled, a screen miss first checks the
-existing finite near Mesh SDF segment. Only a completed near MISS continues along
-the same world direction through Global SDF; invalid or unfinished queries stop.
-The existing world normal offset is spent out of both distance budgets. A consumed
-near segment may still have a valid far continuation.
+With VXGI enabled, a world direction whose screen segment misses can use Mesh
+SDF within the fixed 0-2 m interval. Screen and Mesh lighting now have separate
+estimates and histories: screen hits belong only to the fixed screen estimate,
+and a Mesh fallback hit belongs only to the requested Mesh estimate. Additional
+world directions do not add their screen hits to SSGI. Their screen segments
+still test foreground visibility, so screen occluders are not bypassed.
+With `vxgi.global_sdf.enabled`, completed near misses can continue along the same
+world direction through Global SDF, accepting only 2-8 m lighting. Invalid or
+unfinished queries stop. The world normal offset is spent out of the distance
+budgets; it must not move the final limit beyond 8 m.
 
 Global SDF finds coarse geometric candidates. Each candidate is confirmed along
 the original ray with the existing fine Mesh SDF before reading SH: tight instance
@@ -130,10 +347,23 @@ unsupported hits terminate the ray. There is no search for a brighter surface,
 new surface shading, or Surface Cache. Complete misses add zero GI; the existing
 IBL base remains in deferred lighting.
 
+Production SSGI reuses the existing six-face probe-neighbor topology buffer to
+accelerate the eight interpolation-corner lookups. It finds the base probe once,
+then follows allocated neighbor indices where available. An unavailable chain
+falls back to the original coordinate search for that corner; a missing parent
+does not imply that a diagonal probe is absent. Raw SH validity, weights and
+interpolation order are unchanged. The precomputed data stores only topology,
+not baked lighting or ray-hit positions. Topology changes update the existing
+lookup and neighbor buffers together; ordinary lighting updates keep
+using those indices. Consumers without a neighbor descriptor retain the original
+lookup path. The bindless descriptor reuses trace byte 768, preserving the 1024B
+constant layout, world-mode alias at byte 604 and the existing root signature.
+
 The `vxgi.global_sdf` object also accepts `trace_distance` (finite positive world
 distance, default 128) and `max_trace_steps` (integer 1..1024, default 256).
-The range is clipped by the outer clipmap's actual bounds. Disabling this object
-restores the prior near-only world path; screen-only mode does not sample it.
+Those VXGI settings remain shared backend controls. SSGI caps its far contribution
+at 8 m and clips coverage by the outer clipmap's actual bounds. Disabling this
+object removes the far band; screen-only mode does not sample world caches.
 The current three cubes have edge lengths 1/4/8 metres, with cell sizes
 0.25/0.5/1 metre. `cells_per_axis: [4, 8, 8]` selects the independent layer
 counts; `cell_size: 0.25` is doubled per layer. A scalar cell count still applies
@@ -141,10 +371,14 @@ to every layer. Each cube follows the camera on its own world-aligned grid.
 Configuration changes invalidate world GI history. Ordinary clipmap scrolling
 keeps history and uses the current frame's pending layout.
 
-Trace constants append 192 bytes at byte 784, for a total of 976 bytes. Existing
-history offsets and the world-mode alias at byte 604 remain unchanged. The GDF
-texture is an explicit `R32_FLOAT Texture3D` SRV declared as an RDG read; Trace
-uses its normal bindless heap and adds no production diagnostic pass.
+Trace constants retain their 1024-byte layout, Global parameters at byte 784,
+probe-neighbor descriptor at byte 768 and world-mode SRV alias at byte 604.
+The screen/policy descriptors and squared camera thresholds reuse reserved yzw
+components of the existing depth-level uint4 array; the x components remain the
+depth SRVs. Existing world-band descriptor offsets are preserved, rather than
+appending new fields beyond the CB. The GDF texture is an explicit `R32_FLOAT
+Texture3D` SRV declared as an RDG read; Trace uses its normal bindless heap and
+adds no production diagnostic pass.
 
 ## C++ organization
 
@@ -160,6 +394,14 @@ enabled. `RenderFormats` in `Passes/RenderStructs.h` is the shared format contra
 `PipelineManager::Formats` aliases it for existing consumers.
 
 `ResourceManager` owns SSGI history textures and their ping-pong index, like HBAO/TAA.
+Each normal and diagnostic ping-pong set owns three independent full-GI-resolution
+RGBA16F screen/Mesh/Global caches and a full-GI-resolution R32_UINT world-policy
+texture. Their indices advance with the submitted GI history. Relative to the
+previous two-band implementation, the extra screenBand and worldPolicy ping-pong
+payload is 24 bytes per GI texel: about 10.44 MiB at 854x534 for the normal set.
+An allocated diagnostic set adds its own payload, and sparse shared/transient
+resources add separate costs. These are payload estimates, not measured total
+VRAM or RDG committed peaks.
 `SSGIHistoryState` contains only CPU metadata. Application history invalidation and
 post-submission commit use common entry points. Histories advance only if written
 by the submitted frame; failed/unsubmitted frames do not advance HBAO/TAA either.
@@ -176,9 +418,10 @@ The Shaders directory contains three SSGI shader source files:
 Compilation selects a stage using `SSGI_PASS_<STAGE>` and its explicit entry point
 (`CSMain_<Stage>`, or `VSMain`/`PSMain` for Composite). Atrous retains the
 `SSGI_ATROUS_FIRST` variant. Stage-specific declarations are isolated at compile
-time; GPU passes, dispatches and constant layouts are unchanged.
+time. C++ and HLSL layouts must match for every compiled variant.
 
-`SSGICommon.hlsli` is the fourth SSGI-specific file and contains view-normal decoding,
+`SSGICameraQuality.hlsli` contains camera-distance classification, world-policy
+packing and kind-aware world-band reprojection. `SSGICommon.hlsli` contains view-normal decoding,
 constant-depth pixel footprint, symmetric plane distance and the shared
 Reconstruct/Composite bilateral weighting formula. Position reconstruction lives in
 `GeometryCommon.hlsli`, shared with HBAO, Deferred and temporal reconstruction.
@@ -204,10 +447,10 @@ limit traversal efficiency in complex views.
 Known traversal precision issue: `RayCell` still uses a fixed 0.0001-pixel address
 offset. At sufficiently large FP32 pixel coordinates (for example 2049), the offset
 can round away, revisiting a boundary until the iteration budget is exhausted.
-This remains separate from the fixed grazing-angle temporal rejection; the cleanup
-does not change traversal or the scene-tested filtering settings.
+This remains separate from the fixed grazing-angle temporal rejection and the
+new distance-band scheduling.
 
-## Diagnostic cleanup
+## Historical diagnostic cleanup
 
 Temporary GPU counters, color probes, readback buffers, CSV writers, pure-GI preview
 branches and local SSGI test tools were removed after validation. No diagnostic UAVs or
@@ -216,7 +459,7 @@ remains available. Before removing the tools, GPU regression checks passed for t
 normalization, odd sizes, black hits, finite radii, and the emission cap/visible-color
 separation. Debug and Release builds are checked during cleanup.
 
-The final cleanup also removes the unused `tmp/nrd-reference` comparison sources.
+The final cleanup also removes unused comparison sources.
 Production NRD/STBN helpers, assets and licenses remain.
 The T-key spatial-filter comparison switch is gone; both A-trous passes are enabled
 whenever the configured SSGI pipeline runs. No test-only shader variants remain.
@@ -225,7 +468,7 @@ whenever the configured SSGI pipeline runs. No test-only shader variants remain.
 
 The temporary A/B/C capture and its CSV/text reports have been removed. This
 investigation used the old algorithm and does not measure the new RELAX-based path.
-In the completed 256-frame quality-1 capture, disabling the old brightness clamp and its history reduction lowered
+In the historical 256-frame four-ray capture, disabling the old brightness clamp and its history reduction lowered
 fixed-screen frame-difference RMS by about 86%, without darkening the output.
 This motivated the fast/slow history replacement. No automatic probe readback or
 extra comparison histories run in the new pipeline.

@@ -234,6 +234,38 @@ bool D3D12App::Initialize(int nShowCmd, float uiScaleOverride)
     m_uiScaleOverride = uiScaleOverride;
     m_settingsManager.LoadAllSettingsFromJson();
 
+    if (!m_passRunOptions.cameraPreset.empty())
+    {
+        try
+        {
+            std::ifstream input(m_passRunOptions.cameraPreset);
+            if (!input) throw std::runtime_error("Cannot open the camera preset.");
+            nlohmann::json preset;
+            input >> preset;
+            const auto eye = preset.at("eye").get<XMFLOAT3>();
+            const auto target = preset.at("target").get<XMFLOAT3>();
+            const auto up = preset.at("up").get<XMFLOAT3>();
+            const float fov = preset.at("vertical_fov_degrees").get<float>();
+            const XMFLOAT3 direction(target.x - eye.x, target.y - eye.y, target.z - eye.z);
+            const float length = std::sqrt(direction.x * direction.x + direction.y * direction.y + direction.z * direction.z);
+            const auto finite = [](const XMFLOAT3& v) {
+                return std::isfinite(v.x) && std::isfinite(v.y) && std::isfinite(v.z);
+            };
+            const float upLength = up.x * up.x + up.y * up.y + up.z * up.z;
+            if (!finite(eye) || !finite(target) || !finite(up) || !std::isfinite(length) || length <= 0 ||
+                !std::isfinite(upLength) || upLength <= 0 || !std::isfinite(fov) || fov <= 0 || fov >= 179)
+                throw std::runtime_error("Invalid camera preset pose or field of view.");
+            camera = Camera(eye, up, XMConvertToDegrees(std::atan2(direction.x, direction.z)),
+                -XMConvertToDegrees(std::asin(std::clamp(direction.y / length, -1.0f, 1.0f))));
+            camera.Zoom = fov;
+        }
+        catch (const std::exception& error)
+        {
+            ErrorLog::Write(std::string("Application: camera preset failed: ") + error.what());
+            return false;
+        }
+    }
+
     Width = m_settingsManager.window.width;
     Height = m_settingsManager.window.height;
     FullScreen = m_settingsManager.window.fullScreen;
@@ -1260,10 +1292,34 @@ void D3D12App::Render()
                 {"anti_aliasing", aaNames[static_cast<int>(m_antiAliasingMode)]},
                 {"camera", nlohmann::json::parse(cameraSnapshot.ToJson())},
                 {"render_size", {SceneWidth, SceneHeight}}, {"output_size", {Width, Height}},
-                {"ssgi", {{"enabled", m_settingsManager.ssgi.enabled}, {"radius", m_settingsManager.ssgi.radius},
-                    {"intensity", m_settingsManager.ssgi.intensity}, {"quality", m_settingsManager.ssgi.quality},
+                {"ssgi", {{"enabled", m_settingsManager.ssgi.enabled},
+                    {"intensity", m_settingsManager.ssgi.intensity},
                     {"trace_downsample_factor", m_settingsManager.ssgi.traceDownsampleFactor},
-                    {"checkerboard", m_settingsManager.ssgi.checkerboard}}},
+                    {"checkerboard", true},
+                    {"sampling", {
+                        {"screen", {{"distance_origin", "shading-point-ray-distance"},
+                            {"range_m", {0, 1}}, {"tile_span", 2}, {"rays_per_tile", 4}, {"refresh_frames", 2}}},
+                        {"world", {{"quality_distance_origin", "camera-to-receiver-euclidean"},
+                            {"near_distance", m_settingsManager.ssgi.worldNearDistance},
+                            {"near_exit_distance", m_settingsManager.ssgi.worldNearExitDistance},
+                            {"tile_spans", {2, 4}},
+                            {"near_ray_count", m_settingsManager.ssgi.worldNearRayCount},
+                            {"far_ray_count", m_settingsManager.ssgi.worldFarRayCount},
+                            {"repair_rays_per_receiver", {{"near", m_settingsManager.ssgi.worldNearRayCount},
+                                {"far", m_settingsManager.ssgi.worldFarRayCount}}},
+                            {"mesh", {{"range_m", {0, 2}}, {"refresh_frames", 2}}},
+                            {"global", {{"range_m", {2, 8}}, {"refresh_frames", 4}}},
+                            {"extra_screen_prefix_occlusion_only", true}, {"shared_direction_prefix", true},
+                            {"repair_shared_direction_prefix", true},
+                            {"coarse_reconstruction", "native-4gi-tent-with-fine-neighbors"},
+                            {"probe_guiding_enabled", false}, {"direction_sampling", "cosine-hemisphere"},
+                            {"world_owner_cache", {{"conditional_on", "world-sharing-and-world-enabled"},
+                                {"bands", {"mesh", "global"}},
+                                {"initial_refresh_region_gi", 32},
+                                {"filtered_feedback", false}}},
+                            {"world_owner_spatial_filter_enabled", false},
+                            {"policy_version", 9}}}}},
+                    {"world_sharing", {{"enabled", m_settingsManager.ssgi.worldSharing}}}}},
                 {"vxgi", {{"enabled", m_settingsManager.vxgi.enabled}, {"voxel_size", m_settingsManager.vxgi.voxelSize},
                     {"sdf_cell_size", m_settingsManager.vxgi.sdfCellSize}}},
                 {"hbao", {{"enabled", m_settingsManager.hbao.enabled}, {"radius", m_settingsManager.hbao.radius},
@@ -2197,10 +2253,12 @@ void D3D12App::Render()
                 m_dlssHistoryValid = false;
             }
             ssgiSourceKey.screenSourceStamp = m_ssgiScreenSourceStamp;
-            ssgiSourceKey.screenRadius = m_settingsManager.ssgi.radius;
-            ssgiSourceKey.quality = static_cast<uint32_t>(m_settingsManager.ssgi.quality);
             ssgiSourceKey.traceDownsampleFactor = static_cast<uint32_t>(m_settingsManager.ssgi.traceDownsampleFactor);
-            ssgiSourceKey.checkerboard = m_settingsManager.ssgi.checkerboard;
+            ssgiSourceKey.worldSharing = ssgiSourceKey.effectiveWorldMode != 0 && m_settingsManager.ssgi.worldSharing;
+            ssgiSourceKey.worldNearDistance = m_settingsManager.ssgi.worldNearDistance;
+            ssgiSourceKey.worldNearExitDistance = m_settingsManager.ssgi.worldNearExitDistance;
+            ssgiSourceKey.worldNearRayCount = static_cast<uint32_t>(m_settingsManager.ssgi.worldNearRayCount);
+            ssgiSourceKey.worldFarRayCount = static_cast<uint32_t>(m_settingsManager.ssgi.worldFarRayCount);
             ssgiSourceKey.globalEnabled = ssgiSourceKey.effectiveWorldMode != 0 && worldInput.globalSDF != nullptr;
             ssgiSourceKey.globalTraceDistance = worldInput.globalTraceDistance;
             ssgiSourceKey.globalMaxSteps = worldInput.globalMaxSteps;

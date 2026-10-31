@@ -76,7 +76,9 @@ struct SSGITraceConstants
     uint32_t albedoIndex;
     uint32_t traceDownsampleFactor;
     // uint arrays in HLSL cbuffers have 16-byte stride. Use uint4 explicitly.
-    DirectX::XMUINT4 levels[SSGIMaxLevels]; // depth SRV, padding, padding, padding
+    // x = depth SRV. Reserved yzw slots also carry screen/world-policy inputs;
+    // see their assignments after pyramid creation. This preserves the 1024B ABI.
+    DirectX::XMUINT4 levels[SSGIMaxLevels];
     DirectX::XMFLOAT4X4 invView;
     DirectX::XMFLOAT4X4 invViewProj;
     SSGIHybridParameters hybrid;
@@ -87,12 +89,33 @@ struct SSGITraceConstants
     uint32_t previousDepthIndex;
     uint32_t previousNormalIndex;
     uint32_t historyValid;
-    uint32_t checkerboardEnabled;
+    uint32_t probeNeighborsIndex; // Optional bindless six-neighbor topology SRV.
     uint32_t previousFastIndex;
     uint32_t reprojectedGIIndex;
     uint32_t reprojectedFastIndex;
     SSGIGlobalParameters global;
+    // Separate SRV/UAV descriptors are supplied to the sparse and full-rate passes.
+    uint32_t worldSharingEnabled;
+    uint32_t sharedMeshLightingIndex;
+    uint32_t sharedMeshReceiverIndex;
+    uint32_t sharedGlobalLightingIndex;
+    uint32_t sharedGlobalReceiverIndex;
+    uint32_t sharedRepairQueueIndex;
+    uint32_t sharedRepairCountIndex;
+    uint32_t sharedMeshSpan;
+    uint32_t previousMeshBandIndex;
+    uint32_t previousGlobalBandIndex;
+    uint32_t currentMeshBandIndex;
+    uint32_t currentGlobalBandIndex;
 };
+static_assert(offsetof(SSGITraceConstants, levels) == 272);
+static_assert(offsetof(SSGITraceConstants, levels) + offsetof(DirectX::XMUINT4, y) == 276);
+static_assert(offsetof(SSGITraceConstants, levels) + sizeof(DirectX::XMUINT4) + offsetof(DirectX::XMUINT4, w) == 300);
+static_assert(offsetof(SSGITraceConstants, levels) + 2 * sizeof(DirectX::XMUINT4) + offsetof(DirectX::XMUINT4, y) == 308);
+static_assert(offsetof(SSGITraceConstants, levels) + 2 * sizeof(DirectX::XMUINT4) + offsetof(DirectX::XMUINT4, w) == 316);
+static_assert(offsetof(SSGITraceConstants, levels) + 3 * sizeof(DirectX::XMUINT4) + offsetof(DirectX::XMUINT4, y) == 324);
+static_assert(offsetof(SSGITraceConstants, levels) + 3 * sizeof(DirectX::XMUINT4) + offsetof(DirectX::XMUINT4, z) == 328);
+static_assert(offsetof(SSGITraceConstants, levels) + 6 * sizeof(DirectX::XMUINT4) + offsetof(DirectX::XMUINT4, z) == 376);
 static_assert(offsetof(SSGITraceConstants, albedoIndex) == 264);
 static_assert(offsetof(SSGITraceConstants, traceDownsampleFactor) == 268);
 static_assert(offsetof(SSGITraceConstants, invView) == 384);
@@ -100,10 +123,12 @@ static_assert(offsetof(SSGITraceConstants, hybrid) == 512);
 static_assert(offsetof(SSGITraceConstants, hybrid) + offsetof(SSGIHybridParameters, worldMode) == 604);
 static_assert(offsetof(SSGITraceConstants, previousViewProj) == 624);
 static_assert(offsetof(SSGITraceConstants, previousGIIndex) == 752);
-static_assert(offsetof(SSGITraceConstants, checkerboardEnabled) == 768);
+static_assert(offsetof(SSGITraceConstants, probeNeighborsIndex) == 768);
 static_assert(offsetof(SSGITraceConstants, reprojectedGIIndex) == 776);
 static_assert(offsetof(SSGITraceConstants, global) == 784);
-static_assert(sizeof(SSGITraceConstants) == 976);
+static_assert(offsetof(SSGITraceConstants, worldSharingEnabled) == 976);
+static_assert(offsetof(SSGITraceConstants, previousMeshBandIndex) == 1008);
+static_assert(sizeof(SSGITraceConstants) == 1024);
 
 struct SSGIReconstructConstants
 {
@@ -354,7 +379,10 @@ private:
         const WorldInput* world, bool previewHistory)
     {
         if (!resourceManager || !pipelineManager || width == 0 || height == 0 ||
-            !SSGIConfig::IsValidTraceDownsampleFactor(config.traceDownsampleFactor)) return {};
+            !SSGIConfig::IsValidTraceDownsampleFactor(config.traceDownsampleFactor) ||
+            !SSGIConfig::IsValidWorldSampling(config.worldNearDistance, config.worldNearExitDistance) ||
+            !SSGIConfig::IsValidWorldRayCount(config.worldNearRayCount) ||
+            !SSGIConfig::IsValidWorldRayCount(config.worldFarRayCount)) return {};
         const uint32_t traceDownsampleFactor = static_cast<uint32_t>(config.traceDownsampleFactor);
         const UINT traceWidth = TraceExtent(width, traceDownsampleFactor), traceHeight = TraceExtent(height, traceDownsampleFactor);
         // A resolution/factor change must recreate both history sets before any
@@ -362,12 +390,22 @@ private:
         for (int index = 0; index < 2; ++index)
         {
             const auto& textures = resourceManager->GetSSGIHistoryTextures(index, previewHistory);
-            for (ID3D12Resource* texture : {textures.gi.Get(), textures.fastGI.Get(), textures.depth.Get(), textures.normal.Get()})
+            for (ID3D12Resource* texture : {textures.gi.Get(), textures.fastGI.Get(),
+                textures.screenBand.Get(), textures.meshBand.Get(), textures.globalBand.Get(),
+                textures.worldPolicy.Get(), textures.depth.Get(), textures.normal.Get()})
             {
                 if (!texture) return {};
                 const auto desc = texture->GetDesc();
                 if (desc.Dimension != D3D12_RESOURCE_DIMENSION_TEXTURE2D || desc.Width != traceWidth || desc.Height != traceHeight)
                     return {};
+            }
+            for (ID3D12Resource* texture : {textures.globalOwnerRaw.Get(), textures.globalOwnerState.Get(),
+                textures.globalOwnerReceiver.Get()})
+            {
+                if (!texture) return {};
+                const auto desc = texture->GetDesc();
+                if (desc.Dimension != D3D12_RESOURCE_DIMENSION_TEXTURE2D ||
+                    desc.Width != 2u * ((traceWidth + 1u) / 2u) || desc.Height != (traceHeight + 1u) / 2u) return {};
             }
         }
         D3D12_SHADER_RESOURCE_VIEW_DESC depthDesc = {};
@@ -433,6 +471,7 @@ private:
         auto source = graph.CreateTextureSRVView(input.bounceSource);
         const int historyIndex = resourceManager->GetSSGICurrentHistoryIdx(previewHistory);
         const auto& previous = resourceManager->GetSSGIHistoryTextures(1 - historyIndex, previewHistory);
+        const auto& current = resourceManager->GetSSGIHistoryTextures(historyIndex, previewHistory);
         const auto importHistory = [&](ID3D12Resource* texture, const char* name) {
             return graph.CreateTextureSRVView(graph.RegisterExternalTexture(
                 texture, D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_COMMON, name));
@@ -441,8 +480,24 @@ private:
         auto previousFast = importHistory(previous.fastGI.Get(), "SSGI.PreviousFastGI");
         auto previousHistoryDepth = importHistory(previous.depth.Get(), "SSGI.PreviousDepth");
         auto previousNormal = importHistory(previous.normal.Get(), "SSGI.PreviousNormal");
+        auto previousScreenBand = importHistory(previous.screenBand.Get(), "SSGI.PreviousScreenBand");
+        auto previousWorldPolicy = importHistory(previous.worldPolicy.Get(), "SSGI.PreviousWorldPolicy");
+        auto previousMeshBand = importHistory(previous.meshBand.Get(), "SSGI.PreviousMeshBand");
+        auto previousGlobalBand = importHistory(previous.globalBand.Get(), "SSGI.PreviousGlobalBand");
+        auto currentScreenBand = graph.CreateTextureUAVView(graph.RegisterExternalTexture(
+            current.screenBand.Get(), D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_COMMON, "SSGI.CurrentScreenBand"));
+        auto currentWorldPolicy = graph.CreateTextureUAVView(graph.RegisterExternalTexture(
+            current.worldPolicy.Get(), D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_COMMON, "SSGI.CurrentWorldPolicy"));
+        auto currentMeshBand = graph.CreateTextureUAVView(graph.RegisterExternalTexture(
+            current.meshBand.Get(), D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_COMMON, "SSGI.CurrentMeshBand"));
+        auto currentGlobalBand = graph.CreateTextureUAVView(graph.RegisterExternalTexture(
+            current.globalBand.Get(), D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_COMMON, "SSGI.CurrentGlobalBand"));
         if (!depth.IsValid() || !normal.IsValid() || !orm.IsValid() || !source.IsValid() ||
-            !previousGI.IsValid() || !previousFast.IsValid() || !previousHistoryDepth.IsValid() || !previousNormal.IsValid())
+            !previousGI.IsValid() || !previousFast.IsValid() || !previousHistoryDepth.IsValid() || !previousNormal.IsValid() ||
+            !previousScreenBand.IsValid() || !previousWorldPolicy.IsValid() ||
+            !previousMeshBand.IsValid() || !previousGlobalBand.IsValid() ||
+            !currentScreenBand.IsValid() || !currentWorldPolicy.IsValid() ||
+            !currentMeshBand.IsValid() || !currentGlobalBand.IsValid())
         {
             return {};
         }
@@ -473,6 +528,13 @@ private:
         traceParams.ReadComputeSRV(previousFast);
         traceParams.ReadComputeSRV(previousHistoryDepth);
         traceParams.ReadComputeSRV(previousNormal);
+        traceParams.ReadComputeSRV(previousScreenBand);
+        traceParams.ReadComputeSRV(previousWorldPolicy);
+        // SharedWorld produces quality/provenance; Trace and Repair read/update
+        // it through the same R32_UINT UAV. RDG orders their UAV accesses.
+        traceParams.WriteUAV(currentWorldPolicy);
+        traceParams.ReadComputeSRV(previousMeshBand);
+        traceParams.ReadComputeSRV(previousGlobalBand);
         SSGITraceConstants trace = {};
         trace.view = view;
         trace.proj = proj;
@@ -486,7 +548,11 @@ private:
         trace.previousDepthIndex = previousHistoryDepth.descriptorIndex;
         trace.previousNormalIndex = previousNormal.descriptorIndex;
         trace.historyValid = history.valid;
-        trace.checkerboardEnabled = config.checkerboard;
+        trace.probeNeighborsIndex = UINT_MAX; // Missing topology uses the original lookup.
+        trace.previousMeshBandIndex = previousMeshBand.descriptorIndex;
+        trace.previousGlobalBandIndex = previousGlobalBand.descriptorIndex;
+        trace.currentMeshBandIndex = currentMeshBand.descriptorIndex;
+        trace.currentGlobalBandIndex = currentGlobalBand.descriptorIndex;
         trace.width = width;
         trace.height = height;
         trace.traceDownsampleFactor = static_cast<uint32_t>(config.traceDownsampleFactor);
@@ -501,12 +567,15 @@ private:
         trace.blueNoiseIndex = noise.descriptorIndex;
         constexpr float TraceThickness = 0.15f;
         constexpr float TraceNormalBias = 0.02f;
-        trace.radius = config.radius;
+        trace.radius = 1.0f;
         trace.thickness = TraceThickness;
         trace.normalBias = TraceNormalBias;
-        // Keep UE SSGI ray counts. Hi-Z budgets count visited cells/descents, not fixed steps.
-        trace.rayCount = 4u << (config.quality - 1);
-        trace.maxIterations = config.quality == 4 ? 96u : 64u;
+        // Screen remains four member observations per 2x2. Each world tile uses
+        // its configured near/far count at the camera-selected sharing span.
+        // rayCount remains reserved for the constant ABI.
+        // Hi-Z budgets count visited cells/descents, not sample directions.
+        trace.rayCount = 1;
+        trace.maxIterations = 64;
 
         WorldAddresses worldAddresses = {};
         // Bind legal addresses even for unused resources in screen-only shaders.
@@ -538,6 +607,21 @@ private:
             bind(3, world->scene->Get(frameIndex, 7), "SSGI.MeshSDFAssets");
             bind(4, world->scene->Get(frameIndex, 8), "SSGI.MeshSDFInstances");
             bind(5, world->scene->Get(frameIndex, 10), "SSGI.InstanceBVH");
+            if (auto* neighbors = world->scene->Get(frameIndex, 6); neighbors && world->probeCount)
+            {
+                const auto buffer = graph.RegisterExternalBuffer(neighbors, VXGIGPUScene::ReadState,
+                    VXGIGPUScene::ReadState, "SSGI.ProbeNeighbors");
+                D3D12_SHADER_RESOURCE_VIEW_DESC neighborDesc{};
+                neighborDesc.Format = DXGI_FORMAT_UNKNOWN;
+                neighborDesc.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
+                neighborDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+                neighborDesc.Buffer.NumElements = world->probeCount;
+                neighborDesc.Buffer.StructureByteStride = static_cast<UINT>(sizeof(VXGIProbeTopology::NeighborRecord));
+                const auto neighborView = graph.CreateBufferSRVView(buffer, &neighborDesc);
+                if (!neighborView.IsValid()) return {};
+                traceParams.ReadSRV(neighborView);
+                trace.probeNeighborsIndex = neighborView.descriptorIndex;
+            }
             if (world->globalSDF && world->globalSDF->GetPass().GetTexture() &&
                 (world->globalSDF->GetState().HasPendingPlan() || world->globalSDF->GetState().IsInitialized()))
             {
@@ -555,7 +639,7 @@ private:
                 traceParams.ReadComputeSRV(globalView);
                 trace.global.enabled = 1;
                 trace.global.textureIndex = globalView.descriptorIndex;
-                trace.global.maxTraceDistance = world->globalTraceDistance;
+                trace.global.maxTraceDistance = 8.0f;
                 trace.global.maxSteps = world->globalMaxSteps;
                 const auto& state = world->globalSDF->GetState();
                 trace.global.constants = state.HasPendingPlan() ?
@@ -613,6 +697,27 @@ private:
             }
         }
 
+        // Preserve every mip's x descriptor while reusing its formerly reserved
+        // yzw channels. Keep this after the pyramid's uint4 initializations.
+        trace.levels[0].y = previousScreenBand.descriptorIndex;
+        trace.levels[0].z = currentScreenBand.descriptorIndex;
+        trace.levels[0].w = UINT_MAX; // Sparse screen lighting, supplied below.
+        trace.levels[1].y = UINT_MAX; // Sparse screen receiver, supplied below.
+        trace.levels[1].z = previousWorldPolicy.descriptorIndex;
+        trace.levels[1].w = currentWorldPolicy.descriptorIndex;
+        const float nearDistanceSquared = config.worldNearDistance * config.worldNearDistance;
+        const float nearExitDistanceSquared = config.worldNearExitDistance * config.worldNearExitDistance;
+        memcpy(&trace.levels[2].y, &nearDistanceSquared, sizeof(nearDistanceSquared));
+        memcpy(&trace.levels[2].z, &nearExitDistanceSquared, sizeof(nearExitDistanceSquared));
+        trace.levels[2].w = static_cast<uint32_t>(config.worldNearRayCount);
+        trace.levels[3].y = static_cast<uint32_t>(config.worldFarRayCount);
+        // Owner caching uses only reserved channels; all depth-pyramid x
+        // descriptors and the 1024-byte trace constant ABI remain unchanged.
+        trace.levels[3].z = trace.levels[3].w = UINT_MAX;
+        trace.levels[4].y = trace.levels[4].z = UINT_MAX;
+        trace.levels[5].y = UINT_MAX;
+        trace.levels[6].z = 0u;
+
         auto raw = CreateUAVTexture(
             graph, trace.outputWidth, trace.outputHeight, RenderFormats::IndirectLighting, "SSGI.RawGI");
         auto rawUav = graph.CreateTextureUAVView(raw);
@@ -631,6 +736,143 @@ private:
         trace.outputIndex = rawUav.descriptorIndex;
         trace.reprojectedGIIndex = reprojectedGIUav.descriptorIndex;
         trace.reprojectedFastIndex = reprojectedFastUav.descriptorIndex;
+        RDGTextureUAVHandle repairQueueUav{}, repairCountUav{}, worldDisplayUav{};
+        RDGTextureSRVHandle worldDisplaySrv{};
+        if (config.worldSharing)
+        {
+            // Screen uses fixed 2x2. World estimates choose 2x2 or 4x4;
+            // coarse estimates are replicated into four fine-grid atlas slots.
+            // Separate screen / Mesh / Global histories retain their own ages.
+            trace.sharedMeshSpan = 2u;
+            const UINT meshSpan = trace.sharedMeshSpan;
+            const UINT globalSpan = meshSpan;
+            const UINT meshWidth = (trace.outputWidth + meshSpan - 1u) / meshSpan;
+            const UINT meshHeight = (trace.outputHeight + meshSpan - 1u) / meshSpan;
+            const UINT globalWidth = (trace.outputWidth + globalSpan - 1u) / globalSpan;
+            const UINT globalHeight = (trace.outputHeight + globalSpan - 1u) / globalSpan;
+            const auto screenLighting = CreateUAVTexture(graph, meshWidth, meshHeight,
+                RenderFormats::IndirectLighting, "SSGI.SharedScreenLighting");
+            const auto screenReceiver = CreateUAVTexture(graph, meshWidth, meshHeight,
+                DXGI_FORMAT_R32_UINT, "SSGI.SharedScreenReceiver");
+            const bool cacheWorldOwners = trace.hybrid.worldMode != 0u;
+            const auto globalLighting = cacheWorldOwners ? graph.RegisterExternalTexture(
+                current.globalOwnerRaw.Get(), D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_COMMON,
+                "SSGI.CurrentWorldOwnerRaw") : CreateUAVTexture(graph, globalWidth, globalHeight,
+                RenderFormats::IndirectLighting, "SSGI.SharedGlobalLighting");
+            const auto globalReceiver = cacheWorldOwners ? graph.RegisterExternalTexture(
+                current.globalOwnerReceiver.Get(), D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_COMMON,
+                "SSGI.CurrentWorldOwnerReceiver") : CreateUAVTexture(graph, globalWidth, globalHeight,
+                DXGI_FORMAT_R32_UINT, "SSGI.SharedGlobalReceiver");
+            const auto meshLighting = cacheWorldOwners ? globalLighting : CreateUAVTexture(graph, meshWidth, meshHeight,
+                RenderFormats::IndirectLighting, "SSGI.SharedMeshLighting");
+            const auto meshReceiver = cacheWorldOwners ? globalReceiver : CreateUAVTexture(graph, meshWidth, meshHeight,
+                DXGI_FORMAT_R32_UINT, "SSGI.SharedMeshReceiver");
+            RDGTextureSRVHandle previousOwnerRaw{}, previousOwnerState{}, previousOwnerReceiver{};
+            RDGTextureUAVHandle ownerStateUav{};
+            if (cacheWorldOwners)
+            {
+                previousOwnerRaw = importHistory(previous.globalOwnerRaw.Get(), "SSGI.PreviousWorldOwnerRaw");
+                previousOwnerState = importHistory(previous.globalOwnerState.Get(), "SSGI.PreviousWorldOwnerState");
+                previousOwnerReceiver = importHistory(previous.globalOwnerReceiver.Get(), "SSGI.PreviousWorldOwnerReceiver");
+                const auto ownerState = graph.RegisterExternalTexture(current.globalOwnerState.Get(),
+                    D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_COMMON, "SSGI.CurrentWorldOwnerState");
+                ownerStateUav = graph.CreateTextureUAVView(ownerState);
+                const auto worldDisplay = CreateUAVTexture(graph, trace.outputWidth, trace.outputHeight,
+                    RenderFormats::IndirectLighting, "SSGI.WorldDisplay");
+                worldDisplayUav = graph.CreateTextureUAVView(worldDisplay);
+                worldDisplaySrv = graph.CreateTextureSRVView(worldDisplay);
+                if (!previousOwnerRaw.IsValid() || !previousOwnerState.IsValid() || !previousOwnerReceiver.IsValid() ||
+                    !ownerStateUav.IsValid() ||
+                    !worldDisplayUav.IsValid() || !worldDisplaySrv.IsValid()) return {};
+                trace.levels[3].z = previousOwnerRaw.descriptorIndex;
+                trace.levels[3].w = previousOwnerState.descriptorIndex;
+                trace.levels[4].y = previousOwnerReceiver.descriptorIndex;
+                trace.levels[5].y = worldDisplayUav.descriptorIndex;
+                trace.levels[6].z = 1u;
+            }
+            const auto screenLightingUav = graph.CreateTextureUAVView(screenLighting);
+            const auto screenReceiverUav = graph.CreateTextureUAVView(screenReceiver);
+            const auto screenLightingSrv = graph.CreateTextureSRVView(screenLighting);
+            const auto screenReceiverSrv = graph.CreateTextureSRVView(screenReceiver);
+            const auto globalLightingUav = graph.CreateTextureUAVView(globalLighting);
+            const auto globalReceiverUav = graph.CreateTextureUAVView(globalReceiver);
+            const auto globalLightingSrv = graph.CreateTextureSRVView(globalLighting);
+            const auto globalReceiverSrv = graph.CreateTextureSRVView(globalReceiver);
+            const auto meshLightingUav = cacheWorldOwners ? globalLightingUav : graph.CreateTextureUAVView(meshLighting);
+            const auto meshReceiverUav = cacheWorldOwners ? globalReceiverUav : graph.CreateTextureUAVView(meshReceiver);
+            const auto meshLightingSrv = cacheWorldOwners ? globalLightingSrv : graph.CreateTextureSRVView(meshLighting);
+            const auto meshReceiverSrv = cacheWorldOwners ? globalReceiverSrv : graph.CreateTextureSRVView(meshReceiver);
+            if (!screenLightingUav.IsValid() || !screenReceiverUav.IsValid() ||
+                !screenLightingSrv.IsValid() || !screenReceiverSrv.IsValid() ||
+                !meshLightingUav.IsValid() || !meshReceiverUav.IsValid() ||
+                !globalLightingUav.IsValid() || !globalReceiverUav.IsValid() ||
+                !meshLightingSrv.IsValid() || !meshReceiverSrv.IsValid() ||
+                !globalLightingSrv.IsValid() || !globalReceiverSrv.IsValid()) return {};
+            auto shared = trace;
+            shared.worldSharingEnabled = 1;
+            shared.levels[0].w = screenLightingUav.descriptorIndex;
+            shared.levels[1].y = screenReceiverUav.descriptorIndex;
+            shared.sharedMeshLightingIndex = meshLightingUav.descriptorIndex;
+            shared.sharedMeshReceiverIndex = meshReceiverUav.descriptorIndex;
+            shared.sharedGlobalLightingIndex = globalLightingUav.descriptorIndex;
+            shared.sharedGlobalReceiverIndex = globalReceiverUav.descriptorIndex;
+            if (cacheWorldOwners) shared.levels[4].z = ownerStateUav.descriptorIndex;
+            const auto sharedAllocation = resourceManager->AllocatePassConstants(frameIndex, sizeof(shared));
+            if (!sharedAllocation) return {};
+            memcpy(sharedAllocation.cpuAddress, &shared, sizeof(shared));
+            const auto sharedAddress = sharedAllocation.gpuAddress;
+            auto sharedParams = traceParams;
+            sharedParams.WriteUAV(screenLightingUav);
+            sharedParams.WriteUAV(screenReceiverUav);
+            sharedParams.WriteUAV(meshLightingUav);
+            sharedParams.WriteUAV(meshReceiverUav);
+            if (!cacheWorldOwners)
+            {
+                sharedParams.WriteUAV(globalLightingUav);
+                sharedParams.WriteUAV(globalReceiverUav);
+            }
+            if (cacheWorldOwners)
+            {
+                sharedParams.ReadComputeSRV(previousOwnerRaw);
+                sharedParams.ReadComputeSRV(previousOwnerState);
+                sharedParams.ReadComputeSRV(previousOwnerReceiver);
+                sharedParams.WriteUAV(ownerStateUav);
+            }
+            auto* sharedPipeline = pipelineManager->GetSSGISharedWorldPSO();
+            graph.AddPass("SSGI.SharedWorld", ERDGPassFlags::Compute, sharedParams,
+                [=](ID3D12GraphicsCommandList* cmdList) {
+                    ExecuteComputeNoBarrier(cmdList, resourceManager, pipelineManager, sharedPipeline,
+                        sharedAddress, meshWidth * 2u, meshHeight * 2u, &worldAddresses);
+                });
+            trace.worldSharingEnabled = 1;
+            trace.levels[0].w = screenLightingSrv.descriptorIndex;
+            trace.levels[1].y = screenReceiverSrv.descriptorIndex;
+            trace.sharedMeshLightingIndex = meshLightingSrv.descriptorIndex;
+            trace.sharedMeshReceiverIndex = meshReceiverSrv.descriptorIndex;
+            trace.sharedGlobalLightingIndex = globalLightingSrv.descriptorIndex;
+            trace.sharedGlobalReceiverIndex = globalReceiverSrv.descriptorIndex;
+            if (cacheWorldOwners) traceParams.WriteUAV(worldDisplayUav);
+            const auto repairQueue = CreateUAVTexture(graph, trace.outputWidth, trace.outputHeight,
+                DXGI_FORMAT_R32_UINT, "SSGI.SharedRepairQueue");
+            const auto repairCount = CreateUAVTexture(graph, 1, 1,
+                DXGI_FORMAT_R32_UINT, "SSGI.SharedRepairCount");
+            repairQueueUav = graph.CreateTextureUAVView(repairQueue);
+            repairCountUav = graph.CreateTextureUAVView(repairCount);
+            if (!repairQueueUav.IsValid() || !repairCountUav.IsValid()) return {};
+            trace.sharedRepairQueueIndex = repairQueueUav.descriptorIndex;
+            trace.sharedRepairCountIndex = repairCountUav.descriptorIndex;
+            traceParams.ReadComputeSRV(screenLightingSrv);
+            traceParams.ReadComputeSRV(screenReceiverSrv);
+            traceParams.ReadComputeSRV(meshLightingSrv);
+            traceParams.ReadComputeSRV(meshReceiverSrv);
+            if (!cacheWorldOwners)
+            {
+                traceParams.ReadComputeSRV(globalLightingSrv);
+                traceParams.ReadComputeSRV(globalReceiverSrv);
+            }
+            traceParams.WriteUAV(repairQueueUav);
+            traceParams.WriteUAV(repairCountUav);
+        }
         auto allocation = resourceManager->AllocatePassConstants(frameIndex, sizeof(trace));
         if (!allocation)
         {
@@ -638,15 +880,41 @@ private:
         }
         memcpy(allocation.cpuAddress, &trace, sizeof(trace));
         auto address = allocation.gpuAddress;
-        auto* tracePipeline = pipelineManager->GetSSGITracePSO();
+        if (trace.worldSharingEnabled)
+        {
+            RDGPassParameters clearParams;
+            clearParams.WriteUAV(repairCountUav);
+            graph.AddPass("SSGI.ClearRepairs", ERDGPassFlags::Compute, clearParams,
+                [=](ID3D12GraphicsCommandList* cmdList) {
+                    ExecuteComputeNoBarrier(cmdList, resourceManager, pipelineManager,
+                        pipelineManager->GetSSGISharedClearPSO(), address, 1, 1, &worldAddresses);
+                });
+        }
+        auto* tracePipeline = trace.worldSharingEnabled ? pipelineManager->GetSSGISharedTracePSO() :
+            pipelineManager->GetSSGITracePSO();
         traceParams.WriteUAV(rawUav);
         traceParams.WriteUAV(reprojectedGIUav);
         traceParams.WriteUAV(reprojectedFastUav);
+        traceParams.WriteUAV(currentScreenBand);
+        traceParams.WriteUAV(currentMeshBand);
+        traceParams.WriteUAV(currentGlobalBand);
         auto pass =
             graph.AddPass("SSGI.Trace", ERDGPassFlags::Compute, traceParams, [=](ID3D12GraphicsCommandList* cmdList) {
             ExecuteComputeNoBarrier(cmdList, resourceManager, pipelineManager, tracePipeline,
                 address, trace.outputWidth, trace.outputHeight, &worldAddresses);
         });
+        if (trace.worldSharingEnabled)
+        {
+            // The fixed upper-bound dispatch has only a compact prefix doing
+            // ray work; empty groups return after one count load. This avoids
+            // scattered edge repairs keeping every screen wave in world tracing.
+            pass = graph.AddPass("SSGI.RepairWorld", ERDGPassFlags::Compute, traceParams,
+                [=](ID3D12GraphicsCommandList* cmdList) {
+                    ExecuteComputeNoBarrier(cmdList, resourceManager, pipelineManager,
+                        pipelineManager->GetSSGISharedRepairPSO(), address,
+                        trace.outputWidth * 2u, trace.outputHeight * 2u, &worldAddresses);
+                });
+        }
         auto reconstructed = CreateUAVTexture(
             graph, trace.outputWidth, trace.outputHeight, RenderFormats::IndirectLighting, "SSGI.ReconstructedGI");
         auto reconstructedUav = graph.CreateTextureUAVView(reconstructed);
@@ -667,6 +935,8 @@ private:
         reconstruction.normalIndex = normal.descriptorIndex;
         reconstruction.ormIndex = orm.descriptorIndex;
         reconstruction.rawIndex = rawSrv.descriptorIndex;
+        reconstruction.padding[0] = worldDisplaySrv.IsValid() ? worldDisplaySrv.descriptorIndex : UINT_MAX;
+        reconstruction.padding[1] = trace.levels[6].z;
 
         reconstruction.outputIndex = reconstructedUav.descriptorIndex;
         auto reconstructionAllocation = resourceManager->AllocatePassConstants(frameIndex, sizeof(reconstruction));
@@ -681,6 +951,7 @@ private:
         reconstructionParams.ReadComputeSRV(normal);
         reconstructionParams.ReadComputeSRV(orm);
         reconstructionParams.ReadComputeSRV(rawSrv);
+        if (worldDisplaySrv.IsValid()) reconstructionParams.ReadComputeSRV(worldDisplaySrv);
         reconstructionParams.WriteUAV(reconstructedUav);
         auto reconstructionPass = graph.AddPass(
             "SSGI.Reconstruct", ERDGPassFlags::Compute, reconstructionParams, [=](ID3D12GraphicsCommandList* cmdList) {

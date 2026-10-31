@@ -9,11 +9,17 @@
   },
   "ssgi": {
     "enabled": true,
-    "checkerboard": true,
+    "world_sharing": {
+      "enabled": true
+    },
+    "world_sampling": {
+      "near_distance": 2.0,
+      "near_exit_distance": 2.2,
+      "near_ray_count": 16,
+      "far_ray_count": 8
+    },
     "trace_downsample_factor": 2,
-    "intensity": 1,
-    "quality": 1,
-    "radius": 1
+    "intensity": 1
   },
   "vxgi": {
     "enabled": true,

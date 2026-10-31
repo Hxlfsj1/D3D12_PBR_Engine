@@ -16,7 +16,8 @@ cbuffer SSGIReconstructConstants : register(b0)
     uint rawTextureIdx;
     uint outputTextureIdx;
     uint traceDownsampleFactor;
-    uint2 padding;
+    uint worldDisplayTextureIdx;
+    uint worldOwnerCacheEnabled;
 };
 
 [numthreads(8, 8, 1)]
@@ -53,6 +54,17 @@ void CSMain_Reconstruct(uint3 id : SV_DispatchThreadID)
     float3 n = SSGIDecodeViewNormal(normals.Load(int3(pixel, 0)).xyz, viewMat);
     float footprint = SameDepthPixelFootprint(uv, z, p, sceneSize, invProjMat);
     float planeTolerance = max(0.5 * footprint, 1e-4);
+
+    // Mesh and Global come from their independently cached raw shared owners.
+    // Active raw pixels contain only screen in this mode. Add the world bands
+    // at the center after reconstruction, without extra per-tap loads.
+    bool separateWorld = worldOwnerCacheEnabled != 0u && worldDisplayTextureIdx != 0xffffffffu;
+    float3 centerWorld = 0;
+    if (separateWorld)
+    {
+        Texture2D<float4> worldDisplay = ResourceDescriptorHeap[worldDisplayTextureIdx];
+        centerWorld = worldDisplay.Load(int3(id.xy, 0)).rgb;
+    }
 
     // Binomial 5x5 kernel [1,4,6,4,1] in each axis. Gather more current-frame
     // samples without extending temporal persistence. Geometry weights preserve surface edges.
@@ -110,7 +122,9 @@ void CSMain_Reconstruct(uint3 id : SV_DispatchThreadID)
     }
     // RGB remains E/pi; alpha is the filtered hit fraction.
     // Zero-radiance misses are valid samples, not holes. Never divide by hit fraction.
-    output[id.xy] = sum / weightSum;
+    float4 reconstructed = sum / weightSum;
+    reconstructed.rgb += centerWorld;
+    output[id.xy] = reconstructed;
 }
 
 #elif defined(SSGI_PASS_ATROUS)

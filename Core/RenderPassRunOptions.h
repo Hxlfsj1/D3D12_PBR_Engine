@@ -16,6 +16,7 @@ struct RenderPassRunOptions
     uint64_t frameLimit = 0;
     uint64_t captureFrame = 0;
     bool hidden = false;
+    std::string cameraPreset; // Optional saved pose for repeatable captures.
 };
 
 inline bool ParseRenderPassRunOptions(const char* args, RenderPassRunOptions& options, std::string& error)
@@ -44,6 +45,12 @@ inline bool ParseRenderPassRunOptions(const char* args, RenderPassRunOptions& op
         const auto token = remaining.substr(0, count);
         remaining.remove_prefix(count);
         if (token == "--hidden") parsed.hidden = true;
+        else if (token.starts_with("--camera-preset="))
+        {
+            const auto value = token.substr(16);
+            if (value.empty()) return fail("--camera-preset requires a saved camera JSON path.");
+            parsed.cameraPreset = std::string(value);
+        }
         else if (token.starts_with("--frames="))
         {
             if (!positiveInteger(token.substr(9), parsed.frameLimit))
@@ -87,7 +94,8 @@ inline bool ParseRenderPassRunOptions(const char* args, RenderPassRunOptions& op
             else return fail("--pass-gi-source requires default, ssgi or mesh-sdf.");
         }
         else if (token == "--frames" || token == "--capture-frame" || token == "--pass-view" ||
-            token == "--pass-result" || token == "--pass-channel" || token == "--pass-gi-source")
+            token == "--pass-result" || token == "--pass-channel" || token == "--pass-gi-source" ||
+            token == "--camera-preset")
             return fail("Pass-view options require --name=value syntax.");
         // Other application arguments, including --ui-scale, belong to their
         // existing parser and do not affect these options.

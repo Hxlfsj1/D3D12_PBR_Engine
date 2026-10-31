@@ -12,15 +12,16 @@ public:
     struct Key
     {
         uint32_t effectiveWorldMode=0; // 0 ScreenOnly; 1/2 cached-radiance fallback.
-        float screenRadius=0.5f;
-        uint32_t quality=1;
         uint64_t worldGeometryRevision=0;
         uint64_t sdfGeometryRevision=0;
         uint64_t surfaceRevision=0;
         uint64_t probeResetEpoch=0;
         uint64_t screenSourceStamp=0; // Actual uploaded screen source, all modes.
         uint32_t traceDownsampleFactor=2;
-        bool checkerboard=false;
+        bool worldSharing=false;
+        float worldNearDistance=2.0f,worldNearExitDistance=2.2f;
+        uint32_t worldNearRayCount=8,worldFarRayCount=8;
+        uint32_t worldSamplingVersion=9; // Coarse receivers reconstruct native 4-GI samples without replicated-slot weighting.
         bool globalEnabled=false;
         float globalTraceDistance=0,globalCellSize=0;
         uint32_t globalMaxSteps=0,globalCells=0,globalClipmaps=0;
@@ -49,11 +50,14 @@ private:
     {
         // World geometry/material/light revisions may affect the screen bounce
         // source as well. Pass zero when that source identity is not supplied.
-        if(a.effectiveWorldMode!=b.effectiveWorldMode || a.screenRadius!=b.screenRadius ||
-            a.quality!=b.quality || a.traceDownsampleFactor!=b.traceDownsampleFactor || a.checkerboard!=b.checkerboard ||
+        if(a.effectiveWorldMode!=b.effectiveWorldMode || a.traceDownsampleFactor!=b.traceDownsampleFactor ||
             a.worldGeometryRevision!=b.worldGeometryRevision ||
             a.surfaceRevision!=b.surfaceRevision || a.screenSourceStamp!=b.screenSourceStamp) return false;
-        if(a.effectiveWorldMode>=1 && a.sdfGeometryRevision!=b.sdfGeometryRevision) return false;
+        if(a.effectiveWorldMode>=1 && (a.sdfGeometryRevision!=b.sdfGeometryRevision ||
+            a.worldSharing!=b.worldSharing || a.worldNearDistance!=b.worldNearDistance ||
+            a.worldNearExitDistance!=b.worldNearExitDistance ||
+            a.worldNearRayCount!=b.worldNearRayCount || a.worldFarRayCount!=b.worldFarRayCount ||
+            a.worldSamplingVersion!=b.worldSamplingVersion)) return false;
         if(a.effectiveWorldMode>=1 && (a.globalEnabled!=b.globalEnabled ||
             (a.globalEnabled && (a.globalTraceDistance!=b.globalTraceDistance ||
                 a.globalCellSize!=b.globalCellSize || a.globalMaxSteps!=b.globalMaxSteps ||

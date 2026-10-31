@@ -97,14 +97,26 @@ struct SSGIConfig
 {
     bool enabled = false;
     bool giOnly = false; // Runtime presentation; Debug > Pass controls the editor view.
-    bool checkerboard = false;
+    bool worldSharing = true;
+    float worldNearDistance = 2.0f;
+    float worldNearExitDistance = 2.2f;
+    int worldNearRayCount = 8;
+    int worldFarRayCount = 8;
     float intensity = 1.0f;
-    int quality = 1;
-    float radius = 2.0f;
     int traceDownsampleFactor = 2;
     static constexpr bool IsValidTraceDownsampleFactor(int factor)
     {
         return factor == 2 || factor == 4 || factor == 8;
+    }
+    static bool IsValidWorldSampling(float nearDistance, float nearExitDistance)
+    {
+        return std::isfinite(nearDistance) && nearDistance > 0 &&
+            std::isfinite(nearExitDistance) && nearExitDistance >= nearDistance &&
+            std::isfinite(nearExitDistance * nearExitDistance);
+    }
+    static constexpr bool IsValidWorldRayCount(int count)
+    {
+        return count >= 4 && count <= 64 && count % 4 == 0;
     }
 };
 
@@ -343,12 +355,35 @@ private:
                 {
                     const auto& config = j.at("ssgi");
                     ssgi.enabled = config.value("enabled", ssgi.enabled);
-                    ssgi.checkerboard = config.value("checkerboard", ssgi.checkerboard);
+                    if (config.contains("world_sharing"))
+                    {
+                        const auto& sharing = config.at("world_sharing");
+                        if (!sharing.is_object())
+                            throw std::runtime_error("SSGI world_sharing must be an object.");
+                        ssgi.worldSharing = sharing.value("enabled", ssgi.worldSharing);
+                    }
+                    if (config.contains("world_sampling"))
+                    {
+                        const auto& sampling = config.at("world_sampling");
+                        if (!sampling.is_object())
+                            throw std::runtime_error("SSGI world_sampling must be an object.");
+                        ssgi.worldNearDistance = sampling.value("near_distance", ssgi.worldNearDistance);
+                        ssgi.worldNearExitDistance = sampling.value("near_exit_distance", ssgi.worldNearExitDistance);
+                        const auto readRayCount = [&sampling](const char* field, int fallback) {
+                            if (!sampling.contains(field)) return fallback;
+                            const auto& value = sampling.at(field);
+                            const std::string error = std::string("SSGI world_sampling.") + field +
+                                " must be an integer from 4 to 64 divisible by 4.";
+                            if (!value.is_number_integer() || value < 4 || value > 64)
+                                throw std::runtime_error(error);
+                            const int count = value.get<int>();
+                            if (!SSGIConfig::IsValidWorldRayCount(count)) throw std::runtime_error(error);
+                            return count;
+                        };
+                        ssgi.worldNearRayCount = readRayCount("near_ray_count", ssgi.worldNearRayCount);
+                        ssgi.worldFarRayCount = readRayCount("far_ray_count", ssgi.worldFarRayCount);
+                    }
                     ssgi.intensity = config.value("intensity", ssgi.intensity);
-                    if (config.contains("quality") && !config.at("quality").is_number_integer())
-                        throw std::runtime_error("SSGI quality must be an integer from 1 to 4.");
-                    ssgi.quality = config.value("quality", ssgi.quality);
-                    ssgi.radius = config.value("radius", ssgi.radius);
                     if (config.contains("trace_downsample_factor"))
                     {
                         const auto& factor = config.at("trace_downsample_factor");
@@ -356,11 +391,12 @@ private:
                             throw std::runtime_error("SSGI trace_downsample_factor must be the integer 2, 4 or 8.");
                     }
                     ssgi.traceDownsampleFactor = config.value("trace_downsample_factor", ssgi.traceDownsampleFactor);
-                    if (!(std::isfinite(ssgi.radius) && ssgi.radius > 0 &&
-                        std::isfinite(ssgi.intensity) && ssgi.intensity >= 0 &&
-                        ssgi.quality >= 1 && ssgi.quality <= 4 &&
-                        SSGIConfig::IsValidTraceDownsampleFactor(ssgi.traceDownsampleFactor)))
-                        throw std::runtime_error("SSGI requires finite radius > 0, finite intensity >= 0, quality from 1 to 4 and trace_downsample_factor 2, 4 or 8.");
+                    if (!(std::isfinite(ssgi.intensity) && ssgi.intensity >= 0 &&
+                        SSGIConfig::IsValidTraceDownsampleFactor(ssgi.traceDownsampleFactor) &&
+                        SSGIConfig::IsValidWorldSampling(ssgi.worldNearDistance, ssgi.worldNearExitDistance) &&
+                        SSGIConfig::IsValidWorldRayCount(ssgi.worldNearRayCount) &&
+                        SSGIConfig::IsValidWorldRayCount(ssgi.worldFarRayCount)))
+                        throw std::runtime_error("SSGI requires finite intensity >= 0, trace_downsample_factor 2, 4 or 8, finite world distances 0 < near_distance <= near_exit_distance with a finite squared exit distance, and near_ray_count/far_ray_count integers from 4 to 64 divisible by 4.");
                 }
 
                 if (j.contains("vxgi"))

@@ -144,6 +144,16 @@ public:
     {
         return ssgiTracePSO.Get();
     }
+    ID3D12PipelineState* GetSSGISharedWorldPSO()
+    {
+        return ssgiSharedWorldPSO.Get();
+    }
+    ID3D12PipelineState* GetSSGISharedTracePSO()
+    {
+        return ssgiSharedTracePSO.Get();
+    }
+    ID3D12PipelineState* GetSSGISharedClearPSO() { return ssgiSharedClearPSO.Get(); }
+    ID3D12PipelineState* GetSSGISharedRepairPSO() { return ssgiSharedRepairPSO.Get(); }
     ID3D12PipelineState* GetSSGIReconstructPSO()
     {
         return ssgiReconstructPSO.Get();
@@ -1052,6 +1062,14 @@ private:
                                         {L"SSGI_PASS_PYRAMID=1"}) &&
                BuildSSGIComputePipeline(device, L"Shaders/Shaders_For_SSGI.hlsl", L"CSMain_Trace", ssgiTracePSO,
                                         {L"SSGI_PASS_TRACE=1",L"VXGI_SSGI_THRESHOLD=1",L"SSGI_MODE_FROM_SRV=1",L"VXGI_SSGI_GLOBAL=1"}) &&
+               BuildSSGIComputePipeline(device, L"Shaders/Shaders_For_SSGI.hlsl", L"CSMain_SharedWorld", ssgiSharedWorldPSO,
+                                        {L"SSGI_PASS_TRACE=1",L"SSGI_SHARED_WORLD_PASS=1",L"VXGI_SSGI_THRESHOLD=1",L"SSGI_MODE_FROM_SRV=1",L"VXGI_SSGI_GLOBAL=1"}) &&
+               BuildSSGIComputePipeline(device, L"Shaders/Shaders_For_SSGI.hlsl", L"CSMain_Trace", ssgiSharedTracePSO,
+                                        {L"SSGI_PASS_TRACE=1",L"SSGI_SHARED_TRACE=1",L"VXGI_SSGI_THRESHOLD=1",L"SSGI_MODE_FROM_SRV=1",L"VXGI_SSGI_GLOBAL=1"}) &&
+               BuildSSGIComputePipeline(device, L"Shaders/Shaders_For_SSGI.hlsl", L"CSMain_ClearRepairs", ssgiSharedClearPSO,
+                                        {L"SSGI_PASS_TRACE=1",L"SSGI_SHARED_CLEAR_PASS=1",L"VXGI_SSGI_THRESHOLD=1",L"SSGI_MODE_FROM_SRV=1",L"VXGI_SSGI_GLOBAL=1"}) &&
+               BuildSSGIComputePipeline(device, L"Shaders/Shaders_For_SSGI.hlsl", L"CSMain_RepairWorld", ssgiSharedRepairPSO,
+                                        {L"SSGI_PASS_TRACE=1",L"SSGI_SHARED_REPAIR_PASS=1",L"VXGI_SSGI_THRESHOLD=1",L"SSGI_MODE_FROM_SRV=1",L"VXGI_SSGI_GLOBAL=1"}) &&
                BuildSSGIComputePipeline(device, L"Shaders/Shaders_For_SSGI_Spatial.hlsl", L"CSMain_Reconstruct",
                                         ssgiReconstructPSO, {L"SSGI_PASS_RECONSTRUCT=1"}) &&
                BuildSSGIComputePipeline(device, L"Shaders/Shaders_For_SSGI_Temporal.hlsl", L"CSMain_Temporal",
@@ -1722,6 +1740,9 @@ private:
     ComPtr<ID3D12RootSignature> ssgiRootSignature;
     ComPtr<ID3D12PipelineState> ssgiPyramidPSO;
     ComPtr<ID3D12PipelineState> ssgiTracePSO;
+    ComPtr<ID3D12PipelineState> ssgiSharedWorldPSO;
+    ComPtr<ID3D12PipelineState> ssgiSharedTracePSO;
+    ComPtr<ID3D12PipelineState> ssgiSharedClearPSO, ssgiSharedRepairPSO;
     ComPtr<ID3D12PipelineState> ssgiReconstructPSO;
     ComPtr<ID3D12PipelineState> ssgiTemporalPSO;
     ComPtr<ID3D12PipelineState> ssgiHistoryClampPSO;

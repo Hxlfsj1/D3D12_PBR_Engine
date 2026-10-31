@@ -13,6 +13,13 @@ struct VXGIProbeCellEntry
     uint probeIndex;
 };
 
+// Matches the existing 24-byte topology buffer. Use a distinct type name:
+// VXGIProbeQueryCommon also declares its own neighbor record after this include.
+struct VXGIProbeRadianceNeighbors
+{
+    uint indices[6]; // -X,+X,-Y,+Y,-Z,+Z
+};
+
 // Directional incoming radiance in the same world basis used when probes are
 // accumulated. This is not diffuse irradiance and carries no material response.
 struct VXGIProbeRadianceQueryResult
@@ -64,7 +71,7 @@ float VXGIProbeMaximumCoordinate(float3 value)
 // geometry resources or secondary visibility rays enter this lookup.
 VXGIProbeRadianceQueryResult VXGIProbeQueryRadiance(float3 worldPosition, float3 worldRayDirection,
     float voxelSize, uint probeCount, StructuredBuffer<VXGIProbeCellEntry> lookup,
-    StructuredBuffer<VXGIProbeRecord> rawRecords)
+    StructuredBuffer<VXGIProbeRecord> rawRecords, uint neighborsDescriptorIndex)
 {
     VXGIProbeRadianceQueryResult result = (VXGIProbeRadianceQueryResult)0;
     float maximumDirection = VXGIProbeMaximumCoordinate(worldRayDirection);
@@ -85,13 +92,46 @@ VXGIProbeRadianceQueryResult VXGIProbeQueryRadiance(float3 worldPosition, float3
     int3 base = int3(baseFloat);
     float3 fraction = latticePosition - baseFloat;
     VXGIProbeRecord estimate = (VXGIProbeRecord)0;
+    // The unrolled loop keeps corner indices in registers, not a dynamically
+    // indexed array. Topology is indexed by allocated probe ID, independently
+    // of whether a probe currently has valid radiance.
+    uint4 lowerIndices = uint4(VXGI_PROBE_MISSING_INDEX, VXGI_PROBE_MISSING_INDEX,
+        VXGI_PROBE_MISSING_INDEX, VXGI_PROBE_MISSING_INDEX);
+    uint4 upperIndices = lowerIndices;
     [unroll] for (uint cornerIndex = 0; cornerIndex < 8; ++cornerIndex)
     {
         int3 corner = int3(cornerIndex & 1u, (cornerIndex >> 1) & 1u, (cornerIndex >> 2) & 1u);
         float3 axisWeight = lerp(1.0 - fraction, fraction, float3(corner));
         float weight = axisWeight.x * axisWeight.y * axisWeight.z;
         if (weight <= 0.0) continue;
-        uint probeIndex = VXGIProbeFindIndex(base + corner, lookup, probeCount);
+        uint probeIndex = VXGI_PROBE_MISSING_INDEX;
+        if (neighborsDescriptorIndex != VXGI_PROBE_MISSING_INDEX && cornerIndex != 0u &&
+            lowerIndices.x < probeCount)
+        {
+            // Remove one set bit: the parent was visited earlier in the
+            // x+2*y+4*z order, so the positive edge reaches this exact corner.
+            uint parentCorner = (cornerIndex & 1u) != 0u ? cornerIndex ^ 1u :
+                (cornerIndex & 2u) != 0u ? cornerIndex ^ 2u : cornerIndex ^ 4u;
+            uint direction = (cornerIndex & 1u) != 0u ? 1u :
+                (cornerIndex & 2u) != 0u ? 3u : 5u;
+            uint parentIndex;
+            if (parentCorner < 4u) parentIndex = lowerIndices[parentCorner];
+            else parentIndex = upperIndices[parentCorner - 4u];
+            if (parentIndex < probeCount)
+            {
+                StructuredBuffer<VXGIProbeRadianceNeighbors> neighbors =
+                    ResourceDescriptorHeap[neighborsDescriptorIndex];
+                uint neighborIndex = neighbors[parentIndex].indices[direction];
+                if (neighborIndex < probeCount) probeIndex = neighborIndex;
+            }
+        }
+        // Missing parents do not prove that a diagonal corner is absent.
+        // Also retain the old path for missing/out-of-range links or callers
+        // that did not bind the optional neighbor buffer.
+        if (probeIndex == VXGI_PROBE_MISSING_INDEX)
+            probeIndex = VXGIProbeFindIndex(base + corner, lookup, probeCount);
+        if (cornerIndex < 4u) lowerIndices[cornerIndex] = probeIndex;
+        else upperIndices[cornerIndex - 4u] = probeIndex;
         if (probeIndex == VXGI_PROBE_MISSING_INDEX) continue;
         ++result.candidateCount;
         VXGIProbeRecord source = rawRecords[probeIndex];
@@ -114,6 +154,15 @@ VXGIProbeRadianceQueryResult VXGIProbeQueryRadiance(float3 worldPosition, float3
     result.radiance = max(result.unclampedRadiance, 0.0);
     result.hasSupport = 1;
     return result;
+}
+
+// Existing consumers keep the original binary lookup and require no new binding.
+VXGIProbeRadianceQueryResult VXGIProbeQueryRadiance(float3 worldPosition, float3 worldRayDirection,
+    float voxelSize, uint probeCount, StructuredBuffer<VXGIProbeCellEntry> lookup,
+    StructuredBuffer<VXGIProbeRecord> rawRecords)
+{
+    return VXGIProbeQueryRadiance(worldPosition, worldRayDirection, voxelSize,
+        probeCount, lookup, rawRecords, VXGI_PROBE_MISSING_INDEX);
 }
 
 #endif
