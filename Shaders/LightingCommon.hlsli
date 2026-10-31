@@ -3,6 +3,7 @@
 
 #include "MathCommon.hlsli"
 #include "MaterialCommon.hlsli"
+#include "ShadowReceiverPlane.hlsli"
 
 static const float SPECULAR_IBL_MAX_MIP = 4.0f;
 
@@ -171,7 +172,8 @@ float CalcShadowFactor(
     float4 lightSpacePos,
     float4 lightSpacePosDDX,
     float4 lightSpacePosDDY,
-    uint cascadeIndex)
+    uint cascadeIndex,
+    out bool valid)
 {
     Texture2DArray tShadowMap = ResourceDescriptorHeap[shadowMapIdx];
 
@@ -185,20 +187,14 @@ float CalcShadowFactor(
     projCoordsDDX.xy *= float2(0.5f, -0.5f);
     projCoordsDDY.xy *= float2(0.5f, -0.5f);
 
-    if (projCoords.z > 1.0f || projCoords.x < 0.0f || projCoords.x > 1.0f || projCoords.y < 0.0f || projCoords.y > 1.0f)
+    valid = all(isfinite(projCoords)) && projCoords.z >= 0.0f && projCoords.z <= 1.0f &&
+        all(projCoords.xy >= 0.0f) && all(projCoords.xy <= 1.0f);
+    if (!valid)
         return 1.0f;
 
     float zReceiver = projCoords.z;
 
-    float3 receiverPlaneNormal = cross(projCoordsDDX, projCoordsDDY);
-    float receiverPlaneNormalLength = length(receiverPlaneNormal);
-    float receiverPlaneDenominator = max(
-        max(abs(receiverPlaneNormal.z), receiverPlaneNormalLength * 0.0872665f),
-        1e-6f);
-    receiverPlaneDenominator = receiverPlaneNormal.z < 0.0f
-        ? -receiverPlaneDenominator
-        : receiverPlaneDenominator;
-    float2 receiverDepthGradient = -receiverPlaneNormal.xy / receiverPlaneDenominator;
+    float2 receiverDepthGradient = CalculateShadowReceiverDepthGradient(projCoordsDDX, projCoordsDDY);
 
     float currentOrthoWidth = 1.0;
     float currentDepthRange = 1.0;
@@ -264,6 +260,40 @@ float CalcShadowFactor(
     }
 
     return shadow / 16.0f;
+}
+
+float SampleCascadeShadow(uint cascadeIndex, float3 worldPos, float3 worldPosDDX,
+    float3 worldPosDDY, out bool valid)
+{
+    float4 position = mul(float4(worldPos, 1), lightViewProj[cascadeIndex]);
+    float4 positionDDX = mul(float4(worldPosDDX, 0), lightViewProj[cascadeIndex]);
+    float4 positionDDY = mul(float4(worldPosDDY, 0), lightViewProj[cascadeIndex]);
+    return CalcShadowFactor(position, positionDDX, positionDDY, cascadeIndex, valid);
+}
+
+// Derivatives are computed by the caller before the per-pixel cascade branch.
+// Interpolate complete PCSS visibility, never depth or projection matrices.
+float SampleDirectionalShadow(float3 worldPos, float3 worldPosDDX, float3 worldPosDDY, float viewDepth)
+{
+    if (viewDepth >= cascadeSplits.w) return 1.0f;
+    uint current = SelectCascadeIndex(viewDepth);
+    bool currentValid;
+    float shadow = SampleCascadeShadow(current, worldPos, worldPosDDX, worldPosDDY, currentValid);
+    if (current == 0) return shadow;
+    [branch]
+    if (viewDepth < cascadeBlendEnds[current - 1])
+    {
+        uint previous = current - 1;
+        bool previousValid;
+        float previousShadow = SampleCascadeShadow(previous, worldPos, worldPosDDX, worldPosDDY, previousValid);
+        float width = cascadeBlendEnds[previous] - cascadeSplits[previous];
+        float weight = saturate((viewDepth - cascadeSplits[previous]) / max(width, 1e-6f));
+        if (currentValid && previousValid)
+            shadow = lerp(previousShadow, shadow, weight);
+        else if (previousValid)
+            shadow = previousShadow;
+    }
+    return FadeCascadeShadow(shadow, viewDepth);
 }
 
 #endif

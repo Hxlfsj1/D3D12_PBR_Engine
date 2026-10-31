@@ -24,6 +24,8 @@ public:
         DirectX::XMFLOAT3 lightDir = {};
         float aspectRatio = 1.0f;
         float shadowMapSize = 0.0f;
+        float transitionFraction = 0.1f;
+        float tanSunAngularRadius = 0.0f;
     };
 
     static constexpr std::array<float, NUM_CASCADES + 1> kCascadeSplits =
@@ -44,6 +46,7 @@ public:
         DirectX::XMFLOAT4 cascadeOrthoWidths = {};
         // Depth span of each cascade's orthographic box, = 2r + depth padding
         DirectX::XMFLOAT4 cascadeDepthRanges = {};
+        DirectX::XMFLOAT4 cascadeBlendEnds = {};
         // Light-space AABB of each cascade (CPU)
         std::array<DirectX::BoundingBox, NUM_CASCADES> cascadeShadowAreas = {};
     };
@@ -61,7 +64,7 @@ public:
         using namespace DirectX;
 
         FrameData frameData = {};
-        if (input.camera == nullptr || input.aspectRatio <= 0.0f || input.shadowMapSize <= 0.0f)
+        if (input.camera == nullptr || input.aspectRatio <= 0.0f || input.shadowMapSize <= 4.0f)
         {
             return frameData;
         }
@@ -69,15 +72,16 @@ public:
         XMVECTOR lightDir = XMVector3Normalize(XMLoadFloat3(&input.lightDir));
         XMStoreFloat3(&frameData.lightDir, lightDir);
 
-        XMVECTOR cameraPosition = XMLoadFloat3(&input.camera->Position);
-        XMVECTOR lightPosition = XMVectorSubtract(cameraPosition, XMVectorScale(lightDir, 200.0f));
         XMVECTOR lightUp = XMVectorSet(0.0f, 1.0f, 0.0f, 0.0f);
         if (std::abs(XMVectorGetY(lightDir)) > 0.99f)
         {
             lightUp = XMVectorSet(0.0f, 0.0f, 1.0f, 0.0f);
         }
 
-        XMMATRIX lightView = XMMatrixLookAtLH(lightPosition, XMVectorAdd(lightPosition, lightDir), lightUp);
+        // Snap in a world-anchored light basis. A camera-following origin would
+        // cancel the center's translation before snapping, leaving the world
+        // shadow grid free to drift by sub-texel amounts with the camera.
+        XMMATRIX lightView = XMMatrixLookToLH(XMVectorZero(), lightDir, lightUp);
         XMStoreFloat4x4(&frameData.lightView, lightView);
 
         constexpr float shadowDepthPadding = 50.0f;
@@ -90,12 +94,18 @@ public:
 
         std::array<float, NUM_CASCADES> orthoWidths = {};
         std::array<float, NUM_CASCADES> depthRanges = {};
+        std::array<float, NUM_CASCADES> blendEnds = {};
         for (UINT cascadeIdx = 0; cascadeIdx < NUM_CASCADES; ++cascadeIdx)
         {
+            const float splitNear = kCascadeSplits[cascadeIdx];
+            const float splitFar = kCascadeSplits[cascadeIdx + 1];
+            const float extension = cascadeIdx + 1 < NUM_CASCADES ?
+                (splitFar - splitNear) * std::clamp(input.transitionFraction, 0.0f, 0.3f) : 0.0f;
+            blendEnds[cascadeIdx] = splitFar + extension;
             BoundingFrustum cascadeFrustum = input.camera->GetWorldSpaceFrustum(
                 input.aspectRatio,
-                kCascadeSplits[cascadeIdx],
-                kCascadeSplits[cascadeIdx + 1]);
+                splitNear,
+                blendEnds[cascadeIdx]);
 
             // Initialize this cascade's frustum
             XMFLOAT3 cascadeCorners[8];
@@ -119,17 +129,26 @@ public:
             sphereRadius = std::ceil(sphereRadius * 16.0f) / 16.0f;
 
             XMVECTOR lightSpaceCenter = XMVector3Transform(frustumCenter, lightView);
-            float orthoWidth = sphereRadius * 2.0f;
-            // Returns the snapped(based on this cascade's shadow map) lightSpaceCenter.xy
+            const float depthRange = sphereRadius * 2.0f + shadowDepthPadding;
+            // All Poisson offsets have length < 1.25. For valid [0,1] depth,
+            // search and filter radii cannot exceed depthRange*tan(sun angle).
+            // Reserve that world-space radius plus two texels per side for
+            // bilinear comparison and the floor-snap displacement.
+            const float kernelGuard = depthRange * (std::max)(input.tanSunAngularRadius, 0.0f) * 1.25f;
+            const float orthoWidth = (sphereRadius * 2.0f + kernelGuard * 2.0f) /
+                (1.0f - 4.0f / input.shadowMapSize);
+            const float orthoRadius = orthoWidth * 0.5f;
+            // These coordinates use the fixed world origin, so both sampling
+            // and caster culling follow the same world-anchored texel grid.
             float texelSize = orthoWidth / input.shadowMapSize;
             float snappedX = std::floor(XMVectorGetX(lightSpaceCenter) / texelSize) * texelSize;
             float snappedY = std::floor(XMVectorGetY(lightSpaceCenter) / texelSize) * texelSize;
             float snappedZ = XMVectorGetZ(lightSpaceCenter);
 
-            float minX = snappedX - sphereRadius;
-            float maxX = snappedX + sphereRadius;
-            float minY = snappedY - sphereRadius;
-            float maxY = snappedY + sphereRadius;
+            float minX = snappedX - orthoRadius;
+            float maxX = snappedX + orthoRadius;
+            float minY = snappedY - orthoRadius;
+            float maxY = snappedY + orthoRadius;
             float cascadeMinZ = snappedZ - sphereRadius - shadowDepthPadding;
             float cascadeMaxZ = snappedZ + sphereRadius;
 
@@ -163,6 +182,7 @@ public:
             depthRanges[1],
             depthRanges[2],
             depthRanges[3]);
+        frameData.cascadeBlendEnds = XMFLOAT4(blendEnds[0], blendEnds[1], blendEnds[2], blendEnds[3]);
 
         return frameData;
     }

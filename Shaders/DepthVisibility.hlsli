@@ -1,4 +1,3 @@
-static const float DEPTH_ALPHA_CUTOFF = 0.5f;
 static const uint INVALID_MATERIAL_ID = 0xFFFFFFFF;
 
 uint ResolveDepthMaterialID(uint instanceID, uint meshMaterialID)
@@ -18,10 +17,10 @@ float4 SampleDepthAlbedo(
     return albedo;
 }
 
-void ApplyDepthAlphaTest(float alpha)
+void ApplyDepthAlphaTest(float alpha, uint resolvedMaterialID)
 {
 #ifdef ALPHA_TEST
-    clip(alpha - DEPTH_ALPHA_CUTOFF);
+    clip(alpha - gMaterialData[resolvedMaterialID].alphaCutoff);
 #endif
 }
 
@@ -37,6 +36,6 @@ void ClipByDepthVisibility(
         resolvedMaterialID,
         texCoord,
         materialMipBias).a;
-    ApplyDepthAlphaTest(alpha);
+    ApplyDepthAlphaTest(alpha, resolvedMaterialID);
 #endif
 }

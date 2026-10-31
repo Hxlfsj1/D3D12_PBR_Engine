@@ -144,6 +144,9 @@
     <None Include="Shaders\LightingCommon.hlsli">
       <Filter>Shaders</Filter>
     </None>
+    <None Include="Shaders\ShadowReceiverPlane.hlsli">
+      <Filter>Shaders</Filter>
+    </None>
     <None Include="Shaders\MathCommon.hlsli">
       <Filter>Shaders</Filter>
     </None>

@@ -46,8 +46,14 @@
 /tmp/
 /Captures/
 /Logs/
+/PassViewRun.json
 *.tmp
 *.temp
+
+# Python helper caches
+__pycache__/
+*.pyc
+*.pyo
 
 # WorkBuddy agent workspace data (memory, logs) — never commit
 /.workbuddy/

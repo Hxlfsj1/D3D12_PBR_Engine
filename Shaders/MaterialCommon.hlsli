@@ -3,6 +3,24 @@
 
 static const float MIN_PERCEPTUAL_ROUGHNESS = 0.005f;
 static const float3 DIELECTRIC_F0 = float3(0.04f, 0.04f, 0.04f);
+// A missing normal map uses the geometric shading normal, without a dummy
+// texture or a tangent basis.
+static const uint NO_NORMAL_TEXTURE_INDEX = 0xFFFFFFFFu;
+
+float3 ApplyMaterialORMFactors(float3 orm, float metallicFactor, float roughnessFactor)
+{
+    return float3(orm.r, saturate(orm.g * roughnessFactor), saturate(orm.b * metallicFactor));
+}
+
+// glTF occlusion and metallic/roughness may use separate images. Even when
+// they share one packed image, AO comes from its own binding and R channel.
+float3 ComposeMaterialORM(float3 mrSample, float occlusionSample,
+    float metallicFactor, float roughnessFactor, float occlusionStrength)
+{
+    float3 orm = ApplyMaterialORMFactors(mrSample, metallicFactor, roughnessFactor);
+    orm.r = lerp(1.0f, saturate(occlusionSample), saturate(occlusionStrength));
+    return orm;
+}
 
 float3 fresnelSchlickRoughness(float cosTheta, float3 F0, float roughness)
 {
@@ -18,11 +36,6 @@ float3 ComputeMaterialF0(float3 albedo, float metallic)
 float3 ComputeDiffuseEnergy(float3 F, float metallic)
 {
     return (1.0f - F) * (1.0f - metallic);
-}
-
-float3 DecodeSRGBColor(float3 color)
-{
-    return pow(abs(color), 2.2);
 }
 
 float ClampPerceptualRoughness(float roughness)

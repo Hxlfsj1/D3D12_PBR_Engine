@@ -20,8 +20,13 @@
 #include <DirectXCollision.h>
 #include <algorithm>
 #include <cfloat>
+#include <stdexcept>
+#include <charconv>
+#include <string_view>
+#include <cstring>
 
 #include "meshoptimizer.h"
+#include "MaterialTextureLoader.h"
 
 #define MAX_BONE_INFLUENCE 4
 
@@ -39,19 +44,10 @@ struct Vertex
     float m_Weights[MAX_BONE_INFLUENCE];
 };
 
-enum class TextureType
-{
-    Albedo,
-    Normal,
-    ORM,
-    Emissive,
-    Unknown
-};
-
 struct Texture
 {
     ComPtr<ID3D12Resource> Resource;
-    TextureType type;
+    TextureType type = TextureType::Unknown;
     std::string path;
 };
 
@@ -73,13 +69,17 @@ public:
     std::vector<Texture> textures;
     XMFLOAT4 baseColorFactor;
     XMFLOAT3 emissiveFactor = { 0, 0, 0 };
+    float metallicFactor = 1.0f;
+    float roughnessFactor = 1.0f;
+    float occlusionStrength = 1.0f;
+    float alphaCutoff = 0.5f;
     bool isUnlit;
     UINT materialID = 0;
 
     ComPtr<ID3D12Resource> vertexBufferUploader;
     std::vector<ComPtr<ID3D12Resource>> indexBufferUploaders;
 
-    Mesh(ID3D12Device* device, ID3D12GraphicsCommandList* cmdList, std::vector<Vertex>& vertices, std::vector<std::vector<unsigned int>>& lodIndices, std::vector<Texture>& textures, XMFLOAT4 _baseColorFactor = { 1.0f, 1.0f, 1.0f, 1.0f }, bool _isUnlit = false, XMFLOAT3 _emissiveFactor = { 0, 0, 0 })
+    Mesh(ID3D12Device* device, ID3D12GraphicsCommandList* cmdList, std::vector<Vertex>& vertices, std::vector<std::vector<unsigned int>>& lodIndices, std::vector<Texture>& textures, XMFLOAT4 _baseColorFactor = { 1.0f, 1.0f, 1.0f, 1.0f }, bool _isUnlit = false, XMFLOAT3 _emissiveFactor = { 0, 0, 0 }, float _metallicFactor = 1.0f, float _roughnessFactor = 1.0f, float _occlusionStrength = 1.0f, float _alphaCutoff = 0.5f)
     {
         this->vertices = std::move(vertices);
         this->lodIndices = std::move(lodIndices);
@@ -87,15 +87,17 @@ public:
         this->baseColorFactor = _baseColorFactor;
         this->isUnlit = _isUnlit;
         this->emissiveFactor = _emissiveFactor;
+        this->metallicFactor = _metallicFactor;
+        this->roughnessFactor = _roughnessFactor;
+        this->occlusionStrength = _occlusionStrength;
+        this->alphaCutoff = _alphaCutoff;
         setupMesh(device, cmdList);
     }
 
     void Draw(ID3D12GraphicsCommandList* cmdList, UINT instanceCount = 1, int lodLevel = 0)
     {
-        if (lodLevel >= indexBufferViews.size())
-        {
-            lodLevel = indexBufferViews.size() - 1;
-        }
+        if (indexBufferViews.empty()) return;
+        lodLevel = std::clamp(lodLevel, 0, static_cast<int>(indexBufferViews.size()) - 1);
 
         cmdList->IASetVertexBuffers(0, 1, &vertexBufferView);
         cmdList->IASetIndexBuffer(&indexBufferViews[lodLevel]);
@@ -111,6 +113,8 @@ private:
 
     void setupMesh(ID3D12Device* device, ID3D12GraphicsCommandList* cmdList)
     {
+        if (vertices.empty() || vertices.size() > UINT_MAX / sizeof(Vertex) || lodIndices.empty())
+            throw std::runtime_error("Empty or oversized mesh vertex data.");
         UINT vertexBufferSize = static_cast<UINT>(vertices.size() * sizeof(Vertex));
 
         vertexBuffer = CreateDefaultBuffer(device, cmdList, vertices.data(), vertexBufferSize, vertexBufferUploader);
@@ -124,6 +128,8 @@ private:
 
         for (size_t i = 0; i < lodIndices.size(); ++i)
         {
+            if (lodIndices[i].empty() || lodIndices[i].size() > UINT_MAX / sizeof(unsigned int))
+                throw std::runtime_error("Empty or oversized mesh index data.");
             UINT indexBufferSize = static_cast<UINT>(lodIndices[i].size() * sizeof(unsigned int));
             ComPtr<ID3D12Resource> ibUploader;
             ComPtr<ID3D12Resource> iBuffer = CreateDefaultBuffer(device, cmdList, lodIndices[i].data(), indexBufferSize, ibUploader);
@@ -147,6 +153,7 @@ private:
 
     ComPtr<ID3D12Resource> CreateDefaultBuffer(ID3D12Device* device, ID3D12GraphicsCommandList* cmdList, const void* initData, UINT64 byteSize, ComPtr<ID3D12Resource>& uploadBuffer)
     {
+        if (!initData || byteSize == 0) throw std::runtime_error("Mesh upload data is empty.");
         ComPtr<ID3D12Resource> defaultBuffer;
         auto heapPropsDefault = CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_DEFAULT);
         auto bufferDesc = CD3DX12_RESOURCE_DESC::Buffer(byteSize);
@@ -160,6 +167,7 @@ private:
         if (FAILED(hr))
         {
             ErrorLog::HRESULT("Model: failed to create the default mesh buffer.", hr);
+            throw std::runtime_error("Mesh GPU buffer allocation failed.");
         }
 
         auto heapPropsUpload = CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_UPLOAD);
@@ -173,6 +181,7 @@ private:
         if (FAILED(hr))
         {
             ErrorLog::HRESULT("Model: failed to create the mesh upload buffer.", hr);
+            throw std::runtime_error("Mesh upload buffer allocation failed.");
         }
 
         D3D12_SUBRESOURCE_DATA subResourceData = {};
@@ -185,6 +194,7 @@ private:
         if (UpdateSubresources<1>(cmdList, defaultBuffer.Get(), uploadBuffer.Get(), 0, 0, 1, &subResourceData) == 0)
         {
             ErrorLog::Write("Model: failed to upload mesh buffer data.");
+            throw std::runtime_error("Mesh buffer upload failed.");
         }
         auto barrierExit = CD3DX12_RESOURCE_BARRIER::Transition(defaultBuffer.Get(), D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_GENERIC_READ);
         cmdList->ResourceBarrier(1, &barrierExit);
@@ -198,7 +208,8 @@ class Model
 public:
     std::vector<Texture> textures_loaded;
     std::vector<Mesh> meshes;
-    DirectX::BoundingBox boundingBox;
+    DirectX::BoundingBox boundingBox = {};
+    bool IsLoaded() const { return m_loaded; }
 
     Model(ID3D12Device* device, ID3D12GraphicsCommandList* cmdList, DirectX::ResourceUploadBatch& upload, std::string const& path)
     {
@@ -207,7 +218,12 @@ public:
             ErrorLog::Write("Model: unsupported model format: " + path);
             return;
         }
-        loadModel(device, cmdList, upload, path);
+        try { loadModel(device, cmdList, upload, path); }
+        catch (const std::exception& error)
+        {
+            meshes.clear();
+            ErrorLog::Write("Model: loading failed for " + path + ": " + error.what());
+        }
     }
 
     void Draw(ID3D12GraphicsCommandList* cmdList, int lodLevel = 0)
@@ -231,6 +247,8 @@ public:
     }
 
 private:
+    bool m_loaded = false;
+    inline static constexpr char MaterialTagPrefix[] = "__LearnDirectXMaterial_";
     tinygltf::Model gltfModel;
     XMFLOAT3 minBoundary;
     XMFLOAT3 maxBoundary;
@@ -262,8 +280,13 @@ private:
         if (!gltfLoaded || !err.empty())
         {
             ErrorLog::Write("Model: tinygltf failed to load " + path + ": " + err);
+            return;
         }
 
+        // Assimp may reorder materials, while glTF names are neither required
+        // nor unique. Tag the import-only JSON with stable source IDs and keep
+        // the original tinygltf metadata for authored material values.
+        TagAssimpMaterialNames(modelData);
         Assimp::Importer importer;
         unsigned int flags = aiProcess_Triangulate | aiProcess_GenSmoothNormals |
             aiProcess_CalcTangentSpace | aiProcess_JoinIdenticalVertices |
@@ -279,6 +302,11 @@ private:
         }
 
         processNode(device, cmdList, upload, scene->mRootNode, scene, XMMatrixIdentity());
+        if (meshes.empty())
+        {
+            ErrorLog::Write("Model: no triangle meshes were imported: " + path);
+            return;
+        }
 
         XMVECTOR vMin = XMLoadFloat3(&minBoundary);
         XMVECTOR vMax = XMLoadFloat3(&maxBoundary);
@@ -288,6 +316,7 @@ private:
 
         XMStoreFloat3(&boundingBox.Center, vCenter);
         XMStoreFloat3(&boundingBox.Extents, vExtents);
+        m_loaded = true;
     }
 
     void processNode(ID3D12Device* device, ID3D12GraphicsCommandList* cmdList, DirectX::ResourceUploadBatch& upload, aiNode* node, const aiScene* scene, XMMATRIX parentTransform)
@@ -312,6 +341,12 @@ private:
         XMFLOAT4 baseColorFactor = { 1.0f, 1.0f, 1.0f, 1.0f };
         bool isUnlit = false;
         XMFLOAT3 emissiveFactor = { 0, 0, 0 };
+        float metallicFactor = 1.0f;
+        float roughnessFactor = 1.0f;
+        float occlusionStrength = 1.0f;
+        float alphaCutoff = 0.5f;
+        if (mesh->mNumVertices == 0 || mesh->mNumFaces == 0)
+            throw std::runtime_error("Mesh contains no triangles.");
 
         DirectX::XMMATRIX invTranspose = DirectX::XMMatrixTranspose(DirectX::XMMatrixInverse(nullptr, nodeTransform));
 
@@ -338,8 +373,11 @@ private:
             }
 
             vertex.TexCoords = { 0.0f, 0.0f };
-            vertex.Tangent = { 1.0f, 0.0f, 0.0f };
-            vertex.Bitangent = { 0.0f, 1.0f, 0.0f };
+            // Missing UVs/tangents are valid for untextured meshes. Leave the
+            // directions absent; the shared shader helper builds a safe basis
+            // only if a material actually needs tangent-space normal mapping.
+            vertex.Tangent = {};
+            vertex.Bitangent = {};
 
             if (mesh->mTextureCoords[0])
             {
@@ -349,21 +387,27 @@ private:
             if (mesh->HasTangentsAndBitangents())
             {
                 XMVECTOR tan = XMVectorSet(mesh->mTangents[i].x, mesh->mTangents[i].y, mesh->mTangents[i].z, 0.0f);
-                tan = XMVector3Normalize(XMVector3TransformNormal(tan, invTranspose));
+                tan = XMVector3Normalize(XMVector3TransformNormal(tan, nodeTransform));
                 XMStoreFloat3(&vertex.Tangent, tan);
 
                 XMVECTOR bitan = XMVectorSet(mesh->mBitangents[i].x, mesh->mBitangents[i].y, mesh->mBitangents[i].z, 0.0f);
-                bitan = XMVector3Normalize(XMVector3TransformNormal(bitan, invTranspose));
+                bitan = XMVector3Normalize(XMVector3TransformNormal(bitan, nodeTransform));
                 XMStoreFloat3(&vertex.Bitangent, bitan);
             }
             vertices.push_back(vertex);
         }
 
+        const bool mirroredNode = XMVectorGetX(XMMatrixDeterminant(nodeTransform)) < 0.0f;
         for (unsigned int i = 0; i < mesh->mNumFaces; i++)
         {
-            for (unsigned int j = 0; j < mesh->mFaces[i].mNumIndices; j++)
+            const auto& face = mesh->mFaces[i];
+            if (face.mNumIndices != 3) throw std::runtime_error("Only triangle mesh primitives are supported.");
+            const unsigned int order[3] = {0, mirroredNode ? 2u : 1u, mirroredNode ? 1u : 2u};
+            for (const auto vertexIndex : order)
             {
-                indices.push_back(mesh->mFaces[i].mIndices[j]);
+                const auto index = face.mIndices[vertexIndex];
+                if (index >= vertices.size()) throw std::runtime_error("Mesh index is outside its vertex data.");
+                indices.push_back(index);
             }
         }
 
@@ -374,12 +418,14 @@ private:
         std::vector<unsigned int> indices_lod1(indices.size());
         size_t lod1_count = meshopt_simplify(indices_lod1.data(), indices.data(), indices.size(), &vertices[0].Position.x, vertices.size(), sizeof(Vertex), target_count_lod1, 1e-2f);
         indices_lod1.resize(lod1_count);
+        if (indices_lod1.empty()) indices_lod1 = indices;
         allLodIndices.push_back(indices_lod1);
 
         size_t target_count_lod2 = size_t(indices.size() * 0.1f);
         std::vector<unsigned int> indices_lod2(indices.size());
         size_t lod2_count = meshopt_simplify(indices_lod2.data(), indices.data(), indices.size(), &vertices[0].Position.x, vertices.size(), sizeof(Vertex), target_count_lod2, 1e-2f);
         indices_lod2.resize(lod2_count);
+        if (indices_lod2.empty()) indices_lod2 = indices_lod1;
         allLodIndices.push_back(indices_lod2);
 
         if (mesh->mMaterialIndex >= 0)
@@ -406,28 +452,33 @@ private:
 
             if (material->GetTextureCount(aiTextureType_UNKNOWN) > 0)
             {
-                LoadAssimpTexture(device, upload, material, aiTextureType_UNKNOWN, TextureType::ORM, textures, scene);
+                LoadAssimpTexture(device, upload, material, aiTextureType_UNKNOWN, TextureType::MetallicRoughness, textures, scene);
             }
             else if (material->GetTextureCount(aiTextureType_METALNESS) > 0)
             {
-                LoadAssimpTexture(device, upload, material, aiTextureType_METALNESS, TextureType::ORM, textures, scene);
+                LoadAssimpTexture(device, upload, material, aiTextureType_METALNESS, TextureType::MetallicRoughness, textures, scene);
             }
 
             if (material->GetTextureCount(aiTextureType_AMBIENT_OCCLUSION) > 0)
             {
-                LoadAssimpTexture(device, upload, material, aiTextureType_AMBIENT_OCCLUSION, TextureType::ORM, textures, scene);
+                LoadAssimpTexture(device, upload, material, aiTextureType_AMBIENT_OCCLUSION, TextureType::Occlusion, textures, scene);
             }
             else if (material->GetTextureCount(aiTextureType_LIGHTMAP) > 0)
             {
-                LoadAssimpTexture(device, upload, material, aiTextureType_LIGHTMAP, TextureType::ORM, textures, scene);
+                LoadAssimpTexture(device, upload, material, aiTextureType_LIGHTMAP, TextureType::Occlusion, textures, scene);
             }
-
-            aiString matName;
-            material->Get(AI_MATKEY_NAME, matName);
 
             bool foundGltfMaterial = false;
             auto applyGltfMaterial = [&](const tinygltf::Material& gltfMaterial)
                 {
+                    // glTF factors multiply the texture channels; both default
+                    // to one, including when the material has no MR texture.
+                    metallicFactor = static_cast<float>(std::clamp(
+                        gltfMaterial.pbrMetallicRoughness.metallicFactor, 0.0, 1.0));
+                    roughnessFactor = static_cast<float>(std::clamp(
+                        gltfMaterial.pbrMetallicRoughness.roughnessFactor, 0.0, 1.0));
+                    occlusionStrength = static_cast<float>(std::clamp(gltfMaterial.occlusionTexture.strength, 0.0, 1.0));
+                    alphaCutoff = static_cast<float>((std::max)(gltfMaterial.alphaCutoff, 0.0));
                     const std::vector<double>& factor = gltfMaterial.pbrMetallicRoughness.baseColorFactor;
                     if (factor.size() >= 4)
                     {
@@ -454,22 +505,24 @@ private:
                     foundGltfMaterial = true;
                 };
 
-            for (size_t k = 0; !foundGltfMaterial && k < gltfModel.materials.size(); k++)
+            aiString importedName;
+            material->Get(AI_MATKEY_NAME, importedName);
+            std::string_view materialTag(importedName.C_Str(), importedName.length);
+            if (materialTag.starts_with(MaterialTagPrefix))
             {
-                if (gltfModel.materials[k].name == matName.C_Str())
-                {
-                    applyGltfMaterial(gltfModel.materials[k]);
-                    break;
-                }
-            }
-
-            if (!foundGltfMaterial && mesh->mMaterialIndex < gltfModel.materials.size())
-            {
-                applyGltfMaterial(gltfModel.materials[mesh->mMaterialIndex]);
+                materialTag.remove_prefix(sizeof(MaterialTagPrefix) - 1);
+                size_t sourceIndex = 0;
+                const auto parsed = std::from_chars(materialTag.data(), materialTag.data() + materialTag.size(), sourceIndex);
+                if (parsed.ec != std::errc{} || parsed.ptr != materialTag.data() + materialTag.size() ||
+                    sourceIndex >= gltfModel.materials.size())
+                    throw std::runtime_error("Imported material source ID is invalid.");
+                applyGltfMaterial(gltfModel.materials[sourceIndex]);
             }
 
             if (!foundGltfMaterial)
             {
+                material->Get(AI_MATKEY_METALLIC_FACTOR, metallicFactor);
+                material->Get(AI_MATKEY_ROUGHNESS_FACTOR, roughnessFactor);
                 aiColor3D emission(0, 0, 0);
                 if (material->Get(AI_MATKEY_COLOR_EMISSIVE, emission) == AI_SUCCESS)
                     emissiveFactor = { emission.r, emission.g, emission.b };
@@ -500,7 +553,8 @@ private:
             }
         }
 
-        return Mesh(device, cmdList, vertices, allLodIndices, textures, baseColorFactor, isUnlit, emissiveFactor);
+        return Mesh(device, cmdList, vertices, allLodIndices, textures, baseColorFactor, isUnlit, emissiveFactor,
+            metallicFactor, roughnessFactor, occlusionStrength, alphaCutoff);
     }
 
     void LoadAssimpTexture(ID3D12Device* device, DirectX::ResourceUploadBatch& upload, aiMaterial* mat, aiTextureType type, TextureType typeEnum, std::vector<Texture>& textures, const aiScene* scene)
@@ -514,7 +568,10 @@ private:
             bool skip = false;
             for (unsigned int j = 0; j < textures_loaded.size(); j++)
             {
-                if (textures_loaded[j].path == path)
+                // Color and data uses need different formats and mip chains.
+                // Albedo/emissive can share; normal/MR/AO can share separately.
+                if (textures_loaded[j].path == path &&
+                    IsColorTexture(textures_loaded[j].type) == IsColorTexture(typeEnum))
                 {
                     Texture cachedTexture = textures_loaded[j];
                     cachedTexture.type = typeEnum;
@@ -533,7 +590,7 @@ private:
                     if (imageIndex >= 0 && (unsigned int)imageIndex < scene->mNumTextures)
                     {
                         const aiTexture* embeddedTex = scene->mTextures[imageIndex];
-                        TextureFromMemory(device, upload, embeddedTex, texture);
+                        TextureFromMemory(device, upload, embeddedTex, typeEnum, texture);
                     }
                     else
                     {
@@ -558,26 +615,46 @@ private:
         }
     }
 
-    void TextureFromMemory(ID3D12Device* device, DirectX::ResourceUploadBatch& upload, const aiTexture* aiTex, Texture& outTex)
+    void TextureFromMemory(ID3D12Device* device, DirectX::ResourceUploadBatch& upload, const aiTexture* aiTex, TextureType type, Texture& outTex)
     {
         size_t dataSize = aiTex->mHeight == 0 ? aiTex->mWidth : aiTex->mWidth * aiTex->mHeight * 4;
-        const HRESULT hr = DirectX::CreateWICTextureFromMemory(
-            device,
-            upload,
-            reinterpret_cast<const uint8_t*>(aiTex->pcData),
-            dataSize,
-            outTex.Resource.GetAddressOf(),
-            true);
+        const HRESULT hr = CreateEmbeddedMaterialTexture(device, upload,
+            reinterpret_cast<const uint8_t*>(aiTex->pcData), dataSize, type,
+            outTex.Resource.GetAddressOf());
         if (FAILED(hr))
         {
             ErrorLog::HRESULT("Model: failed to decode an embedded texture.", hr);
+            throw std::runtime_error("Embedded texture decoding failed.");
         }
-        else
-        {
-            // World GI queries sample the same material textures from compute.
-            upload.Transition(outTex.Resource.Get(), D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
-                D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
-        }
+    }
+
+    static void TagAssimpMaterialNames(std::vector<unsigned char>& data)
+    {
+        if (data.size() < 20) throw std::runtime_error("GLB JSON chunk header is incomplete.");
+        uint32_t oldLength = 0, chunkType = 0;
+        std::memcpy(&oldLength, data.data() + 12, sizeof(oldLength));
+        std::memcpy(&chunkType, data.data() + 16, sizeof(chunkType));
+        if (chunkType != 0x4E4F534A || oldLength > data.size() - 20)
+            throw std::runtime_error("GLB JSON chunk is invalid.");
+        auto json = nlohmann::json::parse(data.begin() + 20, data.begin() + 20 + oldLength);
+        if (!json.contains("materials")) return;
+        auto& materials = json["materials"];
+        for (size_t i = 0; i < materials.size(); ++i)
+            materials[i]["name"] = std::string(MaterialTagPrefix) + std::to_string(i);
+        std::string encoded = json.dump();
+        encoded.append((4 - encoded.size() % 4) % 4, ' ');
+        const size_t total = data.size() - oldLength + encoded.size();
+        if (total > UINT32_MAX) throw std::runtime_error("GLB material mapping exceeds the format size limit.");
+        const auto jsonLength = static_cast<uint32_t>(encoded.size());
+        const auto totalLength = static_cast<uint32_t>(total);
+        std::vector<unsigned char> tagged;
+        tagged.reserve(total);
+        tagged.insert(tagged.end(), data.begin(), data.begin() + 20);
+        tagged.insert(tagged.end(), encoded.begin(), encoded.end());
+        tagged.insert(tagged.end(), data.begin() + 20 + oldLength, data.end());
+        std::memcpy(tagged.data() + 8, &totalLength, sizeof(totalLength));
+        std::memcpy(tagged.data() + 12, &jsonLength, sizeof(jsonLength));
+        data.swap(tagged);
     }
 
     std::vector<unsigned char> ReadFileToBuffer(const std::string& path)

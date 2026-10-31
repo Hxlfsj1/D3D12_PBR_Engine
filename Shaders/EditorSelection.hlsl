@@ -5,7 +5,7 @@ cbuffer ObjectConstants : register(b0)
     float4x4 worldViewProjection;
     uint objectId;
     uint materialId;
-    float alphaCutoff; // Negative for opaque, 0.5 for cutout, 0.05 for transparent picking.
+    float alphaCutoff; // -1=opaque, -2=material cutout threshold, >=0=transparent picking threshold.
 };
 
 struct MaterialData
@@ -14,6 +14,12 @@ struct MaterialData
     float4 baseColorFactor;
     uint isUnlit;
     float3 emissiveFactor;
+    float metallicFactor;
+    float roughnessFactor;
+    uint occlusionIdx;
+    float occlusionStrength;
+    float alphaCutoff;
+    float3 materialPadding;
 };
 StructuredBuffer<MaterialData> materials : register(t0);
 SamplerState materialSampler : register(s0);
@@ -34,11 +40,12 @@ GeometryOutput IdVS(float3 position : POSITION, float2 uv : TEXCOORD0)
 
 uint IdPS(GeometryOutput input) : SV_Target0
 {
-    if (alphaCutoff >= 0.0)
+    if (alphaCutoff == -2.0f || alphaCutoff >= 0.0f)
     {
         MaterialData material = materials[materialId];
         Texture2D<float4> albedo = ResourceDescriptorHeap[material.albedoIdx];
-        clip(albedo.Sample(materialSampler, input.uv).a * material.baseColorFactor.a - alphaCutoff);
+        float threshold = alphaCutoff == -2.0f ? material.alphaCutoff : alphaCutoff;
+        clip(albedo.Sample(materialSampler, input.uv).a * material.baseColorFactor.a - threshold);
     }
     return objectId;
 }

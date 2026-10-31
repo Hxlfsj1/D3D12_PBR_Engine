@@ -13,6 +13,7 @@
     float4 cascadeSplits;
     float4 cascadeOrthoWidths;
     float4 cascadeDepthRanges;
+    float4 cascadeBlendEnds;
     
     uint iblPrefilterIdx;
     uint iblBRDFIdx;
@@ -103,13 +104,9 @@ PS_OUTPUT PSMain(VS_OUTPUT input)
     // Reconstruct world position from NDC coordinates and depth
     float3 worldPos = ReconstructPosition(input.texCoord, depth, invViewProj);
 
-    // Match cascade selection to the camera-space depth ranges used to build the frusta.
     float viewDepth = dot(worldPos - camPos, cameraForward);
-    uint cascadeIndex = SelectCascadeIndex(viewDepth);
-
-    float4 lightSpacePos = mul(float4(worldPos, 1.0f), lightViewProj[cascadeIndex]);
-    float4 lightSpacePosDDX = mul(float4(ddx(worldPos), 0.0f), lightViewProj[cascadeIndex]);
-    float4 lightSpacePosDDY = mul(float4(ddy(worldPos), 0.0f), lightViewProj[cascadeIndex]);
+    float3 worldPosDDX = ddx(worldPos);
+    float3 worldPosDDY = ddy(worldPos);
 
     float3 V = normalize(camPos - worldPos);
     float3 R = reflect(-V, N);
@@ -124,13 +121,8 @@ PS_OUTPUT PSMain(VS_OUTPUT input)
     float3 kD = ComputeDiffuseEnergy(F, metallic);
 
     // Shadow with attenuation
-    float shadow = CalcShadowFactor(
-        lightSpacePos,
-        lightSpacePosDDX,
-        lightSpacePosDDY,
-        cascadeIndex);
-    shadow = FadeCascadeShadow(shadow, viewDepth);
-    
+    float shadow = SampleDirectionalShadow(worldPos, worldPosDDX, worldPosDDY, viewDepth);
+
     float NdotL = max(dot(N, L), 0.0);
     float3 directDiffuse = ComputeDirectDiffuse(kD, albedo, radiance, NdotL, shadow);
     float3 directSpecular = ComputeDirectSpecular(specular, radiance, NdotL, shadow);

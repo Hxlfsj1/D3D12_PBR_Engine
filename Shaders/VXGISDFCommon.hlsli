@@ -201,12 +201,13 @@ uint VXGISDFCandidateCoverage(VXGISDFTriangle surfaceTriangle, float3 barycentri
         + surfaceTriangle.uv2 * barycentric.z;
     if (!all(isfinite(uv))) return 2;
     VXGIMaterialData material = materials[surfaceTriangle.materialId];
-    if (!isfinite(material.baseColorFactor.a)) return 2;
+    if (!isfinite(material.baseColorFactor.a) || !isfinite(material.alphaCutoff)
+        || material.alphaCutoff < 0.0) return 2;
     Texture2D<float4> albedoTexture = ResourceDescriptorHeap[NonUniformResourceIndex(material.albedoIdx)];
     float sampledAlpha = albedoTexture.SampleLevel(materialSampler, uv, materialMipLevel).a;
     float alpha = sampledAlpha * material.baseColorFactor.a;
     if (!isfinite(sampledAlpha) || !isfinite(alpha)) return 2;
-    return alpha >= 0.5 ? 1u : 0u;
+    return alpha >= material.alphaCutoff ? 1u : 0u;
 }
 
 #ifdef VXGI_MESH_SDF
@@ -280,14 +281,10 @@ VXGISDFSurface VXGISDFResolveSurface(VXGISDFHit hit, StructuredBuffer<VXGISDFTri
 #ifdef VXGI_MESH_SDF
     VXGIMeshSDFInstance instance = VXGIMeshSDFInstances[hit.instanceIndex];
     n = mul(float4(n, 0), instance.normalFromLocal).xyz;
-    t = mul(float4(t, 0), instance.normalFromLocal).xyz;
-    bitangent = mul(float4(bitangent, 0), instance.normalFromLocal).xyz;
+    t = mul(float4(t, 0), instance.worldFromLocal).xyz;
+    bitangent = mul(float4(bitangent, 0), instance.worldFromLocal).xyz;
 #endif
-    n = dot(n, n) > 1e-12 ? normalize(n) : normalize(hit.geometricNormal);
-    t -= n * dot(n, t);
-    if (dot(t, t) < 1e-12)
-        t = cross(abs(n.z) < 0.999 ? float3(0, 0, 1) : float3(0, 1, 0), n);
-    if (dot(bitangent, bitangent) < 1e-12) bitangent = cross(n, t);
+    n = NormalizeSurfaceDirection(n, hit.geometricNormal);
     BuildOrthonormalTangentBasis(n, t, bitangent, surface.shadingNormal, surface.tangent, surface.bitangent);
     surface.materialId = VXGISDFHitMaterialId(hit, triangles);
 #ifdef VXGI_MESH_SDF

@@ -127,7 +127,7 @@ public:
             DirectX::XMStoreFloat4x4(&constants.wvp,
                 DirectX::XMMatrixTranspose(instance.cachedWorldMat * viewProjection));
             constants.objectId = instance.editorId;
-            constants.alphaCutoff = instance.isCutout ? 0.5f : (instance.isTransparent ? 0.05f : -1.0f);
+            constants.alphaCutoff = instance.isCutout ? -2.0f : (instance.isTransparent ? 0.05f : -1.0f);
             for (auto& mesh : instance.pModel->meshes)
             {
                 constants.materialId = instance.customMaterialID == UINT_MAX ? mesh.materialID : instance.customMaterialID;

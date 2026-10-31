@@ -2,7 +2,7 @@
 
 一个面向实时渲染学习与实验的 Windows / DirectX 12 小型渲染器。
 
-它的重点不是提供完整的游戏引擎编辑器，而是展示一条可以实际运行、调试和继续演进的现代渲染链路：从显式 D3D12 资源与同步管理，逐步组织出 PBR、IBL、Forward/Deferred、级联软阴影、时域重建、DLSS、SMAA 和 Render Dependency Graph。
+它的重点不是提供完整的游戏引擎编辑器，而是展示一条可以实际运行、调试和继续演进的现代渲染链路：从显式 D3D12 资源与同步管理，逐步组织出 PBR、IBL、Forward/Deferred、SSGI 与 SDF 软件 GI、级联软阴影、时域重建、DLSS、SMAA 和 Render Dependency Graph。
 
 ## 项目定位与意义
 
@@ -48,7 +48,7 @@ SettingsManager / ResourceManager / PBR_Model / IBLBaker
 | 场景逻辑 | `Logic/` | Camera、输入和场景实例。 |
 | 资源系统 | `Resources/` | GLB 模型、材质/贴图、IBL 烘焙、持久/瞬时资源及历史缓冲。 |
 | 渲染图 | `RDG/` | pass 依赖、读写声明、资源状态转换、外部资源注册和瞬时资源租约。 |
-| 渲染阶段 | `Passes/` | Shadow、PBR、GBuffer、Motion Vector、HBAO、Temporal、DLSS、SMAA 和 PostProcess。 |
+| 渲染阶段 | `Passes/` | Shadow、PBR、GBuffer、Motion Vector、HBAO、SSGI、VXGI Probe/Global SDF、Temporal、DLSS、SMAA 和 PostProcess。 |
 | Shader | `Shaders/` | 运行时由 DXC 编译的 HLSL 与共享函数。 |
 | 配置 | `Settings/` | 窗口、渲染路径、光照和本地场景描述。 |
 
@@ -68,7 +68,7 @@ SettingsManager / ResourceManager / PBR_Model / IBLBaker
 | NuGet | `directxtk12_desktop_win10` `2026.4.1.1` | 必需 | `packages.config` | 找不到 `ResourceUploadBatch.h`、`WICTextureLoader.h` 或 DirectXTK12 库。 |
 | vcpkg | `assimp:x64-windows` | 必需 | 本机 vcpkg classic/user-wide integration | 找不到 Assimp 头文件、库或运行时 DLL。 |
 | vcpkg | `meshoptimizer:x64-windows` | 必需 | 本机 vcpkg classic/user-wide integration | 链接时找不到 `meshoptimizer.lib`。仓库只 vendored 了头文件。 |
-| Vendored 依赖 | `ThirdParty/` 完整存在 | 必需 | 随仓库提交 | 缺少 tinygltf、stb、JSON、SMAA LUT 或 NVIDIA NGX/DLSS 头文件和库。 |
+| Vendored 依赖 | `ThirdParty/` 完整存在 | 必需 | 随仓库提交 | 缺少 tinygltf、stb、JSON、SMAA LUT、NGX/DLSS 或 GI 使用的 STBN 数据、NRD 派生 helper。 |
 | DLSS 硬件 | 兼容的 NVIDIA RTX GPU 与驱动 | 仅选择 `DLSS` 时必需 | `Settings/Pipeline.json` | NGX capability/configuration 失败；程序不会自动降级到其他 AA。 |
 | 模型资源 | 至少提供配置中引用的 `.glb` | 运行当前场景必需 | 本地 `Models/` | 模型为空或场景不能正确显示。模型不随 Git 仓库分发。 |
 | 环境贴图 | 提供配置中引用的 `.hdr` | 运行当前 IBL 必需 | 本地 `HDRs/` | IBL 初始化失败。HDR 不随 Git 仓库分发。 |
@@ -140,7 +140,7 @@ New-Item -ItemType Directory -Force Models, HDRs
 当前 `Settings/Scene.json` 引用了：
 
 ```text
-Models/V-22.glb
+Models/CyberPunk_Car.glb
 Models/Plain.glb
 HDRs/citrus_orchard_road_puresky_4k.hdr
 ```
@@ -163,7 +163,7 @@ Release 构建：
 MSBuild.exe LearnDirectX.vcxproj /p:Configuration=Release /p:Platform=x64 /m
 ```
 
-构建过程会将对应的 `nvngx_dlss.dll` 复制到输出目录。NuGet/vcpkg 还会提供 DXC、Assimp 及其运行时依赖。不要只复制 `LearnDirectX.exe` 后期待它独立运行。
+构建过程会将对应的 `nvngx_dlss.dll` 和编辑器字体复制到输出目录。NuGet/vcpkg 还会提供 DXC、Assimp 及其运行时依赖。不要只复制 `LearnDirectX.exe` 后期待它独立运行。
 
 ### 6. 从仓库根目录运行
 
@@ -201,6 +201,9 @@ Visual Studio 调试时，应把 Working Directory 设置为 `$(ProjectDir)`。�
 - 跟踪：`*.cpp`、`*.h`、HLSL、JSON 配置、工程文件、`packages.config`、`ThirdParty/`。
 - 不跟踪：`.vs/`、`x64/`、中间文件、PDB、NuGet 展开目录 `packages/`。
 - 不跟踪：`Models/`、`HDRs/`、`Scene_Assets/` 等本地美术资源。
+- 不跟踪：`tmp/`、`Captures/`、`Logs/`、`PassViewRun.json` 等验收产物，以及 Python 缓存。
+
+`ThirdParty/` 中的 DLSS DLL/LIB、STBN 数据、SMAA LUT 和随附文档，以及 `Editor/Assets/Fonts/` 中的字体与许可证，都是有意保留的生产依赖。
 
 因此，新 clone 中缺少模型和 HDR 是预期行为，不代表 clone 不完整。若未来需要分发示例场景，应单独提供资源下载地址、release 包或独立资产仓库，而不是重新提交大型二进制到主 Git 历史。
 
@@ -217,6 +220,7 @@ Visual Studio 调试时，应把 Working Directory 设置为 `$(ProjectDir)`。�
 - 4 级 Cascaded Shadow Maps、texel snapping 与基于太阳角半径的 PCSS 软阴影。
 - Forward/PBR 与 Deferred 两条完整 RDG 渲染路径。
 - GBuffer、Motion Vector、HBAO、Blur 和时域 HBAO 稳定化。
+- Deferred 混合 GI：SSGI 屏幕追踪、Mesh/Global SDF 软件追踪、探针 SH 缓存、共享采样和时空重建。详见 [SSGI.md](SSGI.md) 与 [VXGI.md](VXGI.md)。
 - 抗锯齿/重建模式：None、TAA、TSR、SMAA、DLSS。
 - RDG pass 依赖、资源状态转换、外部资源注册和瞬时资源生命周期。
 
@@ -243,8 +247,29 @@ Visual Studio 调试时，应把 Working Directory 设置为 `$(ProjectDir)`。�
 | `DLSS SR.anti_aliasing` | `None` / `TAA` / `TSR` / `SMAA` / `DLSS` | `DLSS` | 互斥的抗锯齿或重建模式。 |
 | `DLSS SR.dlss_quality` | `DLAA` / `Quality` / `Balanced` / `Performance` / `UltraPerformance` | `Quality` | 仅 DLSS 模式使用；不支持时初始化失败。 |
 
-GI 配置继续使用同一 `Settings/Pipeline.json`：`ssgi.trace_downsample_factor` 当前为 2（原半分辨率），
-`vxgi.debug_view` 默认为 0。顶部 **Debug → Pass** 按完整 Pass 选择本步结果或截至本步的累计画面，
+GI 配置使用同一 `Settings/Pipeline.json`，下表列出当前仓库配置：
+
+| 键 | 当前值 | 说明 |
+| --- | --- | --- |
+| `ssgi.enabled` | `true` | 启用 Deferred 混合 GI。 |
+| `ssgi.world_sharing.enabled` | `true` | 世界贡献使用共享采样和缓存。 |
+| `ssgi.world_sampling.near_distance` | `2.0` | 接收点距摄像机不超过此距离时请求近档 2×2。 |
+| `ssgi.world_sampling.near_exit_distance` | `2.2` | 超过此距离时请求远档 4×4；中间范围使用同表面历史滞回。 |
+| `ssgi.world_sampling.near_ray_count` | `16` | 近档每份世界估计的方向预算。 |
+| `ssgi.world_sampling.far_ray_count` | `8` | 远档每份世界估计的方向预算。 |
+| `ssgi.trace_downsample_factor` | `2` | GI 网格相对内部场景分辨率每轴缩小两倍，独立于 DLSS 输出放大。 |
+| `ssgi.intensity` | `1` | 间接漫反射强度。 |
+| `vxgi.enabled` | `true` | 启用世界几何与探针缓存。 |
+| `vxgi.global_sdf.enabled` | `true` | 启用 Global SDF 世界贡献。 |
+| `vxgi.debug_view` | `0` | 默认不叠加 VXGI 诊断图。 |
+
+近/远质量按接收点到摄像机的欧氏距离选择，2×2/4×4 块均以 GI 网格计。
+SSGI 仍使用原接收位置、每块最多四个方向和两帧刷新。Mesh 与 Global 都使用上表的近16/远8预算，正常分别按两帧、四帧刷新。
+沿射线的贡献范围分别为 SSGI 0–1 m、Mesh SDF 0–2 m、Global SDF (2,8] m；这些范围与摄像机质量距离相互独立。
+世界射线数接受 4–64 内的 4 的倍数，读取默认值为8/8；实际工作量还受缓存复用、有效成员与 Repair 补追影响。
+棋盘格固定开启，没有 JSON 或运行时开关。采样、缓存和重建细节见 [SSGI.md](SSGI.md)。
+
+顶部 **Debug → Pass** 按完整 Pass 选择本步结果或截至本步的累计画面，
 未启用项置灰。抗锯齿四选一、与后处理一样只提供累计结果；ToneMap 归后处理。
 GI 内只有三个条目，依次为：默认（SSGI + Mesh SDF VXGI + Global SDF GI）、SSGI、SSGI + Mesh SDF VXGI。
 三档按屏幕、近段 Mesh SDF、远段 Global SDF 的顺序累加；默认项显示当前已启用的层级。
@@ -296,14 +321,14 @@ TAA 和 TSR 共用 jitter 逻辑及一套双缓冲 temporal history，但拥有�
 | --- | --- | --- |
 | `skybox_path` | string | 本地 HDR 环境贴图相对路径。 |
 | `instances` | array | 场景实例列表。 |
-| `instances[].name` | string | 实例名称。 |
+| `instances[].name` | string | 兼容旧场景的名称字段；当前初始显示名取模型源文件名，运行时可在编辑器改名。 |
 | `instances[].model_path` | string | 本地 `.glb` 相对路径。 |
 | `instances[].pos` | `float[3]` | 平移。 |
 | `instances[].rot` | `float[3]` | 按 `XMMatrixRotationRollPitchYaw` 传入，单位为弧度。 |
 | `instances[].scale` | `float[3]` | 缩放。 |
 | `instances[].is_transparent` | boolean | 进入透明队列并按相机距离从远到近排序。 |
 | `instances[].is_cutout` | boolean | 使用 alpha test/cutout PSO。 |
-| `instances[].material_override_index` | unsigned integer | 当前会被 JSON 解析，但尚未传递到 `ModelInstance`；属于保留字段，不应依赖。 |
+| `instances[].material_override_index` | unsigned integer | 可选的全局材质索引；默认 `0xFFFFFFFF` 使用网格原材质，指定有效索引时覆盖实例材质。 |
 
 当前加载路径面向二进制 `.glb` 与内嵌资源。外部贴图、复杂动画/骨骼和特殊材质扩展并不是完整支持目标。
 
@@ -316,7 +341,7 @@ TAA 和 TSR 共用 jitter 逻辑及一套双缓冲 temporal history，但拥有�
 3. 计算 directional light 与 4 级 CSM。
 4. 执行主相机/阴影裁剪和 LOD 选择。
 5. 按透明性、模型、LOD 和 cutout 状态排序，生成实例数据。
-6. 构建并执行所选路径的 RDG。
+6. 启用 VXGI 时更新 Probe/滤波和 Global SDF 缓存，再构建并执行所选路径的 RDG。
 
 Deferred 路径：
 
@@ -327,6 +352,8 @@ GBuffer
 MotionVector
 HBAO -> Blur -> Scalar Temporal Filter
 DeferredLighting
+SSGI + Mesh/Global SDF GI optional
+GI reconstruction -> temporal/spatial filtering -> HDR composite
 Skybox
 Transparent
 TAA / TSR / DLSS optional
@@ -350,7 +377,7 @@ PostProcess
 Present
 ```
 
-TAA、TSR、SMAA 和 DLSS 都支持 Forward 与 Deferred。HBAO 只属于 Deferred 路径。DLSS 只有在配置中显式选择时才初始化 NGX，失败时不会自动切换到其他模式。
+TAA、TSR、SMAA 和 DLSS 都支持 Forward 与 Deferred。HBAO 与上述混合 GI 当前只接入 Deferred 路径；关闭 GI 时一起跳过其重建、滤波和合成。DLSS 只有在配置中显式选择时才初始化 NGX，失败时不会自动切换到其他模式。
 
 ## 目录结构
 
@@ -365,7 +392,9 @@ TAA、TSR、SMAA 和 DLSS 都支持 Forward 与 Deferred。HBAO 只属于 Deferr
 | `Logic/` | Camera、InputManager、SceneObject。 |
 | `Shaders/` | 运行时编译的 HLSL。 |
 | `Settings/` | 随仓库提交的 JSON 配置。 |
-| `ThirdParty/` | 随仓库提交的头文件、SMAA LUT 和 NVIDIA DLSS SDK。 |
+| `ThirdParty/` | 随仓库提交的头文件、SMAA LUT、DLSS SDK、STBN 数据、NRD 派生 helper 及许可证。 |
+| `Tests/` | 保留的 Global SDF CPU/GPU 与混合路径测试。 |
+| `Docs/` | GI 设计、历史审查与最终收尾记录；当前参数以配置和 `SSGI.md` 为准。 |
 | `packages.config` | 可恢复 NuGet 依赖的版本清单。 |
 | `Models/`、`HDRs/` | 本地运行资源；不随仓库提交。 |
 
@@ -392,7 +421,6 @@ HLSL 在运行时通过 DXC 编译为 Shader Model 6.6，不依赖 Visual Studio
 - 没有正式资产管线或在线资源下载；模型和 HDR 由使用者在本机准备。
 - vcpkg 仍使用 classic/user-wide integration，没有 manifest 锁定 Assimp/meshoptimizer 版本。
 - 模型加载面向 `.glb` 内嵌资源；动画/蒙皮字段存在，但当前帧流程没有动画更新。
-- `material_override_index` 已进入配置结构，但目前没有应用到创建出的场景实例。
 - 透明物体按距离排序以保证混合，可能降低 batching 效率。
 - 配置和 shader 没有热重载，修改后需要重启。
 - 资源路径大量使用相对路径，工作目录错误会导致初始化失败或资源为空。
@@ -400,7 +428,7 @@ HLSL 在运行时通过 DXC 编译为 Shader Model 6.6，不依赖 Visual Studio
 
 ## 给自动化工具和 AI 的维护约定
 
-- 不要提交 `.vs/`、`x64/`、`LearnDirectX/x64/`、`packages/`、PDB/OBJ/TLOG。
+- 不要提交 `.vs/`、`x64/`、`LearnDirectX/x64/`、`packages/`、PDB/OBJ/TLOG、`tmp/`、`Captures/`、`Logs/`、`PassViewRun.json` 或 Python 缓存。
 - 不要提交 `Models/`、`HDRs/` 或 `Scene_Assets/`；修改场景前先确认目标资源只需存在于本机。
 - `ThirdParty/` 是有意提交的依赖，不要把其中的 DLL/LIB 当作普通构建产物删除。
 - 排查构建失败时，先区分 NuGet、vcpkg、vendored dependency 和 Windows SDK 四种来源。

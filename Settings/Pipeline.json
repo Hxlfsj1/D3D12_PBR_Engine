@@ -7,8 +7,13 @@
     "anti_aliasing": "DLSS",
     "dlss_quality": "Quality"
   },
+  "shadows": {
+    "cascades": {
+      "transition_fraction": 0.1
+    }
+  },
   "ssgi": {
-    "enabled": true,
+    "enabled": false,
     "world_sharing": {
       "enabled": true
     },

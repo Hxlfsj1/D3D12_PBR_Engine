@@ -3,7 +3,7 @@
   "instances": [
     {
       "name": "BaseModel",
-      "model_path": "Models/CyberPunk_Car.glb",
+      "model_path": "Models/Cornell_Box.glb",
       "pos": [ 0.0, 0.01, 0.0 ],
       "rot": [ 0.0, 0.0, 0.0 ],
       "scale": [ 1.0, 1.0, 1.0 ],

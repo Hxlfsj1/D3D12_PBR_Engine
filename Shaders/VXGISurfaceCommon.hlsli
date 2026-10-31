@@ -52,20 +52,29 @@ VXGISurfaceMaterial VXGISampleSurfaceMaterial(VXGISDFHit hit,
     Texture2D<float4> albedoTexture = ResourceDescriptorHeap[NonUniformResourceIndex(material.albedoIdx)];
     float4 albedoSample = albedoTexture.SampleLevel(materialSampler, surface.uv, mipLevel);
     result.uv = surface.uv;
-    result.albedo = DecodeSRGBColor(albedoSample.rgb) * material.baseColorFactor.rgb;
+    // Use the same hardware sRGB decode as GBuffer/forward material sampling.
+    result.albedo = albedoSample.rgb * material.baseColorFactor.rgb;
     result.alpha = albedoSample.a * material.baseColorFactor.a;
 
     Texture2D<float4> ormTexture = ResourceDescriptorHeap[NonUniformResourceIndex(material.ormIdx)];
-    result.orm = ormTexture.SampleLevel(materialSampler, surface.uv, mipLevel).rgb;
+    Texture2D<float4> occlusionTexture = ResourceDescriptorHeap[NonUniformResourceIndex(material.occlusionIdx)];
+    result.orm = ComposeMaterialORM(
+        ormTexture.SampleLevel(materialSampler, surface.uv, mipLevel).rgb,
+        occlusionTexture.SampleLevel(materialSampler, surface.uv, mipLevel).r,
+        material.metallicFactor, material.roughnessFactor, material.occlusionStrength);
     result.occlusion = max(result.orm.r, 0.01);
     result.perceptualRoughness = ClampPerceptualRoughness(result.orm.g);
     result.metallic = result.orm.b;
 
-    Texture2D<float4> normalTexture = ResourceDescriptorHeap[NonUniformResourceIndex(material.normalIdx)];
-    float3 tangentNormal = normalTexture.SampleLevel(materialSampler, surface.uv, mipLevel).xyz * 2.0 - 1.0;
-    tangentNormal.y = -tangentNormal.y;
-    float3 mappedNormal = mul(tangentNormal, float3x3(surface.tangent, surface.bitangent, surface.shadingNormal));
-    mappedNormal = dot(mappedNormal, mappedNormal) > 1e-20 ? normalize(mappedNormal) : surface.shadingNormal;
+    float3 mappedNormal = surface.shadingNormal;
+    if (material.normalIdx != NO_NORMAL_TEXTURE_INDEX)
+    {
+        Texture2D<float4> normalTexture = ResourceDescriptorHeap[NonUniformResourceIndex(material.normalIdx)];
+        float3 tangentNormal = normalTexture.SampleLevel(materialSampler, surface.uv, mipLevel).xyz * 2.0 - 1.0;
+        tangentNormal.y = -tangentNormal.y;
+        mappedNormal = NormalizeSurfaceDirection(
+            mul(tangentNormal, float3x3(surface.tangent, surface.bitangent, surface.shadingNormal)), surface.shadingNormal);
+    }
     result.shadingNormal = FaceNormalByFrontFace(mappedNormal, hit.backFace == 0);
     result.geometricNormal = hit.geometricNormal;
     result.tangent = surface.tangent;
@@ -75,7 +84,7 @@ VXGISurfaceMaterial VXGISampleSurfaceMaterial(VXGISDFHit hit,
     if (material.isUnlit == 0)
     {
         Texture2D<float4> emissiveTexture = ResourceDescriptorHeap[NonUniformResourceIndex(material.emissiveIdx)];
-        result.uncappedEmissive = DecodeSRGBColor(emissiveTexture.SampleLevel(materialSampler, surface.uv, mipLevel).rgb)
+        result.uncappedEmissive = emissiveTexture.SampleLevel(materialSampler, surface.uv, mipLevel).rgb
             * material.emissiveFactor;
     }
     result.materialId = surface.materialId;

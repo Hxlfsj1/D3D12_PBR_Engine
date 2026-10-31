@@ -221,14 +221,15 @@ public:
                             if constexpr (requires { sourceVertex.TexCoords; sourceVertex.Normal; sourceVertex.Tangent; sourceVertex.Bitangent; })
                             {
                                 triangle.uv[vertex] = sourceVertex.TexCoords;
-                                // Match GBuffer VS: transform all three vectors by inverse-transpose,
-                                // interpolate first, then orthonormalize at the hit. UVs are already flipped by import.
+                                // Surface directions use the linear world transform; only the
+                                // normal uses inverse-transpose. Orthonormalize after interpolation.
+                                // UVs are already flipped by import.
                                 DirectX::XMStoreFloat3(&triangle.shadingNormals[vertex], DirectX::XMVector3TransformNormal(
                                     DirectX::XMLoadFloat3(&sourceVertex.Normal), normalMatrix));
                                 DirectX::XMStoreFloat3(&triangle.tangents[vertex], DirectX::XMVector3TransformNormal(
-                                    DirectX::XMLoadFloat3(&sourceVertex.Tangent), normalMatrix));
+                                    DirectX::XMLoadFloat3(&sourceVertex.Tangent), world));
                                 DirectX::XMStoreFloat3(&triangle.bitangents[vertex], DirectX::XMVector3TransformNormal(
-                                    DirectX::XMLoadFloat3(&sourceVertex.Bitangent), normalMatrix));
+                                    DirectX::XMLoadFloat3(&sourceVertex.Bitangent), world));
                             }
                             if (!Finite(triangle.positions[vertex])) { valid = false; break; }
                         }
@@ -415,6 +416,8 @@ private:
         HashWord(hash, FloatBits(mesh.baseColorFactor.x)); HashWord(hash, FloatBits(mesh.baseColorFactor.y));
         HashWord(hash, FloatBits(mesh.baseColorFactor.z)); HashWord(hash, FloatBits(mesh.baseColorFactor.w));
         HashFloat3(hash, mesh.emissiveFactor);
+        HashWord(hash, FloatBits(mesh.metallicFactor)); HashWord(hash, FloatBits(mesh.roughnessFactor));
+        HashWord(hash, FloatBits(mesh.occlusionStrength)); HashWord(hash, FloatBits(mesh.alphaCutoff));
         for (const auto& texture : mesh.textures)
         {
             HashWord(hash, static_cast<uint32_t>(texture.type));

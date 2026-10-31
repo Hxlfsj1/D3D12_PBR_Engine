@@ -1,7 +1,7 @@
 #ifndef VXGI_MATERIAL_COMMON_HLSLI
 #define VXGI_MATERIAL_COMMON_HLSLI
 
-// Exactly the 48-byte global MaterialData/RenderMaterialData GPU layout.
+// Exactly the 80-byte global MaterialData/RenderMaterialData GPU layout.
 // Shared by geometric coverage and surface shading without an include cycle.
 struct VXGIMaterialData
 {
@@ -12,6 +12,12 @@ struct VXGIMaterialData
     float4 baseColorFactor;
     uint isUnlit;
     float3 emissiveFactor;
+    float metallicFactor;
+    float roughnessFactor;
+    uint occlusionIdx;
+    float occlusionStrength;
+    float alphaCutoff;
+    float3 materialPadding;
 };
 
 #endif

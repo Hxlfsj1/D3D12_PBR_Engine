@@ -81,6 +81,7 @@ struct PipelineConfig
 {
     bool useDeferred = true;
     bool useZPrepass = false;
+    float shadowCascadeTransitionFraction = 0.1f;
     AntiAliasingMode antiAliasing = AntiAliasingMode::None;
     DLSSQualityMode dlssQuality = DLSSQualityMode::Quality;
 };
@@ -298,6 +299,12 @@ private:
                 const auto reconstruction = j.value("DLSS SR", nlohmann::json::object());
                 pipeline.useDeferred = rendering.value("use_deferred", pipeline.useDeferred);
                 pipeline.useZPrepass = rendering.value("use_z_prepass", pipeline.useZPrepass);
+                const auto shadows = j.value("shadows", nlohmann::json::object());
+                const auto cascades = shadows.value("cascades", nlohmann::json::object());
+                const float transition = cascades.value("transition_fraction", 0.1f);
+                if (!std::isfinite(transition) || transition < 0 || transition > 0.3f)
+                    throw std::runtime_error("Shadow cascade transition_fraction must be between 0 and 0.3.");
+                pipeline.shadowCascadeTransitionFraction = transition;
 
                 const std::string antiAliasing = reconstruction.value("anti_aliasing", std::string("None"));
                 if (antiAliasing == "TAA")

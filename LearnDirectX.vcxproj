@@ -281,6 +281,9 @@
     <None Include="Shaders\LightingCommon.hlsli">
       <FileType>Document</FileType>
     </None>
+    <None Include="Shaders\ShadowReceiverPlane.hlsli">
+      <FileType>Document</FileType>
+    </None>
     <None Include="Shaders\MathCommon.hlsli">
       <FileType>Document</FileType>
     </None>

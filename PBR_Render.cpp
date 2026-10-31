@@ -904,14 +904,17 @@ void D3D12App::Update()
     shadowInput.lightDir = m_settingsManager.lighting.lightDir;
     shadowInput.aspectRatio = static_cast<float>(Width) / Height;
     shadowInput.shadowMapSize = static_cast<float>(m_resourceManager.GetShadowMapSize());
+    shadowInput.transitionFraction = m_settingsManager.pipeline.shadowCascadeTransitionFraction;
+    shadowInput.tanSunAngularRadius = std::tan(
+        XMConvertToRadians(m_settingsManager.lighting.sunAngularRadiusDegrees));
 
     ShadowPass::FrameData shadowFrame = ShadowPass::PrepareFrame(shadowInput);
     passCb.lightDir = shadowFrame.lightDir;
-    passCb.tanSunAngularRadius = std::tan(
-        XMConvertToRadians(m_settingsManager.lighting.sunAngularRadiusDegrees));
+    passCb.tanSunAngularRadius = shadowInput.tanSunAngularRadius;
     passCb.cascadeSplits = shadowFrame.cascadeSplits;
     passCb.cascadeOrthoWidths = shadowFrame.cascadeOrthoWidths;
     passCb.cascadeDepthRanges = shadowFrame.cascadeDepthRanges;
+    passCb.cascadeBlendEnds = shadowFrame.cascadeBlendEnds;
     std::copy(
         shadowFrame.lightViewProj.begin(),
         shadowFrame.lightViewProj.end(),

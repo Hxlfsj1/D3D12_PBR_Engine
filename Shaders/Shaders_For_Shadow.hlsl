@@ -13,6 +13,7 @@
     float4 cascadeSplits;
     float4 cascadeOrthoWidths;
     float4 cascadeDepthRanges;
+    float4 cascadeBlendEnds;
     
     uint iblPrefilterIdx;
     uint iblBRDFIdx;
@@ -43,6 +44,12 @@ struct MaterialData
     float4 baseColorFactor;
     uint isUnlit;
     float3 emissiveFactor;
+    float metallicFactor;
+    float roughnessFactor;
+    uint occlusionIdx;
+    float occlusionStrength;
+    float alphaCutoff;
+    float3 materialPadding;
 };
 
 StructuredBuffer<InstanceData> gInstanceData : register(t6);

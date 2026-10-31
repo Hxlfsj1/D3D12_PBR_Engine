@@ -17,6 +17,12 @@ struct MaterialData
     float4 baseColorFactor;
     uint isUnlit;
     float3 emissiveFactor;
+    float metallicFactor;
+    float roughnessFactor;
+    uint occlusionIdx;
+    float occlusionStrength;
+    float alphaCutoff;
+    float3 materialPadding;
 };
 
 cbuffer PassConstants : register(b0)

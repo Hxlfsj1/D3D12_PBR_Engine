@@ -99,7 +99,9 @@ public:
 
         unsigned char colorWhite[] = { 255, 255, 255, 255 };
         unsigned char colorFlatNormal[] = { 128, 128, 255, 255 };
-        unsigned char colorDefaultORM[] = { 255, 128, 0, 255 };
+        // Neutral multiplier: an absent MR texture must retain its material's
+        // authored scalar factors instead of imposing roughness .5 / metal 0.
+        unsigned char colorDefaultORM[] = { 255, 255, 255, 255 };
         unsigned char colorBlack[] = { 0, 0, 0, 255 };
 
         ComPtr<ID3D12Resource> localAlbedoUpload;
@@ -144,7 +146,15 @@ public:
             // This ensures a single copy of the model data while allowing for multiple unique transformations, which is the essence of instancing
             if (myModels.find(desc.modelPath) == myModels.end())
             {
-                myModels[desc.modelPath] = std::make_unique<Model>(dc->GetDevice(), dc->GetCommandList(), resourceUpload, desc.modelPath);
+                auto model = std::make_unique<Model>(dc->GetDevice(), dc->GetCommandList(), resourceUpload, desc.modelPath);
+                if (!model->IsLoaded())
+                {
+                    ErrorLog::Write("ResourceManager: scene model could not be loaded: " + desc.modelPath);
+                    resourceUpload.End(dc->GetCommandQueue()).wait();
+                    dc->GetCommandList()->Close();
+                    return false;
+                }
+                myModels.emplace(desc.modelPath, std::move(model));
             }
 
             ModelInstance instance;
@@ -325,10 +335,15 @@ public:
             {
                 MaterialData mat = {};
                 mat.albedoIdx = dummyAlbedoIdx;
-                mat.normalIdx = dummyNormalIdx;
+                mat.normalIdx = UINT32_MAX; // No normal map: use the mesh normal in screen and world shading.
                 mat.ormIdx = dummyORMIdx;
+                mat.occlusionIdx = dummyAlbedoIdx; // An absent AO texture is unoccluded, independent of MR.r.
                 mat.emissiveIdx = dummyAlbedoIdx;
                 mat.emissiveFactor = mesh.emissiveFactor;
+                mat.metallicFactor = mesh.metallicFactor;
+                mat.roughnessFactor = mesh.roughnessFactor;
+                mat.occlusionStrength = mesh.occlusionStrength;
+                mat.alphaCutoff = mesh.alphaCutoff;
                 mat.baseColorFactor = mesh.baseColorFactor;
                 mat.isUnlit = mesh.isUnlit;
                 for (const auto& tex : mesh.textures)
@@ -339,7 +354,8 @@ public:
                     {
                     case TextureType::Albedo: mat.albedoIdx = found->second; break;
                     case TextureType::Normal: mat.normalIdx = found->second; break;
-                    case TextureType::ORM: mat.ormIdx = found->second; break;
+                    case TextureType::MetallicRoughness: mat.ormIdx = found->second; break;
+                    case TextureType::Occlusion: mat.occlusionIdx = found->second; break;
                     case TextureType::Emissive: mat.emissiveIdx = found->second; break;
                     }
                 }
@@ -362,7 +378,7 @@ public:
                 ErrorLog::Write("ResourceManager: instance material override is outside the global pool.");
                 return false;
             }
-        static_assert(sizeof(MaterialData) == 48);
+        static_assert(sizeof(MaterialData) == 80);
         if (next.size() == m_globalMaterials.size() &&
             (next.empty() || std::memcmp(next.data(), m_globalMaterials.data(), next.size() * sizeof(MaterialData)) == 0)) return true;
         // Rare material edits use synchronous upload. Every frame must finish

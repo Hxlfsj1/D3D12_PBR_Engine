@@ -20,6 +20,12 @@ struct MaterialData
     float4 baseColorFactor;
     uint isUnlit;
     float3 emissiveFactor;
+    float metallicFactor;
+    float roughnessFactor;
+    uint occlusionIdx;
+    float occlusionStrength;
+    float alphaCutoff;
+    float3 materialPadding;
 };
 
 struct InstanceData
@@ -83,8 +89,9 @@ VS_OUTPUT VSMain(VS_INPUT input)
     float4x4 normalMat = gInstanceData[input.instanceID].normalMat;
     output.worldNormal = mul(input.normal, (float3x3) normalMat);
 #if LOD_LEVEL == 0
-    output.worldTangent = mul(input.tangent, (float3x3) normalMat);
-    output.worldBitangent = mul(input.bitangent, (float3x3) normalMat);
+    float4x4 worldMat = gInstanceData[input.instanceID].worldMat;
+    output.worldTangent = mul(input.tangent, (float3x3) worldMat);
+    output.worldBitangent = mul(input.bitangent, (float3x3) worldMat);
 #endif
     output.instanceID = input.instanceID;
     
@@ -110,46 +117,50 @@ GBufferOutput PSMain(VS_OUTPUT input, bool isFrontFace : SV_IsFrontFace)
         finalMatID,
         input.texCoord,
         materialMipBias);
-    ApplyDepthAlphaTest(albedoSample.a);
+    ApplyDepthAlphaTest(albedoSample.a, finalMatID);
     
-    float3 baseAlbedo = DecodeSRGBColor(albedoSample.rgb) * mat.baseColorFactor.rgb;
+    // Color texture SRVs decode sRGB before filtering; samples are already linear.
+    float3 baseAlbedo = albedoSample.rgb * mat.baseColorFactor.rgb;
     output.albedo = float4(baseAlbedo, albedoSample.a);
     output.emissive = float4(0.0f, 0.0f, 0.0f, 1.0f);
 
     if (!isUnlit)
     {
         Texture2D tEmissive = ResourceDescriptorHeap[mat.emissiveIdx];
-        float3 emissiveSample = DecodeSRGBColor(
-            tEmissive.SampleBias(s1, input.texCoord, materialMipBias).rgb);
+        float3 emissiveSample = tEmissive.SampleBias(s1, input.texCoord, materialMipBias).rgb;
         output.emissive = float4(emissiveSample * mat.emissiveFactor, 1.0f);
     }
     
+    float3 finalNormal = NormalizeSurfaceDirection(input.worldNormal, float3(0, 0, 1));
 #if LOD_LEVEL == 0
-    Texture2D tNormal = ResourceDescriptorHeap[mat.normalIdx];
-    float3 normalMap = tNormal.SampleBias(
-        s1,
-        input.texCoord,
-        materialMipBias).xyz * 2.0 - 1.0;
-    normalMap.y = -normalMap.y;
-    float3 N;
-    float3 T;
-    float3 B;
-    BuildOrthonormalTangentBasis(input.worldNormal, input.worldTangent, input.worldBitangent, N, T, B);
-    float3x3 TBN = float3x3(T, B, N);
-    float3 finalNormal = normalize(mul(normalMap, TBN));
-    finalNormal = FaceNormalByFrontFace(finalNormal, isFrontFace);
-    output.normal = float4(EncodeGBufferNormal(finalNormal), 1.0);
-#else
-    float3 finalNormal = normalize(input.worldNormal);
-    finalNormal = FaceNormalByFrontFace(finalNormal, isFrontFace);
-    output.normal = float4(EncodeGBufferNormal(finalNormal), 1.0);
+    if (mat.normalIdx != NO_NORMAL_TEXTURE_INDEX)
+    {
+        Texture2D tNormal = ResourceDescriptorHeap[mat.normalIdx];
+        float3 normalMap = tNormal.SampleBias(
+            s1,
+            input.texCoord,
+            materialMipBias).xyz * 2.0 - 1.0;
+        normalMap.y = -normalMap.y;
+        float3 N;
+        float3 T;
+        float3 B;
+        BuildOrthonormalTangentBasis(input.worldNormal, input.worldTangent, input.worldBitangent, N, T, B);
+        float3x3 TBN = float3x3(T, B, N);
+        finalNormal = NormalizeSurfaceDirection(mul(normalMap, TBN), N);
+    }
 #endif
+    finalNormal = FaceNormalByFrontFace(finalNormal, isFrontFace);
+    output.normal = float4(EncodeGBufferNormal(finalNormal), 1.0);
 
     Texture2D tORM = ResourceDescriptorHeap[mat.ormIdx];
+    Texture2D tOcclusion = ResourceDescriptorHeap[mat.occlusionIdx];
     float3 ormSample = tORM.SampleBias(
         s1,
         input.texCoord,
         materialMipBias).rgb;
+    ormSample = ComposeMaterialORM(ormSample,
+        tOcclusion.SampleBias(s1, input.texCoord, materialMipBias).r,
+        mat.metallicFactor, mat.roughnessFactor, mat.occlusionStrength);
     output.orm = float4(ormSample, 1.0f);
     output.orm.a = isUnlit ? 0.0f : 1.0f;
     

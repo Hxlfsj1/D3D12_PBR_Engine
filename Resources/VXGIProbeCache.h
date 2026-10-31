@@ -29,6 +29,7 @@ public:
                     if(id>=surface.GetMaterials().size()) continue;
                     const auto& material=surface.GetMaterials()[id];
                     Hash(coverage,material.albedoIdx);Hash(coverage,material.baseColorFactor.w);
+                    Hash(coverage,material.alphaCutoff);
                 }
                 instance.coverageFingerprint=coverage;
             }

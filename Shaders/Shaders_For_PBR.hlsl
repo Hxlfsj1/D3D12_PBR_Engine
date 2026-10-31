@@ -17,6 +17,7 @@ cbuffer PassConstants : register(b0)
     float4 cascadeSplits;
     float4 cascadeOrthoWidths;
     float4 cascadeDepthRanges;
+    float4 cascadeBlendEnds;
     
     uint iblPrefilterIdx;
     uint iblBRDFIdx;
@@ -32,6 +33,12 @@ struct MaterialData
     float4 baseColorFactor;
     uint isUnlit;
     float3 emissiveFactor;
+    float metallicFactor;
+    float roughnessFactor;
+    uint occlusionIdx;
+    float occlusionStrength;
+    float alphaCutoff;
+    float3 materialPadding;
 };
 
 struct InstanceData
@@ -113,13 +120,13 @@ VS_OUTPUT VSMain(VS_INPUT input)
     output.pos = mul(float4(input.pos, 1.0f), wvpMat);
     output.worldPos = mul(float4(input.pos, 1.0f), worldMat).xyz;
     
-    output.normal = normalize(mul(input.normal, (float3x3) normalMat));
+    output.normal = mul(input.normal, (float3x3) normalMat);
     output.texCoord = input.texCoord;
     
 #if LOD_LEVEL == 0
-    // Completely fix the non-uniform scaling issue for normals by implementing a dedicated Normal Matrix
-    output.tangent = normalize(mul(input.tangent, (float3x3) normalMat));
-    output.bitangent = normalize(mul(input.bitangent, (float3x3) normalMat));
+    // Tangents are surface directions; only normals use the inverse transpose.
+    output.tangent = mul(input.tangent, (float3x3) worldMat);
+    output.bitangent = mul(input.bitangent, (float3x3) worldMat);
 #endif
     
     output.instanceID = input.instanceID;
@@ -133,6 +140,9 @@ float3 getNormalFromMap(VS_OUTPUT input, bool isFrontFace)
     uint finalMatID = ResolveDepthMaterialID(input.instanceID, materialID);
 
     uint normalIdx = gMaterialData[finalMatID].normalIdx;
+    float3 geometricNormal = NormalizeSurfaceDirection(input.normal, float3(0, 0, 1));
+    if (normalIdx == NO_NORMAL_TEXTURE_INDEX)
+        return FaceNormalByFrontFace(geometricNormal, isFrontFace);
     Texture2D tNormal = ResourceDescriptorHeap[normalIdx];
     float3 tangentNormal = tNormal.SampleBias(
         s1,
@@ -145,7 +155,7 @@ float3 getNormalFromMap(VS_OUTPUT input, bool isFrontFace)
     float3 B;
     BuildOrthonormalTangentBasis(input.normal, input.tangent, input.bitangent, N, T, B);
     float3x3 TBN = float3x3(T, B, N);
-    float3 mappedNormal = normalize(mul(tangentNormal, TBN));
+    float3 mappedNormal = NormalizeSurfaceDirection(mul(tangentNormal, TBN), N);
 
     return FaceNormalByFrontFace(mappedNormal, isFrontFace);
 }
@@ -246,14 +256,15 @@ float4 PSMain(VS_OUTPUT input, bool isFrontFace : SV_IsFrontFace) : SV_TARGET
         finalMatID,
         input.texCoord,
         materialMipBias);
-    ApplyDepthAlphaTest(albedoSample.a);
-    float3 albedo = DecodeSRGBColor(albedoSample.rgb) * mat.baseColorFactor.rgb;
+    ApplyDepthAlphaTest(albedoSample.a, finalMatID);
+    // Color texture SRVs decode sRGB before filtering; samples are already linear.
+    float3 albedo = albedoSample.rgb * mat.baseColorFactor.rgb;
     float finalAlpha = albedoSample.a;
     ClipTransparentAgainstSceneDepth(input.pos);
     
     if (mat.isUnlit)
     {
-        float3 N = FaceNormalByFrontFace(normalize(input.normal), isFrontFace);
+        float3 N = FaceNormalByFrontFace(NormalizeSurfaceDirection(input.normal, float3(0, 0, 1)), isFrontFace);
         float3 V = normalize(camPos - input.worldPos);
         float3 transparentColor = ApplyTransparentSceneRefraction(albedo, finalAlpha, input.pos, N, albedo);
         transparentColor = ApplyTransparentFresnelDarkening(transparentColor, N, V);
@@ -261,7 +272,7 @@ float4 PSMain(VS_OUTPUT input, bool isFrontFace : SV_IsFrontFace) : SV_TARGET
     }
 
 #if LOD_LEVEL == 2
-    float3 N = normalize(input.normal);
+    float3 N = NormalizeSurfaceDirection(input.normal, float3(0, 0, 1));
     N = FaceNormalByFrontFace(N, isFrontFace);
     float3 L = normalize(-lightDir);
     float NdotL = max(dot(N, L), 0.0);
@@ -277,12 +288,16 @@ float4 PSMain(VS_OUTPUT input, bool isFrontFace : SV_IsFrontFace) : SV_TARGET
     return BuildTransparentOutput(totalDiffuse, finalAlpha);
 #else
     Texture2D tMR = ResourceDescriptorHeap[mat.ormIdx];
+    Texture2D tOcclusion = ResourceDescriptorHeap[mat.occlusionIdx];
     
     float ao = 1.0;
     float roughness = 0.5;
     float metallic = 0.0;
     
-    float4 mrSample = tMR.SampleBias(s1, input.texCoord, materialMipBias);
+    float3 mrSample = ComposeMaterialORM(
+        tMR.SampleBias(s1, input.texCoord, materialMipBias).rgb,
+        tOcclusion.SampleBias(s1, input.texCoord, materialMipBias).r,
+        mat.metallicFactor, mat.roughnessFactor, mat.occlusionStrength);
     ao = max(mrSample.r, 0.01);
     roughness = ClampPerceptualRoughness(mrSample.g);
     metallic = mrSample.b;
@@ -290,7 +305,7 @@ float4 PSMain(VS_OUTPUT input, bool isFrontFace : SV_IsFrontFace) : SV_TARGET
     float3 N;
     
 #if LOD_LEVEL == 1
-    N = normalize(input.normal);
+    N = NormalizeSurfaceDirection(input.normal, float3(0, 0, 1));
     N = FaceNormalByFrontFace(N, isFrontFace);
 #else
     N = getNormalFromMap(input, isFrontFace);
@@ -308,20 +323,11 @@ float4 PSMain(VS_OUTPUT input, bool isFrontFace : SV_IsFrontFace) : SV_TARGET
 
     float3 kD = ComputeDiffuseEnergy(F, metallic);
 
-    // Match cascade selection to the camera-space depth ranges used to build the frusta.
     float viewDepth = dot(input.worldPos - camPos, cameraForward);
-    uint cascadeIndex = SelectCascadeIndex(viewDepth);
+    float3 worldPosDDX = ddx(input.worldPos);
+    float3 worldPosDDY = ddy(input.worldPos);
+    float shadow = SampleDirectionalShadow(input.worldPos, worldPosDDX, worldPosDDY, viewDepth);
 
-    float4 lightSpacePos = mul(float4(input.worldPos, 1.0f), lightViewProj[cascadeIndex]);
-    float4 lightSpacePosDDX = mul(float4(ddx(input.worldPos), 0.0f), lightViewProj[cascadeIndex]);
-    float4 lightSpacePosDDY = mul(float4(ddy(input.worldPos), 0.0f), lightViewProj[cascadeIndex]);
-    float shadow = CalcShadowFactor(
-        lightSpacePos,
-        lightSpacePosDDX,
-        lightSpacePosDDY,
-        cascadeIndex);
-    shadow = FadeCascadeShadow(shadow, viewDepth);
-    
     // Calculate final light
     float NdotL = max(dot(N, L), 0.0);
     float3 directDiffuse = ComputeDirectDiffuse(kD, albedo, radiance, NdotL, shadow);
@@ -357,7 +363,7 @@ float4 PSMain(VS_OUTPUT input, bool isFrontFace : SV_IsFrontFace) : SV_TARGET
     // Add emissive (if applicable)
     Texture2D tEmissive = ResourceDescriptorHeap[mat.emissiveIdx];
     float3 emissive = hasEmissive
-        ? DecodeSRGBColor(tEmissive.SampleBias(s1, input.texCoord, materialMipBias).rgb) * mat.emissiveFactor
+        ? tEmissive.SampleBias(s1, input.texCoord, materialMipBias).rgb * mat.emissiveFactor
         : float3(0.0, 0.0, 0.0);
     
     float3 totalDiffuse = directDiffuse + ambientDiffuse;

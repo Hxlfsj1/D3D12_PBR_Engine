@@ -24,11 +24,17 @@ public:
         DirectX::XMFLOAT4 baseColorFactor={1,1,1,1};
         uint32_t isUnlit=0;
         DirectX::XMFLOAT3 emissiveFactor={};
+        float metallicFactor=1,roughnessFactor=1;
+        uint32_t occlusionIdx=0;
+        float occlusionStrength=1,alphaCutoff=0.5f;
+        DirectX::XMFLOAT3 materialPadding={};
     };
-    static_assert(sizeof(MaterialRecord)==48);
+    static_assert(sizeof(MaterialRecord)==80);
     static_assert(offsetof(MaterialRecord,baseColorFactor)==16);
     static_assert(offsetof(MaterialRecord,isUnlit)==32);
     static_assert(offsetof(MaterialRecord,emissiveFactor)==36);
+    static_assert(offsetof(MaterialRecord,metallicFactor)==48 && offsetof(MaterialRecord,roughnessFactor)==52);
+    static_assert(offsetof(MaterialRecord,occlusionIdx)==56 && offsetof(MaterialRecord,alphaCutoff)==64);
 
     struct Parameters
     {
@@ -58,10 +64,12 @@ public:
         uint64_t worldMaterialRevision,const Parameters& requested,uint64_t worldCoverageRevision=0)
     {
         using InputRecord=std::remove_cvref_t<decltype(*records.begin())>;
-        static_assert(std::is_standard_layout_v<InputRecord> && sizeof(InputRecord)==48,
-            "VXGI surface material input must use the 48-byte MaterialData layout.");
+        static_assert(std::is_standard_layout_v<InputRecord> && sizeof(InputRecord)==80,
+            "VXGI surface material input must use the 80-byte MaterialData layout.");
         static_assert(offsetof(InputRecord,baseColorFactor)==16 && offsetof(InputRecord,isUnlit)==32 &&
-            offsetof(InputRecord,emissiveFactor)==36,"MaterialData/HLSL field offsets changed.");
+            offsetof(InputRecord,emissiveFactor)==36 && offsetof(InputRecord,metallicFactor)==48 &&
+            offsetof(InputRecord,roughnessFactor)==52 && offsetof(InputRecord,occlusionIdx)==56 &&
+            offsetof(InputRecord,alphaCutoff)==64,"MaterialData/HLSL field offsets changed.");
         const auto start=std::chrono::steady_clock::now();
         Parameters parameters=requested;
         if(!ValidateParameters(parameters)) return false;
@@ -73,14 +81,19 @@ public:
             for(const auto& source:records)
             {
                 const auto record=CopyMaterial(source);
-                if(!Finite(record.baseColorFactor) || !Finite(record.emissiveFactor))
+                if(!Finite(record.baseColorFactor) || !Finite(record.emissiveFactor) ||
+                    !std::isfinite(record.metallicFactor) || !std::isfinite(record.roughnessFactor) ||
+                    record.metallicFactor<0 || record.metallicFactor>1 || record.roughnessFactor<0 || record.roughnessFactor>1 ||
+                    !std::isfinite(record.occlusionStrength) || record.occlusionStrength<0 || record.occlusionStrength>1 ||
+                    !std::isfinite(record.alphaCutoff) || record.alphaCutoff<0)
                 {
-                    m_error="VXGI surface material factors must be finite.";
+                    m_error="VXGI surface material factors must be finite; MR/AO factors must be in [0,1] and alpha cutoff nonnegative.";
                     return false;
                 }
                 if(index>=m_materials.size() || std::memcmp(&record,&m_materials[index],sizeof(record))!=0) recordChanges=true;
                 if(index>=m_materials.size() || record.albedoIdx!=m_materials[index].albedoIdx ||
-                    record.baseColorFactor.w!=m_materials[index].baseColorFactor.w) coverageRecordsChanged=true;
+                    record.baseColorFactor.w!=m_materials[index].baseColorFactor.w ||
+                    record.alphaCutoff!=m_materials[index].alphaCutoff) coverageRecordsChanged=true;
                 ++index;
             }
             const bool geometryChanged=!m_initialized || worldGeometryRevision!=m_stats.sourceWorldGeometryRevision ||
@@ -169,7 +182,9 @@ private:
     template<class InputRecord>
     static MaterialRecord CopyMaterial(const InputRecord& source)
     {
-        return {source.albedoIdx,source.normalIdx,source.ormIdx,source.emissiveIdx,source.baseColorFactor,source.isUnlit,source.emissiveFactor};
+        return {source.albedoIdx,source.normalIdx,source.ormIdx,source.emissiveIdx,source.baseColorFactor,source.isUnlit,
+            source.emissiveFactor,source.metallicFactor,source.roughnessFactor,source.occlusionIdx,
+            source.occlusionStrength,source.alphaCutoff,{}};
     }
     std::vector<MaterialRecord> m_materials;
     Parameters m_parameters;

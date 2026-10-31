@@ -59,13 +59,18 @@ struct alignas(D3D12_CONSTANT_BUFFER_DATA_PLACEMENT_ALIGNMENT) PassConstants
     DirectX::XMFLOAT4 cascadeSplits;
     DirectX::XMFLOAT4 cascadeOrthoWidths;
     DirectX::XMFLOAT4 cascadeDepthRanges;
+    DirectX::XMFLOAT4 cascadeBlendEnds;
 
     UINT iblPrefilterIdx;
     UINT iblBRDFIdx;
     UINT shadowMapIdx;
 
-    UINT padTo256[33];
+    UINT padTo256[29];
 };
+
+static_assert(sizeof(PassConstants) == 512);
+static_assert(offsetof(PassConstants, cascadeBlendEnds) == 368);
+static_assert(offsetof(PassConstants, shadowMapIdx) == 392);
 
 constexpr UINT64 kPassConstantsAlignedSize = AlignConstantBufferSize(sizeof(PassConstants));
 
@@ -77,8 +82,17 @@ struct MaterialData
     UINT emissiveIdx;
     DirectX::XMFLOAT4 baseColorFactor;
     UINT isUnlit;
-    DirectX::XMFLOAT3 emissiveFactor; // Linear factor including emissive strength; retains 48-byte stride.
+    DirectX::XMFLOAT3 emissiveFactor; // Linear factor including emissive strength.
+    float metallicFactor = 1.0f;
+    float roughnessFactor = 1.0f;
+    UINT occlusionIdx = 0;
+    float occlusionStrength = 1.0f;
+    float alphaCutoff = 0.5f;
+    DirectX::XMFLOAT3 materialPadding = {};
 };
+static_assert(sizeof(MaterialData) == 80);
+static_assert(offsetof(MaterialData, metallicFactor) == 48 && offsetof(MaterialData, roughnessFactor) == 52);
+static_assert(offsetof(MaterialData, occlusionIdx) == 56 && offsetof(MaterialData, alphaCutoff) == 64);
 
 struct InstanceData
 {
