@@ -33,6 +33,9 @@
 *.opendb
 *.sdf
 *.ipch
+*.cso
+*.dxil
+*.dxbc
 
 # Restorable NuGet packages (keep packages.config tracked)
 /packages/
@@ -49,6 +52,14 @@
 /PassViewRun.json
 *.tmp
 *.temp
+*.log
+
+# Local tests and experiment reports (removed from the maintained repository)
+/Tests/
+/Docs/
+/SSGI.md
+/VXGI.md
+/VXGI_PLAN.md
 
 # Python helper caches
 __pycache__/

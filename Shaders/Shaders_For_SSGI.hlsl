@@ -145,7 +145,6 @@ uint SSGIWorldMode()
     // (~3.5 ms vs ~0.75 ms Trace on the tested NVIDIA setup, with matching output).
     // The root cause remains unconfirmed; retain this until a measured fix exists.
     // Same allocation as b0; the byte offset is checked against the CPU layout.
-    // Investigation and limitations: VXGI.md, including the PIX diagnostic record.
     return traceModeConstants.Load(604);
 #else
     return hybrid.worldMode;

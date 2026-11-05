@@ -222,8 +222,6 @@
     <None Include="Shaders\VXGISurfaceCommon.hlsli" />
     <None Include="Shaders\VXGISDFCommon.hlsli" />
     <None Include="Shaders\Shaders_For_VXGI_SDF_Debug.hlsl" />
-    <None Include="VXGI.md" />
-    <None Include="VXGI_PLAN.md" />
     <None Include="Shaders\VXGIProbeCommon.hlsli" />
     <None Include="Shaders\VXGIProbeQueryCommon.hlsli" />
     <None Include="Shaders\Shaders_For_VXGI_Probe_Filter.hlsl" />

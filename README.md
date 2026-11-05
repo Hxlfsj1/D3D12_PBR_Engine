@@ -220,7 +220,7 @@ Visual Studio 调试时，应把 Working Directory 设置为 `$(ProjectDir)`。�
 - 4 级 Cascaded Shadow Maps、texel snapping 与基于太阳角半径的 PCSS 软阴影。
 - Forward/PBR 与 Deferred 两条完整 RDG 渲染路径。
 - GBuffer、Motion Vector、HBAO、Blur 和时域 HBAO 稳定化。
-- Deferred 混合 GI：SSGI 屏幕追踪、Mesh/Global SDF 软件追踪、探针 SH 缓存、共享采样和时空重建。详见 [SSGI.md](SSGI.md) 与 [VXGI.md](VXGI.md)。
+- Deferred 混合 GI：SSGI 屏幕追踪、Mesh/Global SDF 软件追踪、探针 SH 缓存、共享采样和时空重建。
 - 抗锯齿/重建模式：None、TAA、TSR、SMAA、DLSS。
 - RDG pass 依赖、资源状态转换、外部资源注册和瞬时资源生命周期。
 
@@ -267,7 +267,7 @@ GI 配置使用同一 `Settings/Pipeline.json`，下表列出当前仓库配置�
 SSGI 仍使用原接收位置、每块最多四个方向和两帧刷新。Mesh 与 Global 都使用上表的近16/远8预算，正常分别按两帧、四帧刷新。
 沿射线的贡献范围分别为 SSGI 0–1 m、Mesh SDF 0–2 m、Global SDF (2,8] m；这些范围与摄像机质量距离相互独立。
 世界射线数接受 4–64 内的 4 的倍数，读取默认值为8/8；实际工作量还受缓存复用、有效成员与 Repair 补追影响。
-棋盘格固定开启，没有 JSON 或运行时开关。采样、缓存和重建细节见 [SSGI.md](SSGI.md)。
+棋盘格固定开启，没有 JSON 或运行时开关。
 
 顶部 **Debug → Pass** 按完整 Pass 选择本步结果或截至本步的累计画面，
 未启用项置灰。抗锯齿四选一、与后处理一样只提供累计结果；ToneMap 归后处理。
@@ -280,7 +280,7 @@ T 快捷键、Details 的旧 source 选择、JSON 的 `gi_only` 和 `vxgi.hybrid
 `max(SSGI 原偏移, 模型世界空间 SDF 命中阈值 × 1.1)`，新增位移从原有限长度中扣除。
 SSGI 屏幕追踪仍使用原偏移。世界命中后只读取邻近缓存、插值并求值 SH，
 不发出逐探针遮挡射线，也不在命中点计算直接光或太阳阴影。
-`vxgi.surface.max_ray_distance` 用于缓存更新/诊断，不是 SSGI 回退射线的长度。具体契约与后台报告见 [VXGI.md](VXGI.md)。
+`vxgi.surface.max_ray_distance` 用于缓存更新/诊断，不是 SSGI 回退射线的长度。
 
 `hbao` 对象控制屏幕空间环境遮蔽（当前在 Deferred 路径使用）：
 
@@ -393,8 +393,6 @@ TAA、TSR、SMAA 和 DLSS 都支持 Forward 与 Deferred。HBAO 与上述混合 
 | `Shaders/` | 运行时编译的 HLSL。 |
 | `Settings/` | 随仓库提交的 JSON 配置。 |
 | `ThirdParty/` | 随仓库提交的头文件、SMAA LUT、DLSS SDK、STBN 数据、NRD 派生 helper 及许可证。 |
-| `Tests/` | 保留的 Global SDF CPU/GPU 与混合路径测试。 |
-| `Docs/` | GI 设计、历史审查与最终收尾记录；当前参数以配置和 `SSGI.md` 为准。 |
 | `packages.config` | 可恢复 NuGet 依赖的版本清单。 |
 | `Models/`、`HDRs/` | 本地运行资源；不随仓库提交。 |
 
