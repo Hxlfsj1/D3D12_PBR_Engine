@@ -111,7 +111,7 @@ VXGISurfaceSource VXGIEvaluateSurfaceSource(VXGISDFHit hit, VXGISDFGrid grid,
     if (source.surface.valid == 0) return source;
 
     VXGISDFHit blocker;
-    bool occluded = VXGISDFTrace(hit.position, sunDirectionTowardLight, rayMinDistance, maxRayDistance,
+    bool occluded = VXGISDFTraceFromSurface(hit, sunDirectionTowardLight, rayMinDistance, maxRayDistance,
         grid, nodes, cellOffsets, triangleReferences, triangles,
         materials, materialCount, materialSampler, materialMipLevel, blocker);
     source.shadowTraceStatus = blocker.traceStatus;

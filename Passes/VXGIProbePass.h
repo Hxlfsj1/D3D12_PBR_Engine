@@ -29,6 +29,12 @@ public:
     void SetDependencyDomain(const VXGIProbeInvalidation::Domain& domain) { m_domain=domain; }
     std::vector<CompletedDependency> TakeCompletedDependencies()
     { std::vector<CompletedDependency> result;result.swap(m_completedDependencies);return result; }
+    struct DistanceDescriptors
+    {
+        UINT readIndex=UINT_MAX,writeIndex=UINT_MAX;
+        D3D12_CPU_DESCRIPTOR_HANDLE read{},write{};
+    };
+    void SetDistanceDescriptors(std::vector<DistanceDescriptors> descriptors) { m_distanceDescriptors=std::move(descriptors); }
     bool Initialize(RenderDevice& device,UINT frames,bool meshBackend=false)
     {
         m_meshBackend=meshBackend;m_frames.resize(frames);
@@ -102,7 +108,7 @@ public:
             frame.readback->Unmap(0,&noWrites);
             if(!accepted) { ErrorLog::Write("VXGI probe batch validation failed: "+state.GetLastError());return false; }
         }
-        frame.submitted=false;frame.work.clear();frame.remapSource.Reset();return true;
+        frame.submitted=false;frame.work.clear();frame.remapSource.Reset();frame.distanceRemapSource.Reset();return true;
     }
     bool Record(RenderDevice& device,ID3D12DescriptorHeap* heap,int index,const VXGIGPUScene& scene,
         const VXGISDF& sdf,const VXGISurface& surface,D3D12_GPU_VIRTUAL_ADDRESS materialBuffer,VXGIProbeState& state)
@@ -138,6 +144,27 @@ public:
         }
         if(!previous) previous=m_history[plan.readHistoryIndex];
         frame.remapSource=previous;
+        const bool distanceEnabled=m_meshBackend && m_distanceDescriptors.size()==m_frames.size();
+        Microsoft::WRL::ComPtr<ID3D12Resource> oldDistance=m_distance;
+        if(distanceEnabled && (plan.layoutChanged || m_distanceBytes!=count*512))
+        {
+            if(!CreateBuffer(device.GetDevice(),count*512,D3D12_HEAP_TYPE_DEFAULT,D3D12_RESOURCE_STATE_COMMON,
+                D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS,m_distance)) return false;
+            m_distanceBytes=count*512;
+            const auto barrier=CD3DX12_RESOURCE_BARRIER::Transition(m_distance.Get(),D3D12_RESOURCE_STATE_COMMON,VXGIGPUScene::ReadState);
+            device.GetCommandList()->ResourceBarrier(1,&barrier);
+        }
+        if(distanceEnabled)
+        {
+            frame.distanceRemapSource=oldDistance ? oldDistance : m_distance;
+            D3D12_SHADER_RESOURCE_VIEW_DESC srv{};srv.Format=DXGI_FORMAT_UNKNOWN;srv.ViewDimension=D3D12_SRV_DIMENSION_BUFFER;
+            srv.Shader4ComponentMapping=D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;srv.Buffer.StructureByteStride=8;
+            srv.Buffer.NumElements=static_cast<UINT>(frame.distanceRemapSource->GetDesc().Width/8);
+            device.GetDevice()->CreateShaderResourceView(frame.distanceRemapSource.Get(),&srv,m_distanceDescriptors[index].read);
+            D3D12_UNORDERED_ACCESS_VIEW_DESC uav{};uav.Format=DXGI_FORMAT_UNKNOWN;uav.ViewDimension=D3D12_UAV_DIMENSION_BUFFER;
+            uav.Buffer.StructureByteStride=8;uav.Buffer.NumElements=static_cast<UINT>(count*64);
+            device.GetDevice()->CreateUnorderedAccessView(m_distance.Get(),nullptr,&uav,m_distanceDescriptors[index].write);
+        }
         const auto work=state.GetPendingWork();const auto remap=state.GetPendingRemap();const auto invalidations=state.GetPendingInvalidations();
         if(work.size()!=plan.count || (plan.layoutChanged && remap.size()!=count)) return false;
         if(!Upload(device.GetDevice(),frame.workUpload,frame.workCapacity,work.data(),work.size_bytes()) ||
@@ -172,6 +199,8 @@ public:
         c.maxRayDistance=p.rayMaxDistance;c.raysPerProbe=p.raysPerUpdate;c.maxHistoryUpdates=p.maxHistoryUpdates;c.frameIndex=plan.frameIndex;
         c.updateStart=0;c.updateCount=plan.count;c.resetMode=plan.resetMode;c.materialCount=static_cast<uint32_t>(surface.GetMaterials().size());
         c.classifyRays=p.classifyRays;c.backfaceThreshold=p.backfaceThreshold;
+        c.distancePreviousIndex=distanceEnabled?m_distanceDescriptors[index].readIndex:UINT_MAX;
+        c.distanceOutputIndex=distanceEnabled?m_distanceDescriptors[index].writeIndex:UINT_MAX;
         RDGBuilder graph(&device,"VXGIProbeGraph");
         std::vector<RDGBufferHandle> geometry(m_meshBackend?8:5);
         for(UINT i=0;i<5;++i) geometry[i]=graph.RegisterExternalBuffer(scene.Get(index,i),VXGIGPUScene::ReadState,VXGIGPUScene::ReadState,"VXGI shared scene");
@@ -180,6 +209,14 @@ public:
         const auto write=graph.RegisterExternalBuffer(m_history[plan.writeHistoryIndex].Get(),VXGIGPUScene::ReadState,VXGIGPUScene::ReadState,"VXGI next SH");
         const auto feedback=graph.RegisterExternalBuffer(frame.feedback.Get(),VXGIGPUScene::ReadState,VXGIGPUScene::ReadState,"VXGI selected batch feedback");
         graph.MarkBufferAsOutput(write);graph.MarkBufferAsOutput(feedback);
+        RDGBufferHandle distanceWrite,distanceRead;
+        if(distanceEnabled)
+        {
+            distanceWrite=graph.RegisterExternalBuffer(m_distance.Get(),VXGIGPUScene::ReadState,VXGIGPUScene::ReadState,"VXGI directional distance");
+            graph.MarkBufferAsOutput(distanceWrite);
+            if(frame.distanceRemapSource.Get()!=m_distance.Get()) distanceRead=graph.RegisterExternalBuffer(
+                frame.distanceRemapSource.Get(),VXGIGPUScene::ReadState,VXGIGPUScene::ReadState,"VXGI old directional distance");
+        }
         auto bind=[&,c,plan,heap,previous](ID3D12GraphicsCommandList* cmd)
         {
             ID3D12DescriptorHeap* heaps[]={heap};cmd->SetDescriptorHeaps(1,heaps);cmd->SetComputeRootSignature(m_root.Get());
@@ -198,6 +235,11 @@ public:
         const bool initializeCompute=plan.layoutChanged || (!sparse && plan.resetMode!=0);
         RDGPassParameters initialize;
         if(initializeCompute) { initialize.ReadSRV(read);initialize.WriteUAV(write); }else { initialize.ReadCopySrc(read);initialize.WriteCopyDst(write); }
+        if(distanceEnabled && initializeCompute)
+        {
+            initialize.WriteUAV(distanceWrite);
+            if(distanceRead.IsValid()) initialize.ReadSRV(distanceRead);
+        }
         const auto initializePass=graph.AddPass(initializeCompute?"Probe stable-center remap or reset":"Probe active history copy",
             initializeCompute?ERDGPassFlags::Compute:ERDGPassFlags::Copy,initialize,[&,bind,plan,index,previous,initializeCompute](ID3D12GraphicsCommandList* cmd)
         {
@@ -206,6 +248,7 @@ public:
             else { cmd->CopyResource(m_history[plan.writeHistoryIndex].Get(),previous.Get());++m_activity.historyCopies; }
         });
         RDGPassParameters update;update.ReadSRV(read);update.WriteUAV(write);update.WriteUAV(feedback);
+        if(distanceEnabled) update.WriteUAV(distanceWrite);
         for(const auto handle:geometry) update.ReadSRV(handle);
         const auto updatePass=graph.AddPass("Probe sparse classification and SH",ERDGPassFlags::Compute,update,[&,bind,plan,index](ID3D12GraphicsCommandList* cmd)
         {
@@ -214,6 +257,7 @@ public:
             {
                 cmd->SetPipelineState(m_pipelines[2].Get());cmd->Dispatch((dependency.invalidationCount+63)/64,1,1);++m_activity.invalidationDispatches;
                 const auto barrier=CD3DX12_RESOURCE_BARRIER::UAV(m_history[plan.writeHistoryIndex].Get());cmd->ResourceBarrier(1,&barrier);
+                if(distanceEnabled) { const auto depthBarrier=CD3DX12_RESOURCE_BARRIER::UAV(m_distance.Get());cmd->ResourceBarrier(1,&depthBarrier); }
             }
             cmd->SetPipelineState(m_pipelines[1].Get());
             for(uint32_t base=0;base<plan.count;)
@@ -256,11 +300,18 @@ public:
         m_recorded=false;m_gpuRecorded=false;return true;
     }
     ID3D12Resource* GetDisplayHistory() const { return m_history[m_displayHistoryIndex].Get(); }
+    ID3D12Resource* GetDistanceCache() const { return m_distance.Get(); }
+    uint64_t GetDistanceCacheBytes() const { return m_distanceBytes; }
     uint32_t GetDisplayFrame() const { return m_plan.frameIndex; }
     double GetGPUMilliseconds() const { return m_gpuMilliseconds; }
     uint64_t GetGPUMemoryBytes() const
     {
-        uint64_t bytes=m_historyBytes*2;for(const auto& f:m_frames) bytes+=16+f.feedbackCapacity*2+f.workCapacity+f.remapCapacity+f.constantsCapacity+f.invalidationCapacity+f.fullSnapshotBytes;return bytes;
+        uint64_t bytes=m_historyBytes*2+m_distanceBytes;
+        std::vector<ID3D12Resource*> distances{m_distance.Get()};
+        for(const auto& f:m_frames)
+            if(f.distanceRemapSource && std::find(distances.begin(),distances.end(),f.distanceRemapSource.Get())==distances.end())
+            { bytes+=f.distanceRemapSource->GetDesc().Width;distances.push_back(f.distanceRemapSource.Get()); }
+        for(const auto& f:m_frames) bytes+=16+f.feedbackCapacity*2+f.workCapacity+f.remapCapacity+f.constantsCapacity+f.invalidationCapacity+f.fullSnapshotBytes;return bytes;
     }
 private:
     struct Constants
@@ -271,14 +322,14 @@ private:
         DirectX::XMFLOAT3 sunRadiance;float rayMinDistance;
         float maxRayDistance;uint32_t raysPerProbe,maxHistoryUpdates,frameIndex;
         uint32_t updateStart,updateCount,resetMode,materialCount;
-        uint32_t classifyRays;float backfaceThreshold;uint32_t padding[2];
+        uint32_t classifyRays;float backfaceThreshold;uint32_t distancePreviousIndex,distanceOutputIndex;
     };
     struct Feedback { VXGIProbeState::GPURecord record;VXGIProbeInvalidation::Mask dependencies; };
     struct DependencyConstants { VXGIProbeInvalidation::Domain domain;uint32_t previousProbeCount=0,layoutChanged=0,invalidationCount=0,padding=0; };
     static_assert(sizeof(Constants)==128 && sizeof(Feedback)==128 && sizeof(DependencyConstants)==64);
     struct Frame
     {
-        Microsoft::WRL::ComPtr<ID3D12Resource> timestamps,feedback,readback,workUpload,remapUpload,constantsUpload,invalidationUpload,remapSource,fullReadback;
+        Microsoft::WRL::ComPtr<ID3D12Resource> timestamps,feedback,readback,workUpload,remapUpload,constantsUpload,invalidationUpload,remapSource,fullReadback,distanceRemapSource;
         std::vector<VXGIProbeState::WorkItem> work;
         uint64_t fence=0,feedbackCapacity=0,workCapacity=0,remapCapacity=0,constantsCapacity=0,invalidationCapacity=0,epoch=0,fullSnapshotBytes=0;
         uint32_t frameIndex=0,domainGeneration=0;bool submitted=false,sparse=false,legacySnapshot=false;
@@ -304,6 +355,9 @@ private:
         if(bytes) std::memcpy(mapped,data,static_cast<size_t>(bytes));else std::memset(mapped,0,static_cast<size_t>(minimum));
         const D3D12_RANGE writes{0,static_cast<SIZE_T>(required)};buffer->Unmap(0,&writes);return true;
     }
+    std::vector<DistanceDescriptors> m_distanceDescriptors;
+    Microsoft::WRL::ComPtr<ID3D12Resource> m_distance;
+    uint64_t m_distanceBytes=0;
     ActivityStats m_activity{};
     bool m_meshBackend=false,m_recorded=false,m_gpuRecorded=false;
     uint32_t m_displayHistoryIndex=0;

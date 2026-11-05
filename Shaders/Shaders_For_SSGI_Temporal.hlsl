@@ -42,9 +42,9 @@ void CSMain_Temporal(uint3 id : SV_DispatchThreadID)
     RWTexture2D<float4> output = ResourceDescriptorHeap[outputGITextureIdx];
     RWTexture2D<float> outputDepth = ResourceDescriptorHeap[outputDepthTextureIdx];
     RWTexture2D<float4> outputNormal = ResourceDescriptorHeap[outputNormalTextureIdx];
-    uint factor = max(traceDownsampleFactor, 2u);
-    uint2 pixel = id.xy * factor;
-    float z = depth.Load(int3(pixel, 0));
+    uint factor = SSGITraceFactor(traceDownsampleFactor);
+    uint2 pixel = SSGIReceiverPixel(id.xy, factor, sceneSize, padding.x);
+    float z = all(pixel < sceneSize) ? depth.Load(int3(pixel, 0)) : 1.0;
     output[id.xy] = 0;
     outputFast[id.xy] = 0;
     outputDepth[id.xy] = 1;
@@ -56,6 +56,19 @@ void CSMain_Temporal(uint3 id : SV_DispatchThreadID)
 
     float3 encodedNormal = normal.Load(int3(pixel, 0)).xyz;
     float4 currentSample = current.Load(int3(id.xy, 0));
+    if (currentSample.a < -1.5)
+    {
+        // A geometry-rejected probe gather is missing support, not a new black
+        // sample. Preserve only independently validated pixel history.
+        Texture2D<float4> previous = ResourceDescriptorHeap[reprojectedGITextureIdx];
+        Texture2D<float4> previousFast = ResourceDescriptorHeap[reprojectedFastTextureIdx];
+        float4 accepted = previous.Load(int3(id.xy, 0));
+        outputDepth[id.xy] = z;
+        outputNormal[id.xy] = float4(normal.Load(int3(pixel, 0)).xyz, 1);
+        output[id.xy] = accepted.a > 0 ? accepted : 0;
+        outputFast[id.xy] = accepted.a > 0 ? previousFast.Load(int3(id.xy, 0)) : 0;
+        return;
+    }
     float3 value = currentSample.rgb;
     outputDepth[id.xy] = z;
     outputNormal[id.xy] = float4(encodedNormal, 1);
@@ -173,9 +186,19 @@ void CSMain_HistoryClamp(uint3 id : SV_DispatchThreadID, uint3 group : SV_GroupI
         {
             uint2 tap = uint2(int2(center) + int2(x, y));
             float4 noisy = noisyTile[tap.y][tap.x];
+            float3 fastSample = fastTile[tap.y][tap.x].rgb;
+            if (padding.x > 1)
+            {
+                // Directional probe noise is correlated across the probe footprint.
+                // Estimate its variance at that scale, even after full-resolution resolve.
+                int2 pixel = clamp(int2(id.xy) + int2(x, y) * int(padding.x), 0, int2(signalSize) - 1);
+                noisy = noisyTexture.Load(int3(pixel, 0));
+                noisy.a = slowTexture.Load(int3(pixel, 0)).a > 0 && noisy.a >= 0 ? 1 : 0;
+                fastSample = RGBToYCoCg(fastTexture.Load(int3(pixel, 0)).rgb);
+            }
             if (noisy.a > 0)
             {
-                float3 fast = fastTile[tap.y][tap.x].rgb;
+                float3 fast = fastSample;
                 fastMean += fast;
                 fastMoment2 += fast * fast;
                 noisyMean += noisy.rgb;

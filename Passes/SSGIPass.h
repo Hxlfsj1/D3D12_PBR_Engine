@@ -9,6 +9,7 @@
 #include "VXGIGPUScene.h"
 #include "VXGIGlobalSDF.h"
 #include "VXGIGlobalSDFRuntime.h"
+#include "../Shaders/SSGIMeshTracePolicy.hlsli"
 
 // Keep these layouts in sync with the SSGI shader cbuffers.
 constexpr uint32_t SSGIMaxLevels = 7; // Reduced mips 1..7; original depth is mip 0.
@@ -35,7 +36,7 @@ struct SSGIHybridParameters
     // Reserved to preserve the shared shader constant-buffer layout.
     // World fallback reads cached radiance; it has no per-hit light/range inputs.
     DirectX::XMFLOAT3 reservedLighting0; float materialMipLevel;
-    DirectX::XMFLOAT3 reservedLighting1; float reservedLighting2;
+    DirectX::XMFLOAT3 reservedLighting1; float reservedLighting2; // y = Mesh ray minimum distance.
     float reservedWorldRange; float voxelSize; uint32_t probeCount; uint32_t worldMode;
     uint32_t nodeCount, assetCount, instanceCount, bvhNodeCount;
 };
@@ -145,8 +146,11 @@ struct SSGIReconstructConstants
     uint32_t outputIndex;
     uint32_t traceDownsampleFactor;
     uint32_t padding[2];
+    uint32_t worldSpatialStep;
+    uint32_t reserved[3];
 };
-static_assert(sizeof(SSGIReconstructConstants) == 176);
+static_assert(sizeof(SSGIReconstructConstants) == 192);
+static_assert(offsetof(SSGIReconstructConstants, worldSpatialStep) == 176);
 static_assert(offsetof(SSGIReconstructConstants, traceDownsampleFactor) == 164);
 
 struct SSGITemporalConstants
@@ -243,6 +247,7 @@ public:
     {
         const VXGIGPUScene* scene = nullptr;
         ID3D12Resource* rawRecords = nullptr;
+        ID3D12Resource* distanceCache = nullptr;
         ID3D12Resource* materialBuffer = nullptr;
         uint32_t probeCount = 0;
         float voxelSize = 1.0f;
@@ -276,6 +281,11 @@ public:
         RDGTextureHandle sceneColor;
         RDGPassHandle pass;
         RDGTextureHandle indirectLighting; // Final filtered E/pi, before receiver material response.
+        RDGTextureHandle rawLighting;
+        RDGTextureHandle reconstructedLighting;
+        RDGTextureHandle worldDisplay;
+        RDGTextureHandle worldOwners;
+        RDGTextureHandle receiverGuide,probePosition,probeNormal,probeFiltered;
     };
 
     struct TextureViews
@@ -295,11 +305,11 @@ public:
         auto lighting = AddLightingToGraph(graph, resourceManager, pipelineManager, history, view, proj,
             invProj, invViewProj, width, height, frameIndex, sampleFrame, config, input, world, false);
         if (!lighting.gi.IsValid() || !lighting.pass.IsValid()) return {};
-        const auto factor = static_cast<uint32_t>(config.traceDownsampleFactor);
+        const auto factor = config.screenProbes ? 1u : static_cast<uint32_t>(config.traceDownsampleFactor);
         auto composite = AddCompositeToGraph(graph, resourceManager, pipelineManager, view, invProj, width, height,
-            frameIndex, factor, lighting.views, {input.sceneColor, lighting.gi}, config.intensity, config.giOnly);
+            frameIndex, factor, lighting.views, {input.sceneColor, lighting.gi}, config.intensity, config.giOnly, config.screenProbes ? RDGTextureHandle{} : lighting.receiverGuide);
         if (!composite.IsValid()) return {};
-        return {input.sceneColor, composite, lighting.gi};
+        return {input.sceneColor, composite, lighting.gi, lighting.raw, lighting.reconstructed, lighting.worldDisplay, lighting.worldOwners, lighting.receiverGuide,lighting.probePosition,lighting.probeNormal,lighting.probeFiltered};
     }
 
     // Diagnostic output only. The normal mixed GI and its SceneColor/history
@@ -330,7 +340,7 @@ public:
         ResourceManager* resourceManager, PipelineManager* pipelineManager,
         const DirectX::XMFLOAT4X4& view, const DirectX::XMFLOAT4X4& invProj,
         UINT width, UINT height, int frameIndex, uint32_t traceDownsampleFactor,
-        const Input& input, RDGTextureHandle filteredGI, float intensity)
+        const Input& input, RDGTextureHandle filteredGI, float intensity, RDGTextureHandle receiverGuide = {})
     {
         if (!resourceManager || !pipelineManager || !width || !height || !filteredGI.IsValid() ||
             !SSGIConfig::IsValidTraceDownsampleFactor(static_cast<int>(traceDownsampleFactor))) return {};
@@ -355,7 +365,7 @@ public:
             D3D12_RESOURCE_STATE_COMMON, "SSGI.IrradiancePreview");
         if (!target.IsValid()) return {};
         const auto pass = AddCompositeToGraph(graph, resourceManager, pipelineManager, view, invProj,
-            width, height, frameIndex, traceDownsampleFactor, views, {target, filteredGI}, intensity, true);
+            width, height, frameIndex, traceDownsampleFactor, views, {target, filteredGI}, intensity, true, receiverGuide);
         return pass.IsValid() ? IrradiancePreviewOutput{target, pass} : IrradiancePreviewOutput{};
     }
 
@@ -370,6 +380,8 @@ private:
         RDGTextureHandle gi;
         RDGPassHandle pass;
         TextureViews views;
+        RDGTextureHandle raw, reconstructed, worldDisplay, worldOwners;
+        RDGTextureHandle receiverGuide,probePosition,probeNormal,probeFiltered;
     };
     static LightingOutput AddLightingToGraph(RDGBuilder& graph, ResourceManager* resourceManager,
         PipelineManager* pipelineManager, const SSGIHistoryState& history,
@@ -381,8 +393,13 @@ private:
         if (!resourceManager || !pipelineManager || width == 0 || height == 0 ||
             !SSGIConfig::IsValidTraceDownsampleFactor(config.traceDownsampleFactor) ||
             !SSGIConfig::IsValidWorldSampling(config.worldNearDistance, config.worldNearExitDistance) ||
+            !SSGIConfig::IsValidMeshMinHitDistance(config.worldMeshMinHitDistance) ||
             !SSGIConfig::IsValidWorldRayCount(config.worldNearRayCount) ||
+            config.worldOwnerHistoryUpdates < 1 || config.worldOwnerHistoryUpdates > 32 ||
+            (config.worldSpatialStep != 1 && config.worldSpatialStep != 2 && config.worldSpatialStep != 4) ||
             !SSGIConfig::IsValidWorldRayCount(config.worldFarRayCount)) return {};
+        if (config.screenProbes && (config.raysPerScreenProbe < 64 || config.raysPerScreenProbe % 64 != 0 ||
+            config.screenProbeHistoryUpdates < 1 || config.screenProbeHistoryUpdates > 32)) return {};
         const uint32_t traceDownsampleFactor = static_cast<uint32_t>(config.traceDownsampleFactor);
         const UINT traceWidth = TraceExtent(width, traceDownsampleFactor), traceHeight = TraceExtent(height, traceDownsampleFactor);
         // A resolution/factor change must recreate both history sets before any
@@ -396,7 +413,10 @@ private:
             {
                 if (!texture) return {};
                 const auto desc = texture->GetDesc();
-                if (desc.Dimension != D3D12_RESOURCE_DIMENSION_TEXTURE2D || desc.Width != traceWidth || desc.Height != traceHeight)
+                const bool fullHistory = config.screenProbes && (texture == textures.gi.Get() || texture == textures.fastGI.Get() ||
+                    texture == textures.depth.Get() || texture == textures.normal.Get());
+                if (desc.Dimension != D3D12_RESOURCE_DIMENSION_TEXTURE2D ||
+                    desc.Width != (fullHistory ? width : traceWidth) || desc.Height != (fullHistory ? height : traceHeight))
                     return {};
             }
             for (ID3D12Resource* texture : {textures.globalOwnerRaw.Get(), textures.globalOwnerState.Get(),
@@ -429,19 +449,20 @@ private:
             return {};
         }
         auto temporal = AddTemporalToGraph(graph, resourceManager, pipelineManager, width, height,
-            frameIndex, traceDownsampleFactor, views,
-            {trace.reconstructedGI, trace.reprojectedGI, trace.reprojectedFast}, previewHistory);
+            frameIndex, config.screenProbes ? 1u : traceDownsampleFactor, views,
+            {trace.reconstructedGI, trace.reprojectedGI, trace.reprojectedFast}, previewHistory, config.screenProbes ? RDGTextureHandle{} : trace.receiverGuide,
+            config.screenProbes ? traceDownsampleFactor : 1u);
         if (!temporal.gi.IsValid() || !temporal.pass.IsValid())
         {
             return {};
         }
         auto spatial = AddAtrousToGraph(graph, resourceManager, pipelineManager, view, invProj, width, height,
-            frameIndex, traceDownsampleFactor, views, {temporal.moments, temporal.gi});
+            frameIndex, config.screenProbes ? 1u : traceDownsampleFactor, views, {temporal.moments, temporal.gi}, config.screenProbes ? RDGTextureHandle{} : trace.receiverGuide);
         if (!spatial.gi.IsValid() || !spatial.pass.IsValid())
         {
             return {};
         }
-        return {spatial.gi, spatial.pass, views};
+        return {spatial.gi, spatial.pass, views, trace.rawGI, trace.reconstructedGI, trace.worldDisplay, trace.worldOwners,trace.receiverGuide,trace.probePosition,trace.probeNormal,trace.probeFiltered};
     }
 
     struct TraceInput
@@ -456,7 +477,12 @@ private:
         RDGPassHandle reconstructionPass;
         RDGTextureHandle reprojectedGI;
         RDGTextureHandle reprojectedFast;
+        RDGTextureHandle worldDisplay;
+        RDGTextureHandle worldOwners;
+        RDGTextureHandle receiverGuide,probePosition,probeNormal,probeFiltered;
     };
+
+#include "ScreenProbeGather.inl"
 
     static TraceOutput AddTraceToGraph(RDGBuilder& graph, ResourceManager* resourceManager,
         PipelineManager* pipelineManager, const DirectX::XMFLOAT4X4& view, const DirectX::XMFLOAT4X4& proj,
@@ -595,6 +621,7 @@ private:
             trace.hybrid.assetCount = world->scene->GetAssetCount(frameIndex);
             trace.hybrid.instanceCount = world->scene->GetInstanceCount(frameIndex);
             trace.hybrid.bvhNodeCount = world->scene->GetInstanceBVHNodeCount(frameIndex);
+            trace.hybrid.reservedLighting1.y = config.worldMeshMinHitDistance;
             const auto bind = [&](UINT binding, ID3D12Resource* buffer, const char* name) {
                 const auto handle = graph.RegisterExternalBuffer(buffer, VXGIGPUScene::ReadState,
                     VXGIGPUScene::ReadState, name);
@@ -607,6 +634,41 @@ private:
             bind(3, world->scene->Get(frameIndex, 7), "SSGI.MeshSDFAssets");
             bind(4, world->scene->Get(frameIndex, 8), "SSGI.MeshSDFInstances");
             bind(5, world->scene->Get(frameIndex, 10), "SSGI.InstanceBVH");
+#if SSGI_MESH_ORIGIN_CONFIRMATION_ENABLED
+            // Reuse the existing cell lists and triangles for near-origin hit confirmation.
+            // Descriptor indices occupy reserved constants; the root layout is unchanged.
+            const char* geometryNames[] = {"SSGI.MeshCellOffsets", "SSGI.MeshTriangleReferences", "SSGI.MeshTriangles"};
+            for (UINT i = 0; i < 3; ++i)
+            {
+                auto* resource = world->scene->Get(frameIndex, i + 1);
+                const auto buffer = graph.RegisterExternalBuffer(resource, VXGIGPUScene::ReadState,
+                    VXGIGPUScene::ReadState, geometryNames[i]);
+                D3D12_SHADER_RESOURCE_VIEW_DESC desc{};
+                desc.Format = DXGI_FORMAT_UNKNOWN;
+                desc.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
+                desc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+                desc.Buffer.StructureByteStride = i == 2 ? sizeof(VXGIMeshSDFGPUData::Triangle) : sizeof(uint32_t);
+                desc.Buffer.NumElements = static_cast<UINT>(resource->GetDesc().Width / desc.Buffer.StructureByteStride);
+                const auto view = graph.CreateBufferSRVView(buffer, &desc);
+                if (!view.IsValid()) return {};
+                traceParams.ReadSRV(view);
+                float* index = i == 0 ? &trace.hybrid.reservedLighting0.y
+                    : i == 1 ? &trace.hybrid.reservedLighting0.z : &trace.hybrid.reservedLighting1.x;
+                memcpy(index, &view.descriptorIndex, sizeof(uint32_t));
+            }
+#endif
+            if(world->distanceCache && world->probeCount)
+            {
+                const auto buffer=graph.RegisterExternalBuffer(world->distanceCache,VXGIGPUScene::ReadState,
+                    VXGIGPUScene::ReadState,"SSGI.ProbeDistance");
+                D3D12_SHADER_RESOURCE_VIEW_DESC desc{};desc.Format=DXGI_FORMAT_UNKNOWN;
+                desc.ViewDimension=D3D12_SRV_DIMENSION_BUFFER;desc.Shader4ComponentMapping=D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+                desc.Buffer.NumElements=world->probeCount*64;desc.Buffer.StructureByteStride=8;
+                const auto distanceView=graph.CreateBufferSRVView(buffer,&desc);
+                if(!distanceView.IsValid()) return {};
+                traceParams.ReadSRV(distanceView);
+                memcpy(&trace.hybrid.reservedLighting0.x,&distanceView.descriptorIndex,sizeof(uint32_t));
+            }
             if (auto* neighbors = world->scene->Get(frameIndex, 6); neighbors && world->probeCount)
             {
                 const auto buffer = graph.RegisterExternalBuffer(neighbors, VXGIGPUScene::ReadState,
@@ -697,6 +759,10 @@ private:
             }
         }
 
+        if (config.screenProbes)
+            return AddScreenProbesToGraph(graph, resourceManager, pipelineManager, frameIndex,
+                trace, traceParams, worldAddresses, config, previewHistory);
+
         // Preserve every mip's x descriptor while reusing its formerly reserved
         // yzw channels. Keep this after the pyramid's uint4 initializations.
         trace.levels[0].y = previousScreenBand.descriptorIndex;
@@ -716,6 +782,7 @@ private:
         trace.levels[3].z = trace.levels[3].w = UINT_MAX;
         trace.levels[4].y = trace.levels[4].z = UINT_MAX;
         trace.levels[5].y = UINT_MAX;
+        trace.levels[5].z = static_cast<uint32_t>(config.worldOwnerHistoryUpdates);
         trace.levels[6].z = 0u;
 
         auto raw = CreateUAVTexture(
@@ -738,6 +805,8 @@ private:
         trace.reprojectedFastIndex = reprojectedFastUav.descriptorIndex;
         RDGTextureUAVHandle repairQueueUav{}, repairCountUav{}, worldDisplayUav{};
         RDGTextureSRVHandle worldDisplaySrv{};
+        RDGTextureHandle worldDisplay{};
+        RDGTextureHandle worldOwners{};
         if (config.worldSharing)
         {
             // Screen uses fixed 2x2. World estimates choose 2x2 or 4x4;
@@ -767,6 +836,7 @@ private:
                 RenderFormats::IndirectLighting, "SSGI.SharedMeshLighting");
             const auto meshReceiver = cacheWorldOwners ? globalReceiver : CreateUAVTexture(graph, meshWidth, meshHeight,
                 DXGI_FORMAT_R32_UINT, "SSGI.SharedMeshReceiver");
+            if (cacheWorldOwners) worldOwners = globalLighting;
             RDGTextureSRVHandle previousOwnerRaw{}, previousOwnerState{}, previousOwnerReceiver{};
             RDGTextureUAVHandle ownerStateUav{};
             if (cacheWorldOwners)
@@ -777,7 +847,7 @@ private:
                 const auto ownerState = graph.RegisterExternalTexture(current.globalOwnerState.Get(),
                     D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_COMMON, "SSGI.CurrentWorldOwnerState");
                 ownerStateUav = graph.CreateTextureUAVView(ownerState);
-                const auto worldDisplay = CreateUAVTexture(graph, trace.outputWidth, trace.outputHeight,
+                worldDisplay = CreateUAVTexture(graph, trace.outputWidth, trace.outputHeight,
                     RenderFormats::IndirectLighting, "SSGI.WorldDisplay");
                 worldDisplayUav = graph.CreateTextureUAVView(worldDisplay);
                 worldDisplaySrv = graph.CreateTextureSRVView(worldDisplay);
@@ -937,6 +1007,7 @@ private:
         reconstruction.rawIndex = rawSrv.descriptorIndex;
         reconstruction.padding[0] = worldDisplaySrv.IsValid() ? worldDisplaySrv.descriptorIndex : UINT_MAX;
         reconstruction.padding[1] = trace.levels[6].z;
+        reconstruction.worldSpatialStep = config.worldSpatialFilter ? static_cast<uint32_t>(config.worldSpatialStep) : 0u;
 
         reconstruction.outputIndex = reconstructedUav.descriptorIndex;
         auto reconstructionAllocation = resourceManager->AllocatePassConstants(frameIndex, sizeof(reconstruction));
@@ -958,7 +1029,7 @@ private:
             ExecuteComputeNoBarrier(cmdList, resourceManager, pipelineManager, pipelineManager->GetSSGIReconstructPSO(),
                 reconstructionAddress, reconstruction.outputWidth, reconstruction.outputHeight);
         });
-        return {raw, pass, reconstructed, reconstructionPass, reprojectedGI, reprojectedFast};
+        return {raw, pass, reconstructed, reconstructionPass, reprojectedGI, reprojectedFast, worldDisplay, worldOwners};
     }
 
     static RDGTextureHandle CreateUAVTexture(
@@ -1006,7 +1077,7 @@ private:
     static TemporalOutput AddTemporalToGraph(RDGBuilder& graph, ResourceManager* resourceManager,
         PipelineManager* pipelineManager, UINT width, UINT height, int frameIndex,
         uint32_t traceDownsampleFactor, const TextureViews& views,
-        const TemporalInput& input, bool previewHistory)
+        const TemporalInput& input, bool previewHistory, RDGTextureHandle receiverGuide = {}, uint32_t statisticsStep = 1u)
     {
         auto import = [&](ID3D12Resource* texture, const char* name) {
             return graph.RegisterExternalTexture(
@@ -1060,6 +1131,8 @@ private:
         // Keep the project-tested 16-sample main cap; NRD fast weight remains 1/7.
         constants.maxHistoryFrames = 16.0f;
         constants.maxFastAccumulatedFrames = 6.0f;
+        auto guide = receiverGuide.IsValid() ? graph.CreateTextureSRVView(receiverGuide) : RDGTextureSRVHandle{};
+        constants.padding[0] = guide.IsValid() ? guide.descriptorIndex + 1u : 0u;
         auto allocation = resourceManager->AllocatePassConstants(frameIndex, sizeof(constants));
         if (!allocation)
         {
@@ -1072,6 +1145,7 @@ private:
         params.ReadComputeSRV(normal);
         params.ReadComputeSRV(orm);
         params.ReadComputeSRV(current);
+        if (guide.IsValid()) params.ReadComputeSRV(guide);
         params.ReadComputeSRV(reprojectedGI);
         params.ReadComputeSRV(reprojectedFast);
         params.WriteUAV(outputGI);
@@ -1110,6 +1184,7 @@ private:
         clamp.resetAmount = 0.5f;
         clamp.spatialSigmaScale = 4.5f;
         clamp.temporalSigmaScale = 0.5f;
+        clamp.padding[0] = statisticsStep;
         auto clampAllocation = resourceManager->AllocatePassConstants(frameIndex, sizeof(clamp));
         if (!clampAllocation)
         {
@@ -1148,7 +1223,7 @@ private:
     };
     static AtrousOutput AddAtrousToGraph(RDGBuilder& graph, ResourceManager* resourceManager,
         PipelineManager* pipelineManager, const DirectX::XMFLOAT4X4& view, const DirectX::XMFLOAT4X4& invProj,
-        UINT width, UINT height, int frameIndex, uint32_t traceDownsampleFactor, const TextureViews& views, const AtrousInput& input)
+        UINT width, UINT height, int frameIndex, uint32_t traceDownsampleFactor, const TextureViews& views, const AtrousInput& input, RDGTextureHandle receiverGuide = {})
     {
         auto depth = views.depth;
         auto normal = views.normal;
@@ -1183,6 +1258,8 @@ private:
             constants.normalIndex = normal.descriptorIndex;
             constants.historyIndex = history.descriptorIndex;
             constants.outputIndex = write.descriptorIndex;
+            auto guide = receiverGuide.IsValid() ? graph.CreateTextureSRVView(receiverGuide) : RDGTextureSRVHandle{};
+            constants.padding[0] = guide.IsValid() ? guide.descriptorIndex + 1u : 0u;
             constants.step = 1u << iteration;
             constants.phiLuminance = 2.0f;
             constants.depthThreshold = 0.003f;
@@ -1200,6 +1277,7 @@ private:
             params.ReadComputeSRV(depth);
             params.ReadComputeSRV(normal);
             params.ReadComputeSRV(history);
+            if (guide.IsValid()) params.ReadComputeSRV(guide);
             params.WriteUAV(write);
             lastPass = graph.AddPass(name, ERDGPassFlags::Compute, params, [=](ID3D12GraphicsCommandList* cmdList) {
                 ExecuteComputeNoBarrier(cmdList, resourceManager, pipelineManager, pso, address, constants.outputWidth,
@@ -1224,7 +1302,7 @@ private:
     static RDGPassHandle AddCompositeToGraph(RDGBuilder& graph, ResourceManager* resourceManager,
         PipelineManager* pipelineManager, const DirectX::XMFLOAT4X4& view, const DirectX::XMFLOAT4X4& invProj,
         UINT width, UINT height, int frameIndex, uint32_t traceDownsampleFactor, const TextureViews& views, const CompositeInput& input,
-        float intensity, bool giOnly)
+        float intensity, bool giOnly, RDGTextureHandle receiverGuide = {})
     {
         auto depth = views.depth;
         auto normal = views.normal;
@@ -1251,6 +1329,8 @@ private:
         constants.albedoIndex = albedo.descriptorIndex;
         constants.giIndex = gi.descriptorIndex;
         constants.intensity = intensity;
+        auto guide = receiverGuide.IsValid() ? graph.CreateTextureSRVView(receiverGuide) : RDGTextureSRVHandle{};
+        constants.padding = guide.IsValid() ? guide.descriptorIndex + 1u : 0u;
         auto allocation = resourceManager->AllocatePassConstants(frameIndex, sizeof(constants));
         if (!allocation)
         {
@@ -1264,6 +1344,7 @@ private:
         params.ReadSRV(orm);
         params.ReadSRV(albedo);
         params.ReadSRV(gi);
+        if (guide.IsValid()) params.ReadSRV(guide);
         // GI-only displays the completed lighting signal; the normal PSO applies the receiver response.
         params.WriteRTV(target);
         return graph.AddPass(

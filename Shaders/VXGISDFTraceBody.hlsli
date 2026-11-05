@@ -85,6 +85,10 @@
             if (!(VXGISDFRayTriangle(rayOrigin, rayDirection, triangles[triangleIndex], triangleDistance, barycentric)
                 && triangleDistance >= rayMin && triangleDistance <= rayMax
                 && triangleDistance >= current - epsilon && triangleDistance <= cellExit + epsilon)) continue;
+#ifdef VXGI_SDF_TRACE_SOURCE_FILTER
+            // Legacy triangles already have globally unique world identities.
+            if (triangleIndex == sourceHit.triangleIndex && triangleDistance <= selfHitDistance) continue;
+#endif
             bool nearer = !found || triangleDistance < closest || (triangleDistance == closest && triangleIndex < closestIndex);
 #ifdef VXGI_SDF_TRACE_COVERAGE
             if (useBVH || nearer)

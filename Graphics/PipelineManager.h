@@ -1,4 +1,4 @@
-﻿/*
+/*
 1. Root Signatures: Define the register layouts and data binding interfaces between CPU and GPU
 2. PSOs: Pre-compile shaders and fixed-function states into immutable hardware blueprints
 */
@@ -136,6 +136,11 @@ public:
     {
         return ssgiRootSignature.Get();
     }
+    ID3D12PipelineState* GetScreenProbePlacePSO() { return screenProbePlacePSO.Get(); }
+    ID3D12PipelineState* GetScreenProbeTracePSO() { return screenProbeTracePSO.Get(); }
+    ID3D12PipelineState* GetScreenProbeFilterPSO() { return screenProbeFilterPSO.Get(); }
+    ID3D12PipelineState* GetScreenProbeIntegratePSO() { return screenProbeIntegratePSO.Get(); }
+    ID3D12PipelineState* GetScreenProbeResolvePSO() { return screenProbeResolvePSO.Get(); }
     ID3D12PipelineState* GetSSGIPyramidPSO()
     {
         return ssgiPyramidPSO.Get();
@@ -1080,6 +1085,11 @@ private:
                                         ssgiAtrousFirstPSO, {L"SSGI_PASS_ATROUS=1", L"SSGI_ATROUS_FIRST=1"}) &&
                BuildSSGIComputePipeline(device, L"Shaders/Shaders_For_SSGI_Spatial.hlsl", L"CSMain_Atrous",
                                         ssgiAtrousPSO, {L"SSGI_PASS_ATROUS=1"}) &&
+               BuildSSGIComputePipeline(device, L"Shaders/ScreenProbeGather.hlsl", L"CSMain_ProbePlace", screenProbePlacePSO) &&
+               BuildSSGIComputePipeline(device, L"Shaders/ScreenProbeGather.hlsl", L"CSMain_ProbeTrace", screenProbeTracePSO) &&
+               BuildSSGIComputePipeline(device, L"Shaders/ScreenProbeGather.hlsl", L"CSMain_ProbeFilter", screenProbeFilterPSO) &&
+               BuildSSGIComputePipeline(device, L"Shaders/ScreenProbeGather.hlsl", L"CSMain_ProbeIntegrate", screenProbeIntegratePSO) &&
+               BuildSSGIComputePipeline(device, L"Shaders/ScreenProbeGather.hlsl", L"CSMain_ProbeResolve", screenProbeResolvePSO) &&
                BuildSSGICompositePipeline(device);
     }
 
@@ -1740,6 +1750,7 @@ private:
     ComPtr<ID3D12RootSignature> ssgiRootSignature;
     ComPtr<ID3D12PipelineState> ssgiPyramidPSO;
     ComPtr<ID3D12PipelineState> ssgiTracePSO;
+    ComPtr<ID3D12PipelineState> screenProbePlacePSO,screenProbeTracePSO,screenProbeFilterPSO,screenProbeIntegratePSO,screenProbeResolvePSO;
     ComPtr<ID3D12PipelineState> ssgiSharedWorldPSO;
     ComPtr<ID3D12PipelineState> ssgiSharedTracePSO;
     ComPtr<ID3D12PipelineState> ssgiSharedClearPSO, ssgiSharedRepairPSO;

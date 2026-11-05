@@ -92,6 +92,7 @@
   </ItemGroup>
   <ItemGroup>
     <None Include="packages.config" />
+    <None Include="Shaders\ScreenProbeGather.hlsl" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="RDG\RDG.h" />
@@ -140,6 +141,7 @@
     <ClInclude Include="Passes\GBufferPass.h" />
     <ClInclude Include="Passes\HBAOPass.h" />
     <ClInclude Include="Passes\SSGIPass.h" />
+    <ClInclude Include="Passes\ScreenProbeGather.inl" />
     <ClInclude Include="Passes\MotionVectorPass.h" />
     <ClInclude Include="Passes\DLSSPass.h" />
     <ClInclude Include="Resources\IBLBaker.h" />

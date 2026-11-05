@@ -40,6 +40,7 @@
 #include "RenderDebugPass.h"
 #include "RenderPassPreview.h"
 #include "RenderPassCapture.h"
+#include "FiniteGPUFrameTimer.h"
 #include "RenderPassRunOptions.h"
 #include "SceneEditState.h"
 
@@ -141,6 +142,7 @@ private:
     RenderPassView m_passView;
     RenderPassPreview m_passPreview;
     RenderPassCapture m_passCapture;
+    FiniteGPUFrameTimer m_finiteGPUFrameTimer;
     RenderPassRunOptions m_passRunOptions;
     uint64_t m_renderedFrames = 0;
     bool m_savePassViewRequested = false;

@@ -14,7 +14,7 @@ struct VXGIProbeParameters
     float3 sunRadiance; float rayMinDistance;
     float maxRayDistance; uint raysPerProbe; uint maxHistoryUpdates; uint frameIndex;
     uint updateStart; uint updateCount; uint resetMode; uint materialCount;
-    uint classifyRays; float backfaceThreshold; uint padding0; uint padding1;
+    uint classifyRays; float backfaceThreshold; uint distancePreviousIndex; uint distanceOutputIndex;
 };
 
 VXGISDFGrid VXGIProbeMakeGrid(VXGIProbeParameters parameters)

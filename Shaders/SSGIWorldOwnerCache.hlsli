@@ -3,13 +3,18 @@
 
 // Spare uint4 components preserve the trace constant-buffer ABI. Both raw
 // owner atlases pack Mesh on the left and Global on the right, each GI/2 wide.
-// Update state stores only the first-batch/mature count and last traced stamp.
+// State stores successful fresh-batch count (at least First/Mature) and stamp.
+// With history > 1 the legacy raw atlas stores accumulated owner estimates;
+// the capture metadata explicitly records this filtered-feedback contract.
 #define previousGlobalOwnerRawIdx levels[3].z
 #define previousGlobalOwnerStateIdx levels[3].w
 #define previousGlobalOwnerReceiverIdx levels[4].y
 #define currentGlobalOwnerStateIdx levels[4].z
 #define globalDisplayTextureIdx levels[5].y
 #define worldOwnerCacheEnabled levels[6].z
+#define worldOwnerHistoryUpdates levels[5].z
+
+uint SSGIWorldOwnerHistoryUpdates() { return max(worldOwnerHistoryUpdates, 1u); }
 
 bool SSGIWorldOwnerCacheEnabled()
 {
@@ -26,7 +31,7 @@ bool SSGIReprojectWorldOwner(uint2 receiverGI, uint span, uint band,
     state = 0;
     sourceOwner = 0u;
     if (historyValid == 0u) return false;
-    uint factor = max(traceDownsampleFactor, 2u);
+    uint factor = SSGITraceFactor(traceDownsampleFactor);
     uint2 pixel = receiverGI * factor;
     Texture2D<float> depth = ResourceDescriptorHeap[depthTextureIdx];
     Texture2D<float4> normals = ResourceDescriptorHeap[normalTextureIdx];
@@ -101,7 +106,7 @@ float2 SSGIAdvanceWorldOwnerState(float2 state)
 {
     float stamp = float((frameIndex & 65535u) + 1u);
     if (state.x >= 1 && state.y == stamp) return state;
-    // Only the first fresh batch is special; all later batches are mature.
-    return float2(min(max(state.x, 0) + 1.0, 2.0), stamp);
+    // Advance only on a new traced batch. Reprojection and replicated slots do not count.
+    return float2(min(max(state.x, 0) + 1.0, float(max(SSGIWorldOwnerHistoryUpdates(), 2u))), stamp);
 }
 #endif

@@ -1,5 +1,14 @@
 # VXGI：固定探针、距离场追踪与混合 SSGI
 
+方向遮挡缓存实验（2026-11-03）：`vxgi.probes.distance_visibility` 默认关闭，只在隔离目录测试；复用采光射线距离/法线，运行时查表，不追加可见性射线。封闭盒仍有少量亮点、开孔盒有信号损失，未通过正式替换标准。具体数据、GPU 时间和显存见 [实验报告](Docs/VXGIProbeDistanceExperiment.md)。以下无额外遮挡的运行时说明对应默认配置。
+
+2026-11-03 更新：逐贡献探针的精确可见性实验已因严重帧率回退撤回。
+生产近段、远段与 Repair 恢复直接读取八邻 raw SH，不追加可见性射线，保留原六个世界资源和八参数 root signature。
+跨墙插值仍是已知画质限制；该实验的正确性结果仅作历史记录，见 `Docs/VXGICornellVisibilityFixReport.md`。
+
+烘焙太阳遮挡小修仍保留：从 0 开始检查完整遮挡区间，只按源实例/三角形身份过滤近零自命中。
+封闭 Cornell 中原先污染的 3 个室内探针已归零，开孔太阳组 L0 总和变化约 -0.0191%；见 `Docs/VXGICornellBakeInspection.md` 文末。
+
 2026-10-21：独立测试工具与主程序中的测试诊断入口已移除。下文测试命令、验收宏和报告保留为历史记录，不代表当前可运行工具或本次验证结果。
 固定车内诊断相机数据保留于 `Settings/CameraPresets/VXGICavityCamera.json`。本次 Debug/Release 构建、UI 架构检查及隐藏正常启动、实际渲染、DLSS 首次求值和关闭均通过；验证记录见 `tmp/test-removal-validation/summary.json`。本次未做清理前后性能或图像对比。
 

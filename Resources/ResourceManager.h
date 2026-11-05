@@ -619,6 +619,16 @@ public:
     bool InitVXGI(RenderDevice* dc, const VXGIConfig& config, const LightingConfig& lighting, UINT frameCount,
         const InitializationProgress& progress = {})
     {
+        if(dc && config.enabled && config.probeDistanceVisibility)
+        {
+            std::vector<VXGIProbePass::DistanceDescriptors> descriptors(frameCount);
+            for(auto& slot:descriptors)
+            {
+                slot.readIndex=AllocateSrvUavDescriptor();slot.writeIndex=AllocateSrvUavDescriptor();
+                slot.read=GetSrvUavCPUHandle(slot.readIndex);slot.write=GetSrvUavCPUHandle(slot.writeIndex);
+            }
+            m_vxgi.probePass.SetDistanceDescriptors(std::move(descriptors));
+        }
         return dc && m_vxgi.Initialize(*dc, frameCount, m_sceneInstances, m_globalMaterials,
             config, lighting, mainDescriptorHeap.Get(), m_materialBuffer.Get(), progress);
     }
@@ -776,6 +786,8 @@ public:
 
     struct SSGIHistoryTextures
     {
+        // Raw temporally accumulated directional radiance: 8x8 cells per receiver.
+        Microsoft::WRL::ComPtr<ID3D12Resource> probeRadiance,probePosition,probeNormal,probeReceiver;
         // gi.a = history length; fastGI.a = slow-history luminance second moment.
         Microsoft::WRL::ComPtr<ID3D12Resource> gi;
         Microsoft::WRL::ComPtr<ID3D12Resource> fastGI;
@@ -800,13 +812,13 @@ public:
     };
 
     // Initialize/reinitialize only while the GPU is idle, as with other history resources.
-    bool InitSSGIHistoryResources(RenderDevice* dc, UINT width, UINT height, UINT traceDownsampleFactor = 2)
+    bool InitSSGIHistoryResources(RenderDevice* dc, UINT width, UINT height, UINT traceDownsampleFactor = 2, bool screenProbes = false)
     {
         if (!dc || !dc->GetDevice() || width == 0 || height == 0 ||
             !SSGIConfig::IsValidTraceDownsampleFactor(static_cast<int>(traceDownsampleFactor))) return false;
         const UINT traceWidth = (width - 1) / traceDownsampleFactor + 1;
         const UINT traceHeight = (height - 1) / traceDownsampleFactor + 1;
-        if (!AllocateSSGIHistoryTextures(dc->GetDevice(), traceWidth, traceHeight, m_ssgiHistoryTextures))
+        if (!AllocateSSGIHistoryTextures(dc->GetDevice(), traceWidth, traceHeight, m_ssgiHistoryTextures, screenProbes, width, height))
             return false;
         m_ssgiCurrentHistoryIdx = 0;
         // The caller already holds the GPU-idle boundary used for resize/init.
@@ -819,7 +831,7 @@ public:
     // First selection only allocates new resources; it never replaces in-flight
     // history. Resolution changes must use InitSSGIHistoryResources at GPU idle.
     bool EnsureSSGIPreviewHistoryResources(RenderDevice* dc, UINT width, UINT height,
-        UINT traceDownsampleFactor = 2)
+        UINT traceDownsampleFactor = 2, bool screenProbes = false)
     {
         if (!dc || !dc->GetDevice() || width == 0 || height == 0 ||
             !SSGIConfig::IsValidTraceDownsampleFactor(static_cast<int>(traceDownsampleFactor))) return false;
@@ -828,9 +840,9 @@ public:
         if (m_ssgiPreviewHistoryTextures[0].gi)
         {
             const auto desc = m_ssgiPreviewHistoryTextures[0].gi->GetDesc();
-            return desc.Width == traceWidth && desc.Height == traceHeight;
+            return desc.Width == (screenProbes ? width : traceWidth) && desc.Height == (screenProbes ? height : traceHeight);
         }
-        if (!AllocateSSGIHistoryTextures(dc->GetDevice(), traceWidth, traceHeight, m_ssgiPreviewHistoryTextures))
+        if (!AllocateSSGIHistoryTextures(dc->GetDevice(), traceWidth, traceHeight, m_ssgiPreviewHistoryTextures, screenProbes, width, height))
             return false;
         m_ssgiPreviewCurrentHistoryIdx = 0;
         return true;
@@ -1524,8 +1536,13 @@ public:
 
 private:
     static bool AllocateSSGIHistoryTextures(ID3D12Device* device, UINT width, UINT height,
-        SSGIHistoryTextures (&destination)[2])
+        SSGIHistoryTextures (&destination)[2], bool screenProbes = false, UINT fullWidth = 0, UINT fullHeight = 0)
     {
+        if (screenProbes && (width > D3D12_REQ_TEXTURE2D_U_OR_V_DIMENSION / 8u || height > D3D12_REQ_TEXTURE2D_U_OR_V_DIMENSION / 8u))
+        {
+            ErrorLog::Write("Screen probes: directional atlas exceeds D3D12 texture dimensions; increase trace_downsample_factor.");
+            return false;
+        }
         SSGIHistoryTextures created[2];
         auto create = [&](DXGI_FORMAT format, Microsoft::WRL::ComPtr<ID3D12Resource>& texture,
                           UINT textureWidth = 0, UINT textureHeight = 0) {
@@ -1538,9 +1555,11 @@ private:
             if (FAILED(hr)) ErrorLog::HRESULT("ResourceManager: SSGI history allocation failed.", hr);
             return SUCCEEDED(hr);
         };
+        const UINT historyWidth = screenProbes ? fullWidth : width;
+        const UINT historyHeight = screenProbes ? fullHeight : height;
         for (auto& set : created)
-            if (!create(RenderFormats::IndirectLighting, set.gi) ||
-                !create(RenderFormats::IndirectLighting, set.fastGI) ||
+            if (!create(RenderFormats::IndirectLighting, set.gi, historyWidth, historyHeight) ||
+                !create(RenderFormats::IndirectLighting, set.fastGI, historyWidth, historyHeight) ||
                 !create(RenderFormats::IndirectLighting, set.screenBand) ||
                 !create(RenderFormats::IndirectLighting, set.meshBand) ||
                 !create(RenderFormats::IndirectLighting, set.globalBand) ||
@@ -1548,8 +1567,14 @@ private:
                 !create(DXGI_FORMAT_R32G32_FLOAT, set.globalOwnerState, 2u * ((width + 1u) / 2u), (height + 1u) / 2u) ||
                 !create(DXGI_FORMAT_R32G32_UINT, set.globalOwnerReceiver, 2u * ((width + 1u) / 2u), (height + 1u) / 2u) ||
                 !create(DXGI_FORMAT_R32_UINT, set.worldPolicy) ||
-                !create(RenderFormats::DepthSRV, set.depth) ||
-                !create(RenderFormats::GBufferNormal, set.normal)) return false;
+                !create(RenderFormats::DepthSRV, set.depth, historyWidth, historyHeight) ||
+                !create(RenderFormats::GBufferNormal, set.normal, historyWidth, historyHeight)) return false;
+        if (screenProbes)
+            for (auto& set : created)
+                if (!create(RenderFormats::IndirectLighting, set.probeRadiance, width * 8u, height * 8u) ||
+                    !create(DXGI_FORMAT_R32G32B32A32_FLOAT, set.probePosition) ||
+                    !create(DXGI_FORMAT_R16G16B16A16_FLOAT, set.probeNormal) ||
+                    !create(DXGI_FORMAT_R32_UINT, set.probeReceiver)) return false;
         for (int index = 0; index < 2; ++index) destination[index] = std::move(created[index]);
         return true;
     }

@@ -27,7 +27,7 @@ public:
     struct Parameters
     {
         float hitThresholdCells = 0.9f;
-        float stepScale = 0.9f;
+        float stepScale = 1.0f; // Match runtime: safeDistance already includes error/roundoff margins.
         uint32_t maxSteps = 512;
         uint32_t padding = 0;
     };

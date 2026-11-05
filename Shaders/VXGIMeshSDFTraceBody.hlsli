@@ -13,7 +13,7 @@
     }
     rayDirection = normalize(rayDirection / directionMaximum);
     uint instanceCount = VXGIMeshSDFInstances[0].sceneInstanceCount;
-    double closestWorld = double(rayMax);
+    VXGIMeshSDFTraceReal closestWorld = VXGIMeshSDFTraceReal(rayMax);
     bool found = false;
     [loop] for (uint instanceIndex = 0; instanceIndex < instanceCount; ++instanceIndex)
     {
@@ -30,7 +30,7 @@
         if (any(min(segmentStart, segmentEnd) - segmentError > instance.boundsMaximum)
             || any(max(segmentStart, segmentEnd) + segmentError < instance.boundsMinimum)) continue;
         if (!VXGIMeshSDFWorldBounds(rayOrigin, rayDirection, instance.boundsMinimum, instance.boundsMaximum,
-            double(rayMin), closestWorld)) continue;
+            VXGIMeshSDFTraceReal(rayMin), closestWorld)) continue;
         VXGIMeshSDFAsset asset = VXGIMeshSDFAssets[instance.assetIndex];
         if (asset.triangleCount == 0 || any(asset.cellDimensions == 0)) continue;
         VXGISDFGrid localGrid = VXGIMeshSDFGrid(asset);
@@ -53,8 +53,8 @@
         localMagnitude = max(localMagnitude, max(originArithmetic.x, max(originArithmetic.y, originArithmetic.z)));
         float epsilon = max(asset.cellSize * 1e-5, max(1e-6,
             (localMagnitude + extentMagnitude) * 4e-6));
-        float candidateMinimum = float(double(rayMin) * double(distanceScale)) - epsilon;
-        float candidateMaximum = float(closestWorld * double(distanceScale)) + epsilon;
+        float candidateMinimum = float(VXGIMeshSDFTraceReal(rayMin) * VXGIMeshSDFTraceReal(distanceScale)) - epsilon;
+        float candidateMaximum = float(closestWorld * VXGIMeshSDFTraceReal(distanceScale)) + epsilon;
         float entry, exit;
         if (!VXGISDFRayBounds(localOrigin, localDirection, localGrid,
             candidateMinimum, candidateMaximum, entry, exit)) continue;
@@ -72,7 +72,7 @@
         [loop] for (uint iteration = 0; iteration < iterationLimit; ++iteration)
         {
             if (any(cell < 0) || any(cell >= int3(asset.cellDimensions)) || current > exit + epsilon
-                || current > float(closestWorld * double(distanceScale)) + epsilon)
+                || current > float(closestWorld * VXGIMeshSDFTraceReal(distanceScale)) + epsilon)
             {
                 completed = true;
                 break;
@@ -131,12 +131,18 @@
                 float3 triangleMaximum = max(surfaceTriangle.p0, max(surfaceTriangle.p1, surfaceTriangle.p2)) + triangleMargin;
                 if (!VXGISDFRayCandidateBounds(localOrigin, localDirection, triangleMinimum, triangleMaximum,
                     current - epsilon, cellExit + epsilon)) continue;
-                double worldDistance;
+                VXGIMeshSDFTraceReal worldDistance;
                 float3 barycentric, worldNormal;
                 if (!VXGIMeshSDFWorldTriangle(rayOrigin, rayDirection, surfaceTriangle, instance,
-                    double(rayMin), closestWorld, worldDistance, barycentric, worldNormal)) continue;
-                double localDistance = worldDistance * double(distanceScale);
-                if (localDistance < double(current - epsilon) || localDistance > double(cellExit + epsilon)) continue;
+                    VXGIMeshSDFTraceReal(rayMin), closestWorld, worldDistance, barycentric, worldNormal)) continue;
+                VXGIMeshSDFTraceReal localDistance = worldDistance * VXGIMeshSDFTraceReal(distanceScale);
+                if (localDistance < VXGIMeshSDFTraceReal(current - epsilon) || localDistance > VXGIMeshSDFTraceReal(cellExit + epsilon)) continue;
+#ifdef VXGI_SDF_TRACE_SOURCE_FILTER
+                // Reject only this source surface's near-zero self intersection.
+                // Shared-asset triangles in another instance remain blockers.
+                if (triangleIndex == sourceHit.triangleIndex && instanceIndex == sourceHit.instanceIndex
+                    && worldDistance <= VXGIMeshSDFTraceReal(selfHitDistance)) continue;
+#endif
 #ifdef VXGI_SDF_TRACE_COVERAGE
                 surfaceTriangle.flags = instance.flags;
                 surfaceTriangle.materialId = surfaceTriangle.pad0 < instance.materialCount
@@ -162,7 +168,7 @@
                 found = true;
                 closestWorld = worldDistance;
                 hit.distance = float(worldDistance);
-                hit.position = float3(double3(rayOrigin) + double3(rayDirection) * worldDistance);
+                hit.position = float3(VXGIMeshSDFTraceReal3(rayOrigin) + VXGIMeshSDFTraceReal3(rayDirection) * worldDistance);
                 hit.geometricNormal = worldNormal;
                 hit.triangleId = surfaceTriangle.triangleId;
                 hit.triangleIndex = triangleIndex;

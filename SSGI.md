@@ -1,5 +1,97 @@
 # SSGI
 
+## Active screen-probe gather (2026-11-04)
+
+`Settings/Pipeline.json` selects `ssgi.sampling_mode: "screen_probes"`.
+`trace_downsample_factor` is the only primary receiver spacing: 8 means one
+receiver in each 8x8 **internal render pixel** cell, including when DLSS is active.
+There is no additional camera-distance 2x2/4x4 sharing in this path.
+
+```json
+"ssgi": {
+  "enabled": true,
+  "sampling_mode": "screen_probes",
+  "trace_downsample_factor": 8,
+  "screen_probes": { "rays_per_probe": 128, "history_updates": 4 },
+  "world_sampling": { "mesh_min_hit_distance": 0.0 },
+  "intensity": 1
+}
+```
+
+Each fresh receiver traces the complete 128-ray budget across an 8x8
+equal-solid-angle hemisphere. Screen tracing, near Mesh SDF and far Global SDF
+continue the same directions instead of allocating independent ray budgets.
+Geometry/parallax-validated probes can retain their previous result on alternate
+checkerboard frames; new/disoccluded probes trace immediately. Thus 128 is the
+budget per fresh update, not a promise of 128 new rays at every point every frame.
+
+Directional Li is reprojected and accumulated before a plane/normal/hit-distance
+guided 5x5 binomial filter (probe step 2). Spatially filtered values never feed
+the directional history. Irradiance SH2 is then evaluated with **each full-resolution
+pixel's normal**, followed by full-resolution temporal history and two Atrous passes.
+History-clamp statistics use the probe spacing rather than adjacent correlated
+pixels. The final slow-history cap remains 16; it was not extended to hide noise.
+
+Settings take effect after restart. Rays must be >=64 and divisible by 64;
+history_updates accepts 1..32. There is no new arbitrary ray ceiling, but GPU time,
+memory and the D3D12 atlas dimension limit still apply. Existing world radiance
+probes, SDF generation, DLSS, HBAO and shadow configuration remain separate.
+
+See [implementation, measurements and rollback](Docs/ScreenProbeRefactorReport.md).
+The old path is retained under `sampling_mode: "legacy"`; the sections below
+describe that path and earlier experiments, not the active screen-probe policy.
+
+## Legacy path and historical experiments
+
+World display reconstruction can additionally filter the separate Mesh/Global
+contribution with a depth/normal-guided 5x5 binomial kernel:
+`ssgi.world_sharing.spatial_filter: { "enabled": true, "step_width": 2 }`.
+Supported GI-texel step widths are 1, 2 and 4. The loader defaults to disabled;
+the project trial enables step 2. Disabling this block restores center-only world
+addition, independently of `accumulation_updates`. Restart to apply changes.
+The filter skips missing checkerboard display values instead of treating them
+as black. It changes display/final pixel history, never the owner atlas feedback.
+Geometry rejection preserves surface boundaries but cannot distinguish lighting
+boundaries on the same plane; contact shadows and gradients can soften.
+
+The measured trial on 2026-11-04 enables
+`ssgi.world_sharing.accumulation_updates: 4`. A genuinely fresh Mesh/Global owner
+batch is blended with the geometrically reprojected owner estimate before it is
+shared with receivers. Reprojection/replicated slots do not increment the batch
+count. The setting is independent of final pixel history; `1` restores the old
+raw-batch replacement behavior. Supported history settings are integers 1–32;
+only 4 and 8 were compared in this trial. Restart to apply changes.
+
+The existing owner atlas is intentionally now a filtered owner history when
+this setting exceeds 1. Its legacy internal `Raw` names are retained to preserve
+the binding layout; capture metadata records `filtered_feedback` and the window.
+Do not interpret those values as unfiltered Monte Carlo observations. Source
+changes and settings changes invalidate history as before. This does not extend
+the screen-space sample budget or final 16-sample slow-history cap.
+
+Near-origin Mesh SDF tolerance hits again use FP32 triangle confirmation through
+`SSGI_MESH_ORIGIN_CONFIRMATION_ENABLED = 1` in
+`Shaders/SSGIMeshTracePolicy.hlsli`. The configured and loader-default
+`ssgi.world_sampling.mesh_min_hit_distance` are both zero: there is no 0.09 m
+blind interval. Screen-space tracing, probe baking and the far Global SDF query
+are unchanged. The unsuccessful blind-interval experiment remains available in
+code, but is disabled by the zero minimum distance. This restoration was included
+in the subsequent 2026-11-04 builds and controlled denoising runs.
+
+Mesh threshold queries and the Global SDF march now step by the full
+`safeDistance`, without the additional 0.9 multiplier. Mesh interpolation uses
+its position-dependent error bound (at most sqrt(3)/2 cells); Global sampling
+subtracts sqrt(3)/2 cells. Both retain their roundoff allowance and finite-range
+or clipmap-boundary clamping. The 0.9-cell HIT tolerance and the separate exact
+triangle/baking traversal step policy are unchanged. This step-scale change was
+included in the subsequent 2026-11-04 builds and controlled denoising runs.
+
+An optional probe distance/plane cache experiment is available through
+`vxgi.probes.distance_visibility` (default false, startup configuration).
+It uses one bindless SRV without changing the eight-parameter root signature.
+It has residual leaks and is not accepted for production; see
+[measured results](Docs/VXGIProbeDistanceExperiment.md).
+
 Diffuse GI for the deferred pipeline, using screen tracing and optional world-space fallback.
 
 The current implementation applies camera-distance quality to Mesh SDF and Global
@@ -27,7 +119,7 @@ reduction; they do not move screen receiver origins.
 | Mesh SDF, 0-2 m | Near: 2x2; far: 4x4 | Configurable near/far count; both default to eight | Two frames |
 | Global SDF, (2,8] m | Near: 2x2; far: 4x4 | Configurable near/far count; both default to eight | Four frames |
 
-The current Pipeline.json sets near/far counts to 16/8; the loader defaults remain
+The pre-screen-probe Pipeline.json set near/far counts to 32/128; the loader defaults remain
 8/8. The checked-in near threshold is 2 m, with an exit threshold of 2.2 m. A
 representative at distance <= 2 m requests fine 2x2 world sampling. Beyond 2.2 m
 it requests coarse 4x4 sampling. In the intervening shell, a geometry-checked
@@ -211,8 +303,11 @@ classification. HBAO and DLSS retain their separate quality settings.
 
 - `world_sampling.near_ray_count / far_ray_count`: world directions per complete
   shared estimate, not per pixel. Both default to 8; accepted values are 4, 8,
-  12, ... 64. Both Mesh and Global use these camera-quality counts. Restart after
-  editing the JSON. Invalid values report an error rather than being clamped.
+  12, ... with no fixed 64-ray ceiling. Counts must remain divisible by four for
+  the four spatial strata, and fit the host `int` type. Both Mesh and Global use
+  these camera-quality counts; fixed screen-space ray budgets are unchanged.
+  Restart after editing the JSON. Invalid values report an error rather than
+  being silently truncated, wrapped, or clamped to a different ray count.
 
 - `enabled`: the pipeline switch. `false` skips SSGI initialization, history
   allocation, BounceSource and all SSGI passes. Restart to apply JSON changes.
@@ -225,9 +320,18 @@ classification. HBAO and DLSS retain their separate quality settings.
   2.2 m; its square must remain finite. These fields affect both world backends,
   not the fixed screen interval. Policy changes invalidate the relevant source
   identity rather than reinterpreting an old shared estimate as a new quality.
-- `trace_downsample_factor`: integer 2, 4 or 8 relative to internal scene
-  resolution, including the reduction from DLSS. The checked-in value is 2.
-  Larger factors reduce GI grid resolution; block sizes are in that grid.
+- `trace_downsample_factor`: any positive integer representable as host `int`,
+  relative to internal scene resolution (after DLSS input-resolution selection).
+  The current value is 1: full internal-resolution GI. Larger factors reduce
+  GI grid resolution using ceiling division; block sizes are in that grid.
+  Trace, shared/Repair, spatial filters, reprojection, temporal accumulation and
+  composition use this same factor. Shader zero retains the old diagnostic
+  half-resolution fallback only; production configuration rejects zero.
+
+These range/full-resolution changes were not compiled or run, per the user's
+instruction. Startup configuration exceptions are caught and logged as a failed
+initialization instead of escaping to CRT `abort()`. Removing the fixed setting
+ceilings does not remove device resource limits or the cost of dynamic ray loops.
 
 The production program can load the saved cavity pose for a bounded capture:
 
@@ -342,8 +446,13 @@ fine samples; the Global SDF queries share `max_trace_steps`. Unfinished work
 returns an explicit failure, never a proven miss.
 
 A confirmed hit reads the existing neighboring raw SH at that fine hit position
-and evaluates incoming radiance along the original ray direction. Black or
-unsupported hits terminate the ray. There is no search for a brighter surface,
+and evaluates incoming radiance along the original ray direction. On 2026-11-03, the
+per-contributor exact visibility experiment was reverted after the user reported
+a severe frame-rate regression (about 60 to 8 FPS in GI-heavy views). Production
+again reads the eight valid raw records without additional contributor rays;
+cross-wall cache interpolation remains a known quality limitation. The separate
+baked sunlight source-self-hit fix remains enabled.
+Black or unsupported hits terminate the ray. There is no search for a brighter surface,
 new surface shading, or Surface Cache. Complete misses add zero GI; the existing
 IBL base remains in deferred lighting.
 
@@ -357,7 +466,9 @@ not baked lighting or ray-hit positions. Topology changes update the existing
 lookup and neighbor buffers together; ordinary lighting updates keep
 using those indices. Consumers without a neighbor descriptor retain the original
 lookup path. The bindless descriptor reuses trace byte 768, preserving the 1024B
-constant layout, world-mode alias at byte 604 and the existing root signature.
+constant layout, world-mode alias at byte 604 and the original eight-parameter
+root signature. The five extra geometry/material root bindings from the reverted
+visibility experiment are removed.
 
 The `vxgi.global_sdf` object also accepts `trace_distance` (finite positive world
 distance, default 128) and `max_trace_steps` (integer 1..1024, default 256).

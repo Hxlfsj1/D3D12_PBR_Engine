@@ -269,7 +269,8 @@ VXGIGlobalSDFTraceResult VXGIGlobalSDFTrace(Texture3D<float> field,
         if (current >= end) return result;
         // Always visit clipmap entry/exit faces. In particular a large coarse
         // step cannot cross an entire fine clipmap without querying its field.
-        float next = min(current + 0.9 * sample.safeDistance, nextBoundary);
+        // Interpolation error and roundoff were already subtracted when sampling.
+        float next = min(current + sample.safeDistance, nextBoundary);
         if (!(next > current))
         {
             result.status = VXGI_GLOBAL_SDF_EXHAUSTED;

@@ -1,9 +1,17 @@
 #ifndef SSGI_HYBRID_COMMON_HLSLI
 #define SSGI_HYBRID_COMMON_HLSLI
 
+#include "SSGIMeshTracePolicy.hlsli"
+
 #ifdef VXGI_SSGI_THRESHOLD
 #include "VXGIProbeRadianceCommon.hlsli"
 #include "VXGIMeshSDFThresholdCommon.hlsli"
+#if SSGI_MESH_ORIGIN_CONFIRMATION_ENABLED
+// Short runtime confirmation uses FP32. Probe baking retains its default FP64 path.
+#define VXGI_MESH_SDF_RUNTIME_FP32 1
+#define VXGI_MESH_SDF 1
+#include "VXGISDFCommon.hlsli"
+#endif
 #else
 #include "VXGIProbeQueryCommon.hlsli"
 #endif
@@ -246,7 +254,7 @@ SSGIHybridRayResult SSGIGlobalRaySource(float3 origin, float3 direction, float r
     counts.bvhNodeCount = parameters.bvhNodeCount;
     VXGIThresholdParameters traceParameters;
     traceParameters.hitThresholdCells = SSGI_WORLD_HIT_THRESHOLD_CELLS;
-    traceParameters.stepScale = 0.9;
+    traceParameters.stepScale = 1.0; // safeDistance already subtracts interpolation error and roundoff.
     traceParameters.maxSteps = 512;
     traceParameters.padding = 0;
     if (!isfinite(global.maxTraceDistance) || global.maxTraceDistance < 0.0
@@ -323,7 +331,7 @@ SSGIHybridRayResult SSGIGlobalRaySource(float3 origin, float3 direction, float r
             // A verified fine hit ends the ray regardless of cache
             // support or RGB. Radiance never decides whether to retry.
             VXGIProbeRadianceQueryResult farQuery = VXGIProbeQueryRadiance(refined.position,
-                unitDirection, parameters.voxelSize, parameters.probeCount, lookup, rawRecords, probeNeighborsIndex);
+                unitDirection, parameters.voxelSize, parameters.probeCount, lookup, rawRecords, probeNeighborsIndex, asuint(parameters.reservedLighting0.x));
             result.probeHasSupport = farQuery.hasSupport;
             result.probeSupportWeight = farQuery.supportWeight;
             result.probeAcceptedCount = farQuery.acceptedCount;
@@ -345,6 +353,54 @@ SSGIHybridRayResult SSGIGlobalRaySource(float3 origin, float3 direction, float r
     }
     result.worldTraceStatus = VXGI_GLOBAL_SDF_EXHAUSTED;
     result.status = SSGI_SCREEN_INVALID;
+    return result;
+}
+#endif
+
+#ifdef VXGI_SSGI_THRESHOLD
+#if SSGI_MESH_ORIGIN_CONFIRMATION_ENABLED
+// A tolerance HIT at the launch point may belong to the neighboring wall's
+// expanded distance band. Confirm the finite ray instead of lighting that point.
+// Other hits retain the fast tolerance path to bound the extra runtime work.
+static const float SSGI_WORLD_ORIGIN_CONFIRM_DISTANCE = 0.0001;
+#endif
+
+VXGIMeshSDFThresholdResult SSGITraceMeshNear(float3 origin, float3 direction,
+    float minimum, float maximum, VXGIMeshSDFThresholdCounts counts,
+    VXGIThresholdParameters traceParameters, StructuredBuffer<float> nodes,
+    SSGIHybridParameters parameters)
+{
+    // Intentional near-origin blind interval: screen tracing runs before this
+    // fallback. Preserve the original origin and upper range; only raise rayMin.
+    // An empty interval is a policy MISS, not proof that its excluded part is clear.
+    minimum = max(minimum, parameters.reservedLighting1.y);
+    if (minimum > maximum)
+    {
+        VXGIMeshSDFThresholdResult empty = (VXGIMeshSDFThresholdResult)0;
+        empty.status = VXGI_THRESHOLD_MISS;
+        return empty;
+    }
+    VXGIMeshSDFThresholdResult result = VXGIMeshSDFTraceThreshold(origin, direction,
+        minimum, maximum, counts, traceParameters, nodes);
+#if SSGI_MESH_ORIGIN_CONFIRMATION_ENABLED
+    if (result.status != VXGI_THRESHOLD_HIT || result.distance > minimum + SSGI_WORLD_ORIGIN_CONFIRM_DISTANCE)
+        return result;
+
+    StructuredBuffer<uint> offsets = ResourceDescriptorHeap[asuint(parameters.reservedLighting0.y)];
+    StructuredBuffer<uint> references = ResourceDescriptorHeap[asuint(parameters.reservedLighting0.z)];
+    StructuredBuffer<VXGISDFTriangle> triangles = ResourceDescriptorHeap[asuint(parameters.reservedLighting1.x)];
+    VXGISDFGrid unused = (VXGISDFGrid)0;
+    VXGISDFHit confirmed;
+    // Geometry-only confirmation matches the current conservative cutout proxy.
+    // This does not add per-contributor visibility queries to probe interpolation.
+    bool found = VXGISDFTrace(origin, direction, minimum, maximum, unused,
+        nodes, offsets, references, triangles, confirmed);
+    result.status = found ? VXGI_THRESHOLD_HIT
+        : (confirmed.traceStatus >= 2 ? VXGI_THRESHOLD_INVALID : VXGI_THRESHOLD_MISS);
+    result.distance = confirmed.distance;
+    result.position = confirmed.position;
+    result.instanceIndex = confirmed.instanceIndex;
+#endif
     return result;
 }
 #endif
@@ -392,7 +448,7 @@ SSGIHybridRayResult SSGIWorldRaySource(float3 origin, float3 direction, float ra
     counts.bvhNodeCount = parameters.bvhNodeCount;
     VXGIThresholdParameters traceParameters;
     traceParameters.hitThresholdCells = SSGI_WORLD_HIT_THRESHOLD_CELLS;
-    traceParameters.stepScale = 0.9;
+    traceParameters.stepScale = 1.0; // safeDistance already subtracts interpolation error and roundoff.
     traceParameters.maxSteps = 512;
     traceParameters.padding = 0;
     VXGIMeshSDFThresholdResult hit;
@@ -406,8 +462,8 @@ SSGIHybridRayResult SSGIWorldRaySource(float3 origin, float3 direction, float ra
     }
     else
 #endif
-    hit = VXGIMeshSDFTraceThreshold(origin, unitDirection,
-        0.0, rayLength, counts, traceParameters, nodes);
+    hit = SSGITraceMeshNear(origin, unitDirection,
+        0.0, rayLength, counts, traceParameters, nodes, parameters);
     result.worldTraceStatus = hit.status;
     bool found = hit.status == VXGI_THRESHOLD_HIT;
     if (!found)
@@ -449,7 +505,7 @@ SSGIHybridRayResult SSGIWorldRaySource(float3 origin, float3 direction, float ra
     VXGIProbeRadianceQueryResult query = VXGIProbeQueryRadiance(hit.position, unitDirection,
         parameters.voxelSize, parameters.probeCount, lookup, rawRecords
 #ifdef VXGI_SSGI_THRESHOLD
-        , probeNeighborsIndex
+        , probeNeighborsIndex, asuint(parameters.reservedLighting0.x)
 #endif
         );
     result.probeHasSupport = query.hasSupport;

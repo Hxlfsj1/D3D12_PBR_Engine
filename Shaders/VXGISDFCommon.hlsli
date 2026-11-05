@@ -247,6 +247,28 @@ bool VXGISDFTrace(float3 rayOrigin, float3 rayDirection, float rayMin, float ray
 #undef VXGI_SDF_TRACE_COVERAGE
 }
 
+// Source-surface shadow query: keep the entire [0, rayMax] interval. The
+// existing bias only identifies a near self hit, never a blind range shared
+// by neighboring triangles. Candidate rejection does not advance rayMin.
+bool VXGISDFTraceFromSurface(VXGISDFHit sourceHit, float3 rayDirection, float selfHitDistance, float rayMax,
+    VXGISDFGrid grid, StructuredBuffer<float> nodes, StructuredBuffer<uint> cellOffsets,
+    StructuredBuffer<uint> triangleReferences, StructuredBuffer<VXGISDFTriangle> triangles,
+    StructuredBuffer<VXGIMaterialData> materials, uint materialCount,
+    SamplerState materialSampler, float materialMipLevel, out VXGISDFHit hit)
+{
+    float3 rayOrigin = sourceHit.position;
+    float rayMin = 0.0;
+#define VXGI_SDF_TRACE_COVERAGE 1
+#define VXGI_SDF_TRACE_SOURCE_FILTER 1
+#ifdef VXGI_MESH_SDF
+#include "VXGIMeshSDFTraceBody.hlsli"
+#else
+#include "VXGISDFTraceBody.hlsli"
+#endif
+#undef VXGI_SDF_TRACE_SOURCE_FILTER
+#undef VXGI_SDF_TRACE_COVERAGE
+}
+
 uint VXGISDFHitMaterialId(VXGISDFHit hit, StructuredBuffer<VXGISDFTriangle> triangles)
 {
     VXGISDFTriangle surfaceTriangle = triangles[hit.triangleIndex];

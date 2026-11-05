@@ -31,12 +31,20 @@ public:
         UINT subresource = UINT_MAX; // UINT_MAX exports every mip/array/plane.
         std::string interpretation;
     };
+    struct RawBuffer
+    {
+        std::string name;
+        RDGBufferHandle buffer;
+        UINT stride = 0;
+        UINT64 byteCount = 0; // Zero exports the full buffer.
+        std::string interpretation;
+    };
 
     explicit RenderPassCapture(UINT frameCount = 3) : m_jobs(frameCount) {}
 
     RDGPassHandle AddToGraph(RDGBuilder& graph, ID3D12Device* device, UINT slot,
         RDGTextureHandle previewRGBA8, std::span<const RawOutput> rawOutputs,
-        const std::string& prefix, const Json& metadata)
+        const std::string& prefix, const Json& metadata, std::span<const RawBuffer> rawBuffers = {})
     {
         if (!device || slot >= m_jobs.size() || IsBusy(slot) || prefix.empty())
             return FailPass("Invalid capture request or frame slot is busy.");
@@ -74,6 +82,26 @@ public:
                     if (!AddImage(device, *job, source, subresource,
                         name + (count > 1 ? "-sub" + std::to_string(subresource) : ""), raw.interpretation, false)) return {};
             }
+            for (const auto& raw : rawBuffers)
+            {
+                auto* source = graph.GetBufferResource(raw.buffer);
+                if (!source || source->GetDesc().Dimension != D3D12_RESOURCE_DIMENSION_BUFFER)
+                    return FailPass("Capture source buffer is unavailable.");
+                Buffer buffer;
+                buffer.source = source;
+                buffer.bytes = raw.byteCount ? raw.byteCount : source->GetDesc().Width;
+                buffer.stride = raw.stride;
+                buffer.name = FileName(raw.name);
+                buffer.interpretation = raw.interpretation;
+                if (!buffer.bytes || buffer.bytes > source->GetDesc().Width || !raw.stride || buffer.bytes % raw.stride)
+                    return FailPass("Invalid capture buffer extent or stride.");
+                const CD3DX12_HEAP_PROPERTIES heap(D3D12_HEAP_TYPE_READBACK);
+                const auto desc = CD3DX12_RESOURCE_DESC::Buffer(buffer.bytes);
+                Check(device->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &desc,
+                    D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS(&buffer.readback)), "Create capture buffer readback");
+                parameters.ReadCopySrc(raw.buffer);
+                job->buffers.push_back(std::move(buffer));
+            }
             const auto pass = graph.AddPass("PassView.Capture", ERDGPassFlags::Copy | ERDGPassFlags::NeverCull,
                 parameters, [job](ID3D12GraphicsCommandList* commands)
                 {
@@ -89,6 +117,8 @@ public:
                         to.PlacedFootprint = image.footprint;
                         commands->CopyTextureRegion(&to, 0, 0, 0, &from, nullptr);
                     }
+                    for (const auto& buffer : job->buffers)
+                        commands->CopyBufferRegion(buffer.readback.Get(), 0, buffer.source.Get(), 0, buffer.bytes);
                     job->recorded = true;
                 });
             if (!pass.IsValid()) return FailPass("Cannot add the capture copy pass.");
@@ -159,9 +189,17 @@ private:
         std::string name, interpretation;
         bool preview = false;
     };
+    struct Buffer
+    {
+        Microsoft::WRL::ComPtr<ID3D12Resource> source, readback;
+        UINT64 bytes = 0;
+        UINT stride = 0;
+        std::string name, interpretation;
+    };
     struct Job
     {
         std::vector<Image> images;
+        std::vector<Buffer> buffers;
         std::string prefix;
         Json metadata;
         Microsoft::WRL::ComPtr<ID3D12Fence> fence;
@@ -295,6 +333,22 @@ private:
                     {"subresource", image.subresource}, {"mip", mip}, {"array_slice", slice}, {"plane", plane},
                     {"row_bytes", image.rowBytes}, {"row_count", image.rows}, {"byte_count", pixels.size()},
                     {"interpretation", image.interpretation}});
+            }
+            metadata["buffers"] = Json::array();
+            for (const auto& buffer : job.buffers)
+            {
+                void* mapped = nullptr;
+                const D3D12_RANGE reads{0, static_cast<SIZE_T>(buffer.bytes)}, noWrites{0, 0};
+                Check(buffer.readback->Map(0, &reads, &mapped), "Map capture buffer");
+                const std::string fileName = buffer.name + ".bin";
+                std::ofstream file(directory / fileName, std::ios::binary | std::ios::trunc);
+                file.write(static_cast<const char*>(mapped), static_cast<std::streamsize>(buffer.bytes));
+                file.close();
+                buffer.readback->Unmap(0, &noWrites);
+                if (!file) throw std::runtime_error("Cannot write capture buffer.");
+                metadata["buffers"].push_back({{"file", fileName}, {"byte_count", buffer.bytes},
+                    {"stride", buffer.stride}, {"count", buffer.bytes / buffer.stride},
+                    {"interpretation", buffer.interpretation}});
             }
             std::ofstream output(directory / "metadata.json", std::ios::binary | std::ios::trunc);
             output << metadata.dump(2) << '\n';

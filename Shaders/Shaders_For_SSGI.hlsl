@@ -483,7 +483,7 @@ bool ReprojectDistanceBand(uint2 receiverGI, uint previousIndex, uint period, ou
 {
     value = float4(0, 0, 0, -1);
     if (historyValid == 0) return false;
-    uint factor = max(traceDownsampleFactor, 2u);
+    uint factor = SSGITraceFactor(traceDownsampleFactor);
     uint2 pixel = receiverGI * factor;
     Texture2D<float> depth = ResourceDescriptorHeap[depthTextureIdx];
     Texture2D<float4> normals = ResourceDescriptorHeap[normalTextureIdx];
@@ -537,19 +537,21 @@ uint SSGIWorldRayCount(uint span)
     uint count = span == 4u ? worldFarRayCount : worldNearRayCount;
     // Older diagnostic callers leave these reserved slots zero. Production
     // validates configuration on the CPU; keep legacy calls safe at four.
-    return count >= 4u && count <= 64u && (count & 3u) == 0u ? count : 4u;
+    return count >= 4u && (count & 3u) == 0u ? count : 4u;
 }
 
 uint SSGIRaySampleIndex(uint baseIndex, uint ray)
 {
     // Keep the original first 16 near/far directions, then use disjoint blocks
     // for larger point-Repair budgets rather than overlapping the other band.
+    // This is a procedural pattern ID, not a resource address. Unsigned wrap
+    // is allowed for extreme budgets; LoadSTBN2D bounds the final texture lookup.
     return baseIndex + (ray & 15u) + 48u * (ray >> 4u);
 }
 
 float4 TraceReceiverBand(uint2 receiverGI, uint band, uint samples)
 {
-    uint factor = max(traceDownsampleFactor, 2u);
+    uint factor = SSGITraceFactor(traceDownsampleFactor);
     uint2 receiver = receiverGI * factor;
     Texture2D<float> depth = ResourceDescriptorHeap[depthTextureIdx];
     Texture2D<float4> normals = ResourceDescriptorHeap[normalTextureIdx];
@@ -616,22 +618,22 @@ void TraceReceiverDirectionBands(uint2 receiverGI, uint2 receiver, float3 positi
     counts.bvhNodeCount = hybrid.bvhNodeCount;
     VXGIThresholdParameters parameters;
     parameters.hitThresholdCells = SSGI_WORLD_HIT_THRESHOLD_CELLS;
-    parameters.stepScale = 0.9;
+    parameters.stepScale = 1.0; // Use the full conservative distance lower bound.
     parameters.maxSteps = 512;
     parameters.padding = 0;
     // An offset that consumes the short interval leaves a completed empty
     // near segment, preserving the original far continuation behavior.
     VXGIMeshSDFThresholdResult hit = (VXGIMeshSDFThresholdResult)0;
     if (limit > 0)
-        hit = VXGIMeshSDFTraceThreshold(worldOrigin, unitDirection, 0.0, limit,
-            counts, parameters, hybridNodes);
+        hit = SSGITraceMeshNear(worldOrigin, unitDirection, 0.0, limit,
+            counts, parameters, hybridNodes, hybrid);
     if (hit.status == VXGI_THRESHOLD_HIT)
     {
         if (needMesh && hit.distance + spent <= 2.0)
         {
             VXGIProbeRadianceQueryResult query = VXGIProbeQueryRadiance(hit.position,
                 unitDirection, hybrid.voxelSize, hybrid.probeCount, hybridLookup,
-                hybridRawRecords, probeNeighborsIndex);
+                hybridRawRecords, probeNeighborsIndex, asuint(hybrid.reservedLighting0.x));
             if (query.hasSupport != 0 && all(isfinite(query.radiance)))
                 meshContribution = query.radiance;
         }
@@ -651,7 +653,7 @@ void TraceSharedReceiverBands(uint2 receiverGI, bool needScreen, bool needMesh, 
     uint worldSamples,
     out float3 screenContribution, out float3 meshContribution, out float3 farContribution)
 {
-    uint2 receiver = receiverGI * max(traceDownsampleFactor, 2u);
+    uint2 receiver = receiverGI * SSGITraceFactor(traceDownsampleFactor);
     Texture2D<float> depth = ResourceDescriptorHeap[depthTextureIdx];
     Texture2D<float4> normals = ResourceDescriptorHeap[normalTextureIdx];
     Texture2DArray<uint2> blueNoise = ResourceDescriptorHeap[blueNoiseTextureIdx];
@@ -697,7 +699,7 @@ void EvaluateReceiverNearBands(uint2 receiverGI, uint span, bool requestScreen, 
         // The original combined near estimate used one screen/Mesh query for
         // each index16+ray direction. Keep that sharing after separating caches.
         // Receiver preparation and the lazy world offset stay outside the loop.
-        uint2 receiver = receiverGI * max(traceDownsampleFactor, 2u);
+        uint2 receiver = receiverGI * SSGITraceFactor(traceDownsampleFactor);
         Texture2D<float> depth = ResourceDescriptorHeap[depthTextureIdx];
         Texture2D<float4> normals = ResourceDescriptorHeap[normalTextureIdx];
         Texture2DArray<uint2> blueNoise = ResourceDescriptorHeap[blueNoiseTextureIdx];
@@ -749,6 +751,8 @@ groupshared float4 cachedMeshBands[16];
 groupshared float2 cachedMeshState[16];
 groupshared uint cachedMeshSources[16];
 groupshared float4 cachedFarBands[16];
+groupshared float4 oldMeshBatches[16];
+groupshared float4 oldFarBatches[16];
 groupshared float2 cachedFarState[16];
 groupshared uint cachedFarSources[16];
 groupshared float3 sharedScreenContributions[64];
@@ -818,7 +822,7 @@ void CSMain_SharedWorld(uint3 group : SV_GroupID, uint lane : SV_GroupIndex)
     uint2 local = uint2(lane & 7u, lane >> 3u);
     uint2 groupBase = group.xy * 8u;
     uint2 receiverGI = groupBase + local;
-    uint2 receiver = receiverGI * max(traceDownsampleFactor, 2u);
+    uint2 receiver = receiverGI * SSGITraceFactor(traceDownsampleFactor);
     uint index = (local.y / 2u) * 4u + local.x / 2u;
     uint parent = (local.y / 4u) * 2u + local.x / 4u;
     Texture2D<float> depth = ResourceDescriptorHeap[depthTextureIdx];
@@ -850,6 +854,7 @@ void CSMain_SharedWorld(uint3 group : SV_GroupID, uint lane : SV_GroupIndex)
     {
         uint address = span == 2u ? screenAddresses[index] : worldParentReceivers[parent];
         float4 mesh = float4(0, 0, 0, -1), farValue = mesh;
+        float4 oldMesh = mesh, oldFar = farValue;
         float2 meshState = 0, farState = 0;
         uint meshSource = 0u, farSource = 0u;
         uint kind;
@@ -859,6 +864,7 @@ void CSMain_SharedWorld(uint3 group : SV_GroupID, uint lane : SV_GroupIndex)
             if (SSGIWorldOwnerCacheEnabled())
             {
                 SSGIReprojectWorldOwner(origin, span, 1u, mesh, meshState, meshSource);
+                oldMesh = mesh;
                 if (SSGIWorldOwnerRefreshDue(mesh, meshState, meshSource, 2u)) mesh = float4(0, 0, 0, -1);
             }
             else ReprojectWorldBand(origin, previousMeshBandIndex, 2u, span, false, mesh, kind);
@@ -868,6 +874,7 @@ void CSMain_SharedWorld(uint3 group : SV_GroupID, uint lane : SV_GroupIndex)
                 if (SSGIWorldOwnerCacheEnabled())
                 {
                     SSGIReprojectWorldOwner(origin, span, 2u, farValue, farState, farSource);
+                    oldFar = farValue;
                     if (SSGIWorldOwnerRefreshDue(farValue, farState, farSource, 4u)) farValue = float4(0, 0, 0, -1);
                 }
                 else ReprojectWorldBand(origin, previousGlobalBandIndex, 4u, span, false, farValue, kind);
@@ -895,6 +902,8 @@ void CSMain_SharedWorld(uint3 group : SV_GroupID, uint lane : SV_GroupIndex)
             uint targetIndex = (target.y / 2u) * 4u + target.x / 2u;
             worldAddresses[targetIndex] = encoded;
             cachedMeshBands[targetIndex] = mesh;
+            oldMeshBatches[targetIndex] = oldMesh;
+            oldFarBatches[targetIndex] = oldFar;
             cachedMeshState[targetIndex] = meshState;
             cachedMeshSources[targetIndex] = meshSource;
             cachedFarBands[targetIndex] = farValue;
@@ -979,9 +988,27 @@ void CSMain_SharedWorld(uint3 group : SV_GroupID, uint lane : SV_GroupIndex)
                 meshSum += sharedMeshContributions[member];
                 farSum += sharedFarContributions[member];
             }
-            if (mesh.a < 0 && SSGIWorldMode() != 0u) mesh = float4(meshSum, 0);
+            // Mix only a newly traced batch with a geometrically accepted owner.
+            // Held/reprojected batches do not advance this accumulation window.
+            if (mesh.a < 0 && SSGIWorldMode() != 0u)
+            {
+                if (SSGIWorldOwnerCacheEnabled() && SSGIWorldOwnerHistoryUpdates() > 1u && oldMeshBatches[index].a >= 0)
+                {
+                    float weight = rcp(min(meshState.x + 1.0, float(SSGIWorldOwnerHistoryUpdates())));
+                    meshSum = lerp(oldMeshBatches[index].rgb, meshSum, weight);
+                }
+                mesh = float4(meshSum, 0);
+            }
 #ifdef VXGI_SSGI_GLOBAL
-            if (farValue.a < 0 && global.enabled != 0u && SSGIWorldMode() != 0u) farValue = float4(farSum, 0);
+            if (farValue.a < 0 && global.enabled != 0u && SSGIWorldMode() != 0u)
+            {
+                if (SSGIWorldOwnerCacheEnabled() && SSGIWorldOwnerHistoryUpdates() > 1u && oldFarBatches[index].a >= 0)
+                {
+                    float weight = rcp(min(farState.x + 1.0, float(SSGIWorldOwnerHistoryUpdates())));
+                    farSum = lerp(oldFarBatches[index].rgb, farSum, weight);
+                }
+                farValue = float4(farSum, 0);
+            }
 #endif
         }
         RWTexture2D<float4> meshLighting = ResourceDescriptorHeap[sharedMeshLightingTextureIdx];
@@ -1072,7 +1099,7 @@ void EvaluateReceiverRepairBands(uint2 receiverGI, uint span,
     bool shareWorldPrefix = freshMesh && freshFar;
     if (freshScreen || freshMesh)
     {
-        uint2 receiver = receiverGI * max(traceDownsampleFactor, 2u);
+        uint2 receiver = receiverGI * SSGITraceFactor(traceDownsampleFactor);
         Texture2D<float> depth = ResourceDescriptorHeap[depthTextureIdx];
         Texture2D<float4> normals = ResourceDescriptorHeap[normalTextureIdx];
         Texture2DArray<uint2> blueNoise = ResourceDescriptorHeap[blueNoiseTextureIdx];
@@ -1204,7 +1231,7 @@ bool GatherCoarseSharedWorld(uint2 receiverGI, float3 position, float3 n,
     Texture2D<uint> receivers = ResourceDescriptorHeap[receiverIndex];
     Texture2D<float> depth = ResourceDescriptorHeap[depthTextureIdx];
     Texture2D<float4> normals = ResourceDescriptorHeap[normalTextureIdx];
-    uint factor = max(traceDownsampleFactor, 2u);
+    uint factor = SSGITraceFactor(traceDownsampleFactor);
     uint2 receiver = receiverGI * factor;
     float z = depth.Load(int3(receiver, 0));
     float footprint = max(SameDepthPixelFootprint((receiver + 0.5) / sceneSize,
@@ -1284,7 +1311,7 @@ bool GatherSharedWorld(uint2 receiverGI, float3 position, float3 n, uint span,
     Texture2D<uint> receivers = ResourceDescriptorHeap[receiverIndex];
     Texture2D<float> depth = ResourceDescriptorHeap[depthTextureIdx];
     Texture2D<float4> normals = ResourceDescriptorHeap[normalTextureIdx];
-    uint factor = max(traceDownsampleFactor, 2u);
+    uint factor = SSGITraceFactor(traceDownsampleFactor);
     uint2 receiver = receiverGI * factor;
     float z = depth.Load(int3(receiver, 0));
     float footprint = max(SameDepthPixelFootprint((receiver + 0.5) / sceneSize,
@@ -1378,7 +1405,7 @@ void CSMain_Trace(uint3 id : SV_DispatchThreadID, uint3 group : SV_GroupID, uint
     Texture2D<float> depth = ResourceDescriptorHeap[depthTextureIdx];
     Texture2D<float4> normals = ResourceDescriptorHeap[normalTextureIdx];
     Texture2D<float4> orm = ResourceDescriptorHeap[ormTextureIdx];
-    uint factor = max(traceDownsampleFactor, 2u);
+    uint factor = SSGITraceFactor(traceDownsampleFactor);
     uint2 pixel = id.xy * factor;
     float z = depth.Load(int3(pixel, 0));
     output[id.xy] = 0;
@@ -1572,25 +1599,27 @@ float4 PSMain(float4 position : SV_POSITION) : SV_Target0
     float3 n = SSGIDecodeViewNormal(normal.Load(int3(pixel, 0)).xyz, viewMat);
     float footprint = SameDepthPixelFootprint(uv, z, p, sceneSize, invProjMat);
     float tolerance = max(min(footprint * 0.5, p.z * 0.01), 0.001);
-    uint factor = max(traceDownsampleFactor, 2u);
+    uint factor = SSGITraceFactor(traceDownsampleFactor);
     float inverseFactor = factor == 2u ? 0.5 : rcp(float(factor));
     // Signal texel i samples full-resolution pixel factor*i, including odd extents.
-    float2 halfPixel = float2(pixel) * inverseFactor;
-    int2 base = int2(floor(halfPixel));
+    float2 halfPixel = padding != 0u ? (float2(pixel) + 0.5) * inverseFactor - 0.5 : float2(pixel) * inverseFactor;
+    int2 base = padding != 0u ? int2(floor(halfPixel + 0.5)) - 1 : int2(floor(halfPixel));
     float2 fraction = frac(halfPixel);
-    float3 sum = 0;
-    float weightSum = 0;
+    bool fullResolution = factor == 1u && padding == 0u;
+    float3 sum = fullResolution ? gi.Load(int3(pixel, 0)).rgb : 0;
+    float weightSum = fullResolution ? 1.0 : 0.0;
 
     [loop]
-    for (int i = 0; i < 4; ++i)
+    for (int i = 0; i < (fullResolution ? 0 : (padding != 0u ? 9 : 4)); ++i)
     {
-        int2 offset = int2(i & 1, i >> 1);
+        int2 offset = padding != 0u ? int2(i % 3, i / 3) : int2(i & 1, i >> 1);
         int2 tap = base + offset;
-        if (any(tap >= int2(halfSize)))
+        if (any(tap < 0) || any(tap >= int2(halfSize)))
         {
             continue;
         }
-        int2 fullPixel = tap * int(factor);
+        uint2 fullPixel = SSGIReceiverPixel(uint2(tap), factor, sceneSize, padding);
+        if (any(fullPixel >= sceneSize)) continue;
         float tapZ = depth.Load(int3(fullPixel, 0));
         if (tapZ >= 1 || orm.Load(int3(fullPixel, 0)).a < 0.5)
         {
@@ -1613,7 +1642,9 @@ float4 PSMain(float4 position : SV_POSITION) : SV_Target0
             continue;
         }
         float2 bilinear = lerp(1 - fraction, fraction, float2(offset));
-        float weight = SSGIApplyBilateralGeometryWeight(bilinear.x * bilinear.y, agreement, planeError);
+        float2 separation = float2(tap) - halfPixel;
+        float spatialWeight = padding != 0u ? exp2(-2.0 * dot(separation, separation)) : bilinear.x * bilinear.y;
+        float weight = SSGIApplyBilateralGeometryWeight(spatialWeight, agreement, planeError);
 
         sum += gi.Load(int3(tap, 0)).rgb * weight; // Spatial variance in alpha is never a lighting factor.
         weightSum += weight;

@@ -1,6 +1,7 @@
 #include "VXGIProbeCommon.hlsli"
 #ifdef VXGI_PROBE_SPARSE
 #include "VXGIProbeDependency.hlsli"
+#include "VXGIProbeDistanceCommon.hlsli"
 struct VXGIProbeWorkItem { uint probeIndex, resetMode, generation, padding; };
 struct VXGIProbeFeedback { VXGIProbeRecord record; uint dependencies[8]; };
 StructuredBuffer<VXGIProbeWorkItem> probeWork : register(t7);
@@ -40,6 +41,13 @@ void CSReset(uint3 dispatchThreadId : SV_DispatchThreadID)
     uint oldIndex = probeRemap[probeIndex];
     if (oldIndex < previousProbeCount) nextRecords[probeIndex] = previousRecords[oldIndex];
     else nextRecords[probeIndex] = (VXGIProbeRecord)0;
+    if((probeParameters.distanceOutputIndex != 0u && probeParameters.distanceOutputIndex != 0xffffffffu))
+    {
+        StructuredBuffer<uint2> oldDepth=ResourceDescriptorHeap[probeParameters.distancePreviousIndex];
+        RWStructuredBuffer<uint2> depth=ResourceDescriptorHeap[probeParameters.distanceOutputIndex];
+        [loop] for(uint bin=0;bin<64;++bin)
+            depth[probeIndex*64+bin]=oldIndex<previousProbeCount?oldDepth[oldIndex*64+bin]:uint2(0,0);
+    }
 #else
     nextRecords[probeIndex] = VXGIProbeResetRecord(previousRecords[probeIndex], probeParameters.resetMode);
 #endif
@@ -53,6 +61,11 @@ void CSLegacyReset(uint3 dispatchThreadId : SV_DispatchThreadID)
     if (index >= probeParameters.probeCount) return;
     if (probeParameters.resetMode == 1 || index >= previousProbeCount) nextRecords[index] = (VXGIProbeRecord)0;
     else nextRecords[index] = VXGIProbeResetRecord(previousRecords[index], probeParameters.resetMode);
+    if(probeParameters.resetMode==1 && (probeParameters.distanceOutputIndex!=0u && probeParameters.distanceOutputIndex!=0xffffffffu))
+    {
+        RWStructuredBuffer<uint2> depth=ResourceDescriptorHeap[probeParameters.distanceOutputIndex];
+        [loop] for(uint bin=0;bin<64;++bin) depth[index*64+bin]=uint2(0,0);
+    }
 }
 [numthreads(64, 1, 1)]
 void CSInvalidate(uint3 dispatchThreadId : SV_DispatchThreadID)
@@ -61,6 +74,11 @@ void CSInvalidate(uint3 dispatchThreadId : SV_DispatchThreadID)
     if (index >= invalidationCount) return;
     VXGIProbeWorkItem work = probeInvalidations[index];
     nextRecords[work.probeIndex] = VXGIProbeResetRecord(nextRecords[work.probeIndex], work.resetMode);
+    if(work.resetMode==1 && (probeParameters.distanceOutputIndex!=0u && probeParameters.distanceOutputIndex!=0xffffffffu))
+    {
+        RWStructuredBuffer<uint2> depth=ResourceDescriptorHeap[probeParameters.distanceOutputIndex];
+        [loop] for(uint bin=0;bin<64;++bin) depth[work.probeIndex*64+bin]=uint2(0,0);
+    }
 }
 #endif
 
@@ -83,6 +101,25 @@ void CSUpdate(uint3 dispatchThreadId : SV_DispatchThreadID)
 // one-thread-per-probe CSUpdate remains a numerical reference above.
 #ifdef VXGI_PROBE_SPARSE
 groupshared uint parallelDependencies[512];
+// Zero preserves compatibility with executables whose former padding is zero.
+groupshared uint distanceWinner[64];
+groupshared uint2 distanceCandidate[256];
+void VXGIProbeDistanceAccumulate(float3 direction,float distance,float3 normal,uint sampleIndex)
+{
+    if((probeParameters.distanceOutputIndex==0u || probeParameters.distanceOutputIndex==0xffffffffu)) return;
+    float radial=saturate(distance/(2.0*probeParameters.cellSize));
+    uint normalPacked=0;
+    float planeDistance=1.0;
+    if(radial<1.0 && dot(normal,normal)>0.5)
+    {
+        normal=dot(normal,direction)>=0.0?normal:-normal;
+        normalPacked=VXGIProbeDistanceNormalPack(normal);
+        planeDistance=saturate(dot(normal,direction)*radial);
+    }
+    distanceCandidate[sampleIndex]=uint2(f32tof16(radial)|(f32tof16(planeDistance)<<16),normalPacked);
+    uint winner=(uint(floor(radial*16777214.0))<<8)|sampleIndex;
+    InterlockedMin(distanceWinner[VXGIProbeDistanceBin(direction)],winner);
+}
 void VXGIProbeStoreFeedback(uint lane, uint batchIndex, uint probeIndex, uint dependencies[8])
 {
     [unroll] for (uint word = 0; word < 8; ++word) parallelDependencies[lane * 8 + word] = dependencies[word];
@@ -103,15 +140,19 @@ void VXGIProbeStoreFeedback(uint lane, uint batchIndex, uint probeIndex, uint de
     }
 }
 
-bool VXGIProbeTraceSourceTracked(float3 center, float3 direction, out float3 radiance, inout uint dependencies[8])
+bool VXGIProbeTraceSourceTracked(float3 center, float3 direction, out float3 radiance, out float captureDistance, out float3 captureNormal, inout uint dependencies[8])
 {
     radiance = 0.0;
+    captureDistance = probeParameters.maxRayDistance;
+    captureNormal = 0.0;
     VXGISDFGrid grid = VXGIProbeMakeGrid(probeParameters);
     VXGISDFHit hit;
     bool found = VXGISDFTrace(center, direction, probeParameters.rayMinDistance, probeParameters.maxRayDistance,
         grid, sdfNodes, cellOffsets, triangleReferences, surfaceTriangles, surfaceMaterials,
         probeParameters.materialCount, materialSampler, probeParameters.materialMipLevel, hit);
     VXGIProbeDependencySegment(center, center + direction * (found ? hit.distance : probeParameters.maxRayDistance), dependencyDomain, dependencies);
+    captureDistance = found ? hit.distance : probeParameters.maxRayDistance;
+    captureNormal = found ? hit.geometricNormal : 0.0;
     if (hit.traceStatus >= 2) return false;
     if (!found) return hit.traceStatus == 0;
     if (hit.triangleIndex >= probeParameters.triangleCount
@@ -261,6 +302,18 @@ void CSUpdateParallel(uint3 groupId : SV_GroupID, uint lane : SV_GroupIndex)
         return;
     }
 
+#ifdef VXGI_PROBE_SPARSE
+    if((probeParameters.distanceOutputIndex!=0u && probeParameters.distanceOutputIndex!=0xffffffffu))
+    {
+        distanceWinner[lane]=0xffffffffu;
+        if(work.resetMode==1)
+        {
+            RWStructuredBuffer<uint2> depth=ResourceDescriptorHeap[probeParameters.distanceOutputIndex];
+            depth[probeIndex*64+lane]=uint2(0,0);
+        }
+    }
+    GroupMemoryBarrierWithGroupSync();
+#endif
     uint rayCount = VXGIProbeRayCount(probeParameters.raysPerProbe);
     uint updateIndex = VXGIProbeSaturatingAdd(parallelRecord.updateCount, 1);
     VXGIProbeRecord partialEstimate = (VXGIProbeRecord)0;
@@ -270,8 +323,15 @@ void CSUpdateParallel(uint3 groupId : SV_GroupID, uint lane : SV_GroupIndex)
         float3 direction = VXGIProbeSampleDirection(pairIndex, rayCount / 2, probeIndex, updateIndex);
         float3 positiveRadiance, negativeRadiance;
 #ifdef VXGI_PROBE_SPARSE
-        bool positiveValid = VXGIProbeTraceSourceTracked(parallelCenter, direction, positiveRadiance, dependencies);
-        bool negativeValid = VXGIProbeTraceSourceTracked(parallelCenter, -direction, negativeRadiance, dependencies);
+        float positiveDistance,negativeDistance;
+        float3 positiveNormal,negativeNormal;
+        bool positiveValid = VXGIProbeTraceSourceTracked(parallelCenter, direction, positiveRadiance, positiveDistance, positiveNormal, dependencies);
+        bool negativeValid = VXGIProbeTraceSourceTracked(parallelCenter, -direction, negativeRadiance, negativeDistance, negativeNormal, dependencies);
+        if(positiveValid && negativeValid)
+        {
+            VXGIProbeDistanceAccumulate(direction,positiveDistance,positiveNormal,pairIndex*2);
+            VXGIProbeDistanceAccumulate(-direction,negativeDistance,negativeNormal,pairIndex*2+1);
+        }
 #else
         bool positiveValid = VXGIProbeTraceSource(parallelCenter, direction, probeParameters,
             sdfNodes, cellOffsets, triangleReferences, surfaceTriangles, surfaceMaterials, materialSampler, positiveRadiance);
@@ -300,6 +360,16 @@ void CSUpdateParallel(uint3 groupId : SV_GroupID, uint lane : SV_GroupIndex)
         }
         GroupMemoryBarrierWithGroupSync();
     }
+#ifdef VXGI_PROBE_SPARSE
+    if((probeParameters.distanceOutputIndex!=0u && probeParameters.distanceOutputIndex!=0xffffffffu) && parallelFailure[0]==0 && distanceWinner[lane]!=0xffffffffu)
+    {
+        RWStructuredBuffer<uint2> depth=ResourceDescriptorHeap[probeParameters.distanceOutputIndex];
+        uint2 old=depth[probeIndex*64+lane];
+        uint2 candidate=distanceCandidate[distanceWinner[lane]&255u];
+        if(old.x==0 || f16tof32(candidate.x&65535u)<f16tof32(old.x&65535u))
+            depth[probeIndex*64+lane]=candidate;
+    }
+#endif
     if (lane == 0)
     {
         if (parallelFailure[0] != 0)

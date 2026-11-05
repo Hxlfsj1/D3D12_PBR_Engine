@@ -2,6 +2,7 @@
 #define VXGI_PROBE_RADIANCE_COMMON_HLSLI
 
 #include "VXGIProbeData.hlsli"
+#include "VXGIProbeDistanceCommon.hlsli"
 
 static const uint VXGI_PROBE_MISSING_INDEX = 0xffffffffu;
 
@@ -68,10 +69,11 @@ float VXGIProbeMaximumCoordinate(float3 value)
 
 // Read only the cache at the world hit in the original GI ray's direction.
 // Geometry has already been intersected by the caller; no normals, material,
-// geometry resources or secondary visibility rays enter this lookup.
+// secondary visibility rays enter this lookup. Optional baked distances reject
+// contributors on the other side of surfaces without tracing scene geometry.
 VXGIProbeRadianceQueryResult VXGIProbeQueryRadiance(float3 worldPosition, float3 worldRayDirection,
     float voxelSize, uint probeCount, StructuredBuffer<VXGIProbeCellEntry> lookup,
-    StructuredBuffer<VXGIProbeRecord> rawRecords, uint neighborsDescriptorIndex)
+    StructuredBuffer<VXGIProbeRecord> rawRecords, uint neighborsDescriptorIndex, uint distanceDescriptorIndex)
 {
     VXGIProbeRadianceQueryResult result = (VXGIProbeRadianceQueryResult)0;
     float maximumDirection = VXGIProbeMaximumCoordinate(worldRayDirection);
@@ -136,6 +138,14 @@ VXGIProbeRadianceQueryResult VXGIProbeQueryRadiance(float3 worldPosition, float3
         ++result.candidateCount;
         VXGIProbeRecord source = rawRecords[probeIndex];
         if (!VXGIProbeQueryRecordValid(source)) continue;
+        float visibility=1.0;
+        if(distanceDescriptorIndex!=0u)
+        {
+            float3 center=(float3(base+corner)+0.5)*voxelSize;
+            visibility=VXGIProbeDistanceVisibility(distanceDescriptorIndex,probeIndex,worldPosition-center,voxelSize,worldRayDirection);
+            if(visibility<=0.0) continue;
+            weight*=visibility;
+        }
         ++result.acceptedCount;
         result.supportWeight += weight;
         [unroll] for (uint coefficient = 0; coefficient < 4; ++coefficient)
@@ -156,6 +166,14 @@ VXGIProbeRadianceQueryResult VXGIProbeQueryRadiance(float3 worldPosition, float3
     return result;
 }
 
+// Consumers without the optional baked distance cache retain their old contract.
+VXGIProbeRadianceQueryResult VXGIProbeQueryRadiance(float3 worldPosition, float3 worldRayDirection,
+    float voxelSize, uint probeCount, StructuredBuffer<VXGIProbeCellEntry> lookup,
+    StructuredBuffer<VXGIProbeRecord> rawRecords, uint neighborsDescriptorIndex)
+{
+    return VXGIProbeQueryRadiance(worldPosition,worldRayDirection,voxelSize,probeCount,
+        lookup,rawRecords,neighborsDescriptorIndex,0u);
+}
 // Existing consumers keep the original binary lookup and require no new binding.
 VXGIProbeRadianceQueryResult VXGIProbeQueryRadiance(float3 worldPosition, float3 worldRayDirection,
     float voxelSize, uint probeCount, StructuredBuffer<VXGIProbeCellEntry> lookup,

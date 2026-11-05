@@ -13,17 +13,16 @@
     }
   },
   "ssgi": {
-    "enabled": false,
-    "world_sharing": {
-      "enabled": true
+    "enabled": true,
+    "sampling_mode": "screen_probes",
+    "screen_probes": {
+      "rays_per_probe": 128,
+      "history_updates": 4
     },
     "world_sampling": {
-      "near_distance": 2.0,
-      "near_exit_distance": 2.2,
-      "near_ray_count": 16,
-      "far_ray_count": 8
+      "mesh_min_hit_distance": 0.0
     },
-    "trace_downsample_factor": 2,
+    "trace_downsample_factor": 8,
     "intensity": 1
   },
   "vxgi": {

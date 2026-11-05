@@ -3,6 +3,15 @@
 
 #include "VXGIMeshSDFData.hlsli"
 
+// Preserve baking precision while keeping short runtime confirmation in FP32.
+#ifdef VXGI_MESH_SDF_RUNTIME_FP32
+typedef float VXGIMeshSDFTraceReal;
+typedef float3 VXGIMeshSDFTraceReal3;
+#else
+typedef double VXGIMeshSDFTraceReal;
+typedef double3 VXGIMeshSDFTraceReal3;
+#endif
+
 VXGISDFGrid VXGIMeshSDFGrid(VXGIMeshSDFAsset asset)
 {
     VXGISDFGrid grid;
@@ -58,23 +67,23 @@ float VXGIMeshSDFDisplayDistance(float3 worldPosition, StructuredBuffer<float> n
     return best;
 }
 
-double VXGIMeshSDFDot(double3 a, double3 b)
+VXGIMeshSDFTraceReal VXGIMeshSDFDot(VXGIMeshSDFTraceReal3 a, VXGIMeshSDFTraceReal3 b)
 {
     return a.x * b.x + a.y * b.y + a.z * b.z;
 }
 
-double3 VXGIMeshSDFCross(double3 a, double3 b)
+VXGIMeshSDFTraceReal3 VXGIMeshSDFCross(VXGIMeshSDFTraceReal3 a, VXGIMeshSDFTraceReal3 b)
 {
-    return double3(a.y * b.z - a.z * b.y, a.z * b.x - a.x * b.z, a.x * b.y - a.y * b.x);
+    return VXGIMeshSDFTraceReal3(a.y * b.z - a.z * b.y, a.z * b.x - a.x * b.z, a.x * b.y - a.y * b.x);
 }
 
 // Keep the original world interval and a precise parameter until all instances
 // have competed. Float local T cannot distinguish nearby far-away surfaces or
 // safely decide whether a transformed hit lies on a finite endpoint.
 bool VXGIMeshSDFWorldBounds(float3 origin, float3 direction, float3 minimum,
-    float3 maximum, double rayMin, double rayMax)
+    float3 maximum, VXGIMeshSDFTraceReal rayMin, VXGIMeshSDFTraceReal rayMax)
 {
-    double entry = rayMin, exit = rayMax;
+    VXGIMeshSDFTraceReal entry = rayMin, exit = rayMax;
     [unroll] for (uint axis = 0; axis < 3; ++axis)
     {
         if (direction[axis] == 0.0)
@@ -83,8 +92,8 @@ bool VXGIMeshSDFWorldBounds(float3 origin, float3 direction, float3 minimum,
         }
         else
         {
-            double a = (double(minimum[axis]) - double(origin[axis])) / double(direction[axis]);
-            double b = (double(maximum[axis]) - double(origin[axis])) / double(direction[axis]);
+            VXGIMeshSDFTraceReal a = (VXGIMeshSDFTraceReal(minimum[axis]) - VXGIMeshSDFTraceReal(origin[axis])) / VXGIMeshSDFTraceReal(direction[axis]);
+            VXGIMeshSDFTraceReal b = (VXGIMeshSDFTraceReal(maximum[axis]) - VXGIMeshSDFTraceReal(origin[axis])) / VXGIMeshSDFTraceReal(direction[axis]);
             entry = max(entry, min(a, b));
             exit = min(exit, max(a, b));
         }
@@ -94,7 +103,7 @@ bool VXGIMeshSDFWorldBounds(float3 origin, float3 direction, float3 minimum,
 
 bool VXGIMeshSDFWorldTriangle(float3 rayOrigin, float3 rayDirection,
     VXGISDFTriangle surfaceTriangle, VXGIMeshSDFInstance instance,
-    double rayMin, double rayMax, out double distance, out float3 barycentric,
+    VXGIMeshSDFTraceReal rayMin, VXGIMeshSDFTraceReal rayMax, out VXGIMeshSDFTraceReal distance, out float3 barycentric,
     out float3 geometricNormal)
 {
     distance = 0.0;
@@ -103,16 +112,16 @@ bool VXGIMeshSDFWorldTriangle(float3 rayOrigin, float3 rayDirection,
     precise float3 p0 = mul(float4(surfaceTriangle.p0, 1), instance.worldFromLocal).xyz;
     precise float3 p1 = mul(float4(surfaceTriangle.p1, 1), instance.worldFromLocal).xyz;
     precise float3 p2 = mul(float4(surfaceTriangle.p2, 1), instance.worldFromLocal).xyz;
-    double3 edge1 = double3(p1) - double3(p0), edge2 = double3(p2) - double3(p0);
-    double3 p = VXGIMeshSDFCross(double3(rayDirection), edge2);
-    double determinant = VXGIMeshSDFDot(edge1, p);
+    VXGIMeshSDFTraceReal3 edge1 = VXGIMeshSDFTraceReal3(p1) - VXGIMeshSDFTraceReal3(p0), edge2 = VXGIMeshSDFTraceReal3(p2) - VXGIMeshSDFTraceReal3(p0);
+    VXGIMeshSDFTraceReal3 p = VXGIMeshSDFCross(VXGIMeshSDFTraceReal3(rayDirection), edge2);
+    VXGIMeshSDFTraceReal determinant = VXGIMeshSDFDot(edge1, p);
     float3 normal = cross(p1 - p0, p2 - p0);
-    if (abs(determinant) <= 1e-12 * double(length(normal))) return false;
-    double inverse = 1.0 / determinant;
-    double3 offset = double3(rayOrigin) - double3(p0);
-    double u = VXGIMeshSDFDot(offset, p) * inverse;
-    double3 q = VXGIMeshSDFCross(offset, edge1);
-    double v = VXGIMeshSDFDot(double3(rayDirection), q) * inverse;
+    if (abs(determinant) <= 1e-12 * VXGIMeshSDFTraceReal(length(normal))) return false;
+    VXGIMeshSDFTraceReal inverse = 1.0 / determinant;
+    VXGIMeshSDFTraceReal3 offset = VXGIMeshSDFTraceReal3(rayOrigin) - VXGIMeshSDFTraceReal3(p0);
+    VXGIMeshSDFTraceReal u = VXGIMeshSDFDot(offset, p) * inverse;
+    VXGIMeshSDFTraceReal3 q = VXGIMeshSDFCross(offset, edge1);
+    VXGIMeshSDFTraceReal v = VXGIMeshSDFDot(VXGIMeshSDFTraceReal3(rayDirection), q) * inverse;
     if (u < -2e-5 || v < -2e-5 || u + v > 1.00002) return false;
     distance = VXGIMeshSDFDot(edge2, q) * inverse;
     if (distance < rayMin || distance > rayMax) return false;

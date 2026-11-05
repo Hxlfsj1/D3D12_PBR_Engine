@@ -4,6 +4,25 @@
 #include "MaterialCommon.hlsli"
 #include "GeometryCommon.hlsli"
 
+uint SSGITraceFactor(uint configuredFactor)
+{
+    // Zero is retained only for old diagnostic constant layouts. Production
+    // validates positive factors; explicit 1 means full internal scene resolution.
+    return configuredFactor == 0u ? 2u : configuredFactor;
+}
+
+// Zero selects the legacy top-left receiver convention. Screen probes supply
+// a full-resolution packed receiver atlas (descriptor+1), shared by every
+// downstream geometry check instead of silently assuming the tile center.
+uint2 SSGIReceiverPixel(uint2 gi, uint factor, uint2 size, uint guidePlusOne)
+{
+    if (guidePlusOne == 0u) return gi * factor;
+    Texture2D<uint> guides = ResourceDescriptorHeap[guidePlusOne - 1u];
+    uint packed = guides.Load(int3(gi, 0));
+    if (packed == 0u) return uint2(0xffffffffu, 0xffffffffu);
+    return uint2((packed - 1u) % size.x, (packed - 1u) / size.x);
+}
+
 float3 SSGIDecodeViewNormal(float3 encodedNormal, float4x4 viewMat)
 {
     return normalize(mul(float4(DecodeGBufferNormal(encodedNormal), 0), viewMat).xyz);

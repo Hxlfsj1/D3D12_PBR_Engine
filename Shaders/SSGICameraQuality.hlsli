@@ -48,7 +48,7 @@ uint SSGIAddressSpan(uint address)
 
 uint SSGICameraSpan(uint2 receiverGI)
 {
-    uint factor = max(traceDownsampleFactor, 2u);
+    uint factor = SSGITraceFactor(traceDownsampleFactor);
     uint2 pixel = receiverGI * factor;
     Texture2D<float> depth = ResourceDescriptorHeap[depthTextureIdx];
     float z = depth.Load(int3(pixel, 0));
@@ -108,7 +108,7 @@ bool ReprojectWorldBand(uint2 receiverGI, uint previousIndex, uint period,
     value = float4(0, 0, 0, -1);
     kind = SSGI_WORLD_CACHE_INVALID;
     if (historyValid == 0) return false;
-    uint factor = max(traceDownsampleFactor, 2u);
+    uint factor = SSGITraceFactor(traceDownsampleFactor);
     uint2 pixel = receiverGI * factor;
     Texture2D<float> depth = ResourceDescriptorHeap[depthTextureIdx];
     Texture2D<float4> normals = ResourceDescriptorHeap[normalTextureIdx];

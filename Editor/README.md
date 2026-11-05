@@ -33,6 +33,10 @@ GI 本步结果可使用 `--pass-gi-source=default|mesh-sdf|ssgi` 选择正常�
 
 后台验收通过 `--capture-frame=N` 在运行工作目录的 `Captures/<pass>-<frame>-<unique>/` 中生成 `preview.png`、原始 `.raw` 和 `metadata.json`，默认画面也可导出。截图是管线结果，不包含编辑器面板、描边、操作轴或后续 VXGI 诊断叠加；原始文件保存所选输出资源本身：三个纯 GI 输出是经过配置抗锯齿与一次 ToneMap 后的全输出分辨率 RGBA8，不再是 GI 内部半分辨率 `E/pi`；截至本步仍保存 GI 合成边界的 HDR 资源。其他阶段保留各自的资源格式，深度与阴影不经色调映射，Shadow 的四级全部保存。元信息记录每个文件的 DXGI 格式、尺寸、行字节、mip、数组层，以及相机、逻辑帧号、查看模式、渲染路径、抗锯齿算法和关键配置。复制使用正常帧的 fence，完成后再读回，不增加全局 GPU 等待。GI 元信息另外记录 `gi_output_stage`（`after_configured_aa_and_tonemap` 或 `after_gi`）与 `gi_preview_aa_enabled`，便于区分纯 GI 显示输出和 GI 边界快照。导出成功或失败显示在 Output Log。
 
+保存 GI 时另外导出选定来源的线性 `gi-filtered`（内部追踪分辨率的 `E/pi`，未乘接收材质、强度、AA 或 ToneMap），以及正常完整 GI 的 raw、reconstructed、可用的 world gather/owner atlas、BounceSource、深度和法线。`gi-full-*` 始终属于完整生产路径，不能当成所选简化来源；owner atlas 左半为 Mesh、右半为 Global，RGB 是线性估计，alpha 是年龄，粗档存在重复槽位，槽位数不等于射线数。这些额外读回只在实际保存 GI 的帧执行。有限帧报告另记录探针有效/禁用/未分类数及成功更新总数，便于确认初始化完整。
+
+启用 VXGI 的有限帧 CLI GI 抓帧还会保存 `vxgi-probes.bin`：96 字节一条的原始 `VXGIProbeState::GPURecord`，保留未卷积的四组 RGB SH 及分类/采样计数。`metadata.json` 的 `buffers` 描述数量和 stride，`probe_snapshot.centers` 与记录索引对应。它不经过运行时可见性、插值或降噪，可用于单独检查烘焙漏光；普通帧和交互保存不额外读回该缓存。
+
 Outliner 和 Output Log 使用 Unity 式深浅交替行底色，颜色仍由统一主题管理。搜索后按显示顺序重新交替，模型选中与悬停高亮覆盖行底色。
 
 Console 单击一行（包括文字右侧空白）后整行选中，Ctrl+C 复制完整内容和换行；超出可视宽度的内容也会复制。拖动仍可选择部分文字或多行，Ctrl+A 选择当前日志文本。选中文字期间冻结当前日志快照，避免新日志改变复制范围；离开输入区域后更新。滚动查看旧日志时不自动跳到底部。
