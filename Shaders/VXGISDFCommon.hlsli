@@ -228,6 +228,20 @@ bool VXGISDFTrace(float3 rayOrigin, float3 rayDirection, float rayMin, float ray
 #endif
 }
 
+#ifdef VXGI_MESH_SDF
+// Geometry-only narrow phase for a leaf selected by the caller's scene BVH.
+// Reuse the same finite-interval, transformed-grid and double-sided tests.
+// 0xffffffff retains the ordinary loop for the caller's tiny-scene fast path.
+bool VXGISDFTraceInstance(uint selectedInstance, float3 rayOrigin, float3 rayDirection, float rayMin, float rayMax,
+    VXGISDFGrid grid, StructuredBuffer<float> nodes, StructuredBuffer<uint> cellOffsets,
+    StructuredBuffer<uint> triangleReferences, StructuredBuffer<VXGISDFTriangle> triangles, out VXGISDFHit hit)
+{
+#define VXGI_SDF_TRACE_INSTANCE selectedInstance
+#include "VXGIMeshSDFTraceBody.hlsli"
+#undef VXGI_SDF_TRACE_INSTANCE
+}
+#endif
+
 // Candidate acceptance happens inside the shared traversal, before closest-hit
 // selection. Rejected holes never advance rayMin or skip coplanar opaque layers.
 // Full-triangle unsigned distances remain a conservative lower bound for this

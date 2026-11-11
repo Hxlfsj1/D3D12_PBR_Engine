@@ -1,4 +1,4 @@
-﻿#include "D3D12App.h"
+#include "D3D12App.h"
 #include "PBR_Shader.h"
 #include "Window.h"
 #include "RenderDevice.h"
@@ -1324,38 +1324,7 @@ void D3D12App::Render()
                     {"intensity", m_settingsManager.ssgi.intensity},
                     {"trace_downsample_factor", m_settingsManager.ssgi.traceDownsampleFactor},
                     {"checkerboard", true},
-                    {"sampling", {
-                        {"screen", {{"distance_origin", "shading-point-ray-distance"},
-                            {"range_m", {0, 1}}, {"tile_span", 2}, {"rays_per_tile", 4}, {"refresh_frames", 2}}},
-                        {"world", {{"quality_distance_origin", "camera-to-receiver-euclidean"},
-                            {"near_distance", m_settingsManager.ssgi.worldNearDistance},
-                            {"near_exit_distance", m_settingsManager.ssgi.worldNearExitDistance},
-                            {"mesh_min_hit_distance", m_settingsManager.ssgi.worldMeshMinHitDistance},
-                            {"mesh_origin_confirmation_enabled", SSGI_MESH_ORIGIN_CONFIRMATION_ENABLED != 0},
-                            {"tile_spans", {2, 4}},
-                            {"near_ray_count", m_settingsManager.ssgi.worldNearRayCount},
-                            {"far_ray_count", m_settingsManager.ssgi.worldFarRayCount},
-                            {"repair_rays_per_receiver", {{"near", m_settingsManager.ssgi.worldNearRayCount},
-                                {"far", m_settingsManager.ssgi.worldFarRayCount}}},
-                            {"mesh", {{"range_m", {0, 2}}, {"refresh_frames", 2}}},
-                            {"global", {{"range_m", {2, 8}}, {"refresh_frames", 4}}},
-                            {"extra_screen_prefix_occlusion_only", true}, {"shared_direction_prefix", true},
-                            {"repair_shared_direction_prefix", true},
-                            {"coarse_reconstruction", "native-4gi-tent-with-fine-neighbors"},
-                            {"probe_guiding_enabled", false}, {"direction_sampling", "cosine-hemisphere"},
-                            {"world_owner_cache", {{"conditional_on", "world-sharing-and-world-enabled"},
-                                {"bands", {"mesh", "global"}},
-                                {"initial_refresh_region_gi", 32},
-                                {"filtered_feedback", m_settingsManager.ssgi.worldOwnerHistoryUpdates > 1},
-                                {"accumulation_updates", m_settingsManager.ssgi.worldOwnerHistoryUpdates}}},
-                            {"world_owner_spatial_filter_enabled", false},
-                            {"world_display_spatial_filter", {
-                                {"enabled", m_settingsManager.ssgi.worldSpatialFilter},
-                                {"step_width_gi", m_settingsManager.ssgi.worldSpatialStep},
-                                {"kernel", "binomial-5x5-with-depth-normal-rejection"},
-                                {"feedback_to_owner", false}}},
-                            {"policy_version", 9}}}}},
-                    {"world_sharing", {{"enabled", m_settingsManager.ssgi.worldSharing}}}}},
+                    {"sampling", nlohmann::json::object()}}},
                 {"vxgi", {{"enabled", m_settingsManager.vxgi.enabled}, {"voxel_size", m_settingsManager.vxgi.voxelSize},
                     {"sdf_cell_size", m_settingsManager.vxgi.sdfCellSize}}},
                 {"hbao", {{"enabled", m_settingsManager.hbao.enabled}, {"radius", m_settingsManager.hbao.radius},
@@ -1372,16 +1341,25 @@ void D3D12App::Render()
                     {"grid", {columns, rows}}, {"primary_receivers_per_cell", 1},
                     {"cell_width_internal_pixels", factor}, {"direction_cells", {8, 8}},
                     {"rays_per_fresh_probe", m_settingsManager.ssgi.raysPerScreenProbe},
+                    {"emissive_samples_per_probe", m_settingsManager.ssgi.emissiveSamplesPerProbe},
+                    {"screen_rays_per_probe", m_settingsManager.ssgi.screenRaysPerProbe},
+                    {"screen_budget_policy", "reuse representative screen hit/miss within each direction cell; world fallback keeps total budget"},
                     {"history_updates", m_settingsManager.ssgi.screenProbeHistoryUpdates},
-                    {"direction_measure", "uniform-solid-angle-hemisphere"},
+                    {"jitter_enabled", m_settingsManager.ssgi.screenProbeJitterWidthFraction > 0.0f},
+                    {"jitter_width_fraction", m_settingsManager.ssgi.screenProbeJitterWidthFraction},
+                    {"configured_jitter_width_fraction", m_settingsManager.ssgi.screenProbeJitterWidthFraction},
+                    {"direction_measure", "uniform-solid-angle-hemisphere plus separately weighted screen emission"},
                     {"integration", "SH2 diffuse convolution (1,2/3,1/4), evaluated with each full-resolution pixel normal"},
-                    {"routing", "screen hit, else Mesh SDF 0..2m, then Global SDF continuation to 8m"},
-                    {"geometry", "one valid surface pixel closest to cell center"},
+                    {"screen_trace_distance", m_settingsManager.ssgi.screenTraceDistance},
+                    {"mesh_max_trace_distance", m_settingsManager.ssgi.worldMeshMaxTraceDistance},
+                    {"max_trace_distance", m_settingsManager.ssgi.worldMaxTraceDistance},
+                    {"routing", "screen to screen_trace_distance, else Mesh SDF to mesh_max_trace_distance, then Global SDF to max_trace_distance"},
+                    {"geometry", "stable nearest-center anchor; surface-compatible 8-phase receiver jitter within configured total width"},
                     {"filter", "same-direction 5x5 binomial, probe step 2; plane/normal/hit-distance guided"},
                     {"pixel_history_statistics_step", factor},
                     {"filtered_feedback", false},
                     {"update_policy", "full configured budget on fresh; checkerboard hold only after geometry/parallax acceptance"},
-                    {"persistent_probe_bytes", columns * rows * 2u * (64u * 8u + 16u + 8u + 4u)},
+                    {"persistent_probe_bytes", columns * rows * 2u * (64u * 8u + 16u + 16u + 8u + 4u)},
                     {"transient_filtered_direction_bytes", columns * rows * 64u * 8u}
                 }}};
             }
@@ -2343,17 +2321,15 @@ void D3D12App::Render()
             ssgiSourceKey.screenSourceStamp = m_ssgiScreenSourceStamp;
             ssgiSourceKey.traceDownsampleFactor = static_cast<uint32_t>(m_settingsManager.ssgi.traceDownsampleFactor);
             ssgiSourceKey.screenProbes = m_settingsManager.ssgi.screenProbes;
+            ssgiSourceKey.emissiveSamplesPerProbe = static_cast<uint32_t>(m_settingsManager.ssgi.emissiveSamplesPerProbe);
             ssgiSourceKey.raysPerScreenProbe = static_cast<uint32_t>(m_settingsManager.ssgi.raysPerScreenProbe);
+            ssgiSourceKey.screenRaysPerProbe = static_cast<uint32_t>(m_settingsManager.ssgi.screenRaysPerProbe);
             ssgiSourceKey.screenProbeHistoryUpdates = static_cast<uint32_t>(m_settingsManager.ssgi.screenProbeHistoryUpdates);
-            ssgiSourceKey.worldSharing = ssgiSourceKey.effectiveWorldMode != 0 && m_settingsManager.ssgi.worldSharing;
-            ssgiSourceKey.worldOwnerHistoryUpdates = static_cast<uint32_t>(m_settingsManager.ssgi.worldOwnerHistoryUpdates);
-            ssgiSourceKey.worldSpatialFilter = m_settingsManager.ssgi.worldSpatialFilter;
-            ssgiSourceKey.worldSpatialStep = static_cast<uint32_t>(m_settingsManager.ssgi.worldSpatialStep);
-            ssgiSourceKey.worldNearDistance = m_settingsManager.ssgi.worldNearDistance;
+            ssgiSourceKey.screenProbeJitterWidthFraction = frameSSGI.screenProbeJitterWidthFraction;
+            ssgiSourceKey.screenTraceDistance = m_settingsManager.ssgi.screenTraceDistance;
+            ssgiSourceKey.worldMeshMaxTraceDistance = m_settingsManager.ssgi.worldMeshMaxTraceDistance;
+            ssgiSourceKey.worldMaxTraceDistance = m_settingsManager.ssgi.worldMaxTraceDistance;
             ssgiSourceKey.worldMeshMinHitDistance = m_settingsManager.ssgi.worldMeshMinHitDistance;
-            ssgiSourceKey.worldNearExitDistance = m_settingsManager.ssgi.worldNearExitDistance;
-            ssgiSourceKey.worldNearRayCount = static_cast<uint32_t>(m_settingsManager.ssgi.worldNearRayCount);
-            ssgiSourceKey.worldFarRayCount = static_cast<uint32_t>(m_settingsManager.ssgi.worldFarRayCount);
             ssgiSourceKey.globalEnabled = ssgiSourceKey.effectiveWorldMode != 0 && worldInput.globalSDF != nullptr;
             ssgiSourceKey.globalTraceDistance = worldInput.globalTraceDistance;
             ssgiSourceKey.globalMaxSteps = worldInput.globalMaxSteps;
@@ -2370,7 +2346,7 @@ void D3D12App::Render()
             ssgiSourceReset = m_ssgiSources.NeedsReset(ssgiSourceKey);
             if (ssgiSourceReset) m_ssgiHistory.valid = false;
             SSGIPass::Input ssgiInput = { deferredOutput.sceneColor, gbufferOutput.depth,
-                gbufferOutput.normal, gbufferOutput.orm, gbufferOutput.albedo, deferredOutput.bounceSource };
+                gbufferOutput.normal, gbufferOutput.orm, gbufferOutput.albedo, deferredOutput.bounceSource, gbufferOutput.emissive };
             auto ssgiOutput = SSGIPass::AddToGraph(deferredGraph, &m_resourceManager,
                 &m_pipelineManager, m_ssgiHistory, m_currViewGpu, m_currJitteredProjGpu,
                 m_currJitteredInvProjGpu, m_currJitteredInvViewProjGpu,

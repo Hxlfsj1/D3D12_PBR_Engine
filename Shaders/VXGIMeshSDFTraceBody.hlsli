@@ -15,7 +15,17 @@
     uint instanceCount = VXGIMeshSDFInstances[0].sceneInstanceCount;
     VXGIMeshSDFTraceReal closestWorld = VXGIMeshSDFTraceReal(rayMax);
     bool found = false;
-    [loop] for (uint instanceIndex = 0; instanceIndex < instanceCount; ++instanceIndex)
+    uint firstInstance = 0;
+    uint endInstance = instanceCount;
+#ifdef VXGI_SDF_TRACE_INSTANCE
+    if (VXGI_SDF_TRACE_INSTANCE != 0xffffffffu)
+    {
+        if (VXGI_SDF_TRACE_INSTANCE >= instanceCount) { hit.traceStatus = 2; return false; }
+        firstInstance = VXGI_SDF_TRACE_INSTANCE;
+        endInstance = firstInstance + 1u;
+    }
+#endif
+    [loop] for (uint instanceIndex = firstInstance; instanceIndex < endInstance; ++instanceIndex)
     {
         VXGIMeshSDFInstance instance = VXGIMeshSDFInstances[instanceIndex];
         // A necessary overlap test needs no slab divisions. Most short SSGI

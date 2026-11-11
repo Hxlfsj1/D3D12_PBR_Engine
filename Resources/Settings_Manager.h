@@ -100,32 +100,42 @@ struct SSGIConfig
     bool enabled = false;
     bool giOnly = false; // Runtime presentation; Debug > Pass controls the editor view.
     bool screenProbes = false; // Explicit mode selection; missing key retains legacy fixtures.
-    int raysPerScreenProbe = 128;
+    int raysPerScreenProbe = 128; // Total directional budget, including world fallback.
+    int screenRaysPerProbe = 128; // Missing JSON key preserves the original full screen budget.
     int screenProbeHistoryUpdates = 4;
-    bool worldSharing = true;
-    int worldOwnerHistoryUpdates = 1;
-    bool worldSpatialFilter = false;
-    int worldSpatialStep = 2;
-    float worldNearDistance = 2.0f;
-    float worldNearExitDistance = 2.2f;
+    float screenProbeJitterWidthFraction = 0.125f; // Total screen-tile jitter width; zero disables.
+    int emissiveSamplesPerProbe = 0; // Extra screen-emitter samples; zero disables.
     float worldMeshMinHitDistance = 0.0f; // No blind interval; near-origin hits use triangle confirmation.
-    int worldNearRayCount = 8;
-    int worldFarRayCount = 8;
+    float screenTraceDistance = 2.0f;
+    float worldMeshMaxTraceDistance = 3.0f;
+    float worldMaxTraceDistance = 4.0f; // Total surface-origin range; Global continues after Mesh.
     float intensity = 1.0f;
     int traceDownsampleFactor = 2;
     static constexpr bool IsValidTraceDownsampleFactor(int factor)
     {
         return factor >= 1;
     }
-    static bool IsValidWorldSampling(float nearDistance, float nearExitDistance)
+    bool HasValidScreenProbeRayCounts() const
     {
-        return std::isfinite(nearDistance) && nearDistance > 0 &&
-            std::isfinite(nearExitDistance) && nearExitDistance >= nearDistance &&
-            std::isfinite(nearExitDistance * nearExitDistance);
+        const bool regular = raysPerScreenProbe >= 64 && raysPerScreenProbe % 64 == 0 &&
+            screenRaysPerProbe >= 64 && screenRaysPerProbe % 64 == 0 &&
+            screenRaysPerProbe <= raysPerScreenProbe && raysPerScreenProbe % screenRaysPerProbe == 0;
+        return regular && emissiveSamplesPerProbe >= 0 && emissiveSamplesPerProbe <= 64;
     }
-    static constexpr bool IsValidWorldRayCount(int count)
+    bool HasValidScreenProbeJitter() const
     {
-        return count >= 4 && count % 4 == 0;
+        return std::isfinite(screenProbeJitterWidthFraction) &&
+            screenProbeJitterWidthFraction >= 0.0f && screenProbeJitterWidthFraction <= 1.0f;
+    }
+    static bool IsValidWorldMaxTraceDistance(float distance)
+    {
+        return std::isfinite(distance) && distance >= 2.0f && distance <= 16.0f;
+    }
+    bool HasValidTraceDistances() const
+    {
+        return IsValidWorldMaxTraceDistance(worldMaxTraceDistance) &&
+            std::isfinite(screenTraceDistance) && screenTraceDistance > 0 && screenTraceDistance <= worldMaxTraceDistance &&
+            std::isfinite(worldMeshMaxTraceDistance) && worldMeshMaxTraceDistance > 0 && worldMeshMaxTraceDistance <= worldMaxTraceDistance;
     }
     static bool IsValidMeshMinHitDistance(float distance)
     {
@@ -158,7 +168,6 @@ struct VXGIConfig
     int probeRaysPerUpdate = 64;
     int probeMaxHistoryUpdates = 32;
     float probeBackfaceThreshold = 0.25f;
-    bool probeDistanceVisibility = false;
     float probeFilterNeighborWeight = 0.25f;
 };
 
@@ -379,74 +388,51 @@ private:
                     if (samplingMode != "legacy" && samplingMode != "screen_probes")
                         throw std::runtime_error("SSGI sampling_mode must be legacy or screen_probes.");
                     ssgi.screenProbes = samplingMode == "screen_probes";
+                    ssgi.screenTraceDistance = config.value("screen_trace_distance", ssgi.screenTraceDistance);
                     if (config.contains("screen_probes"))
                     {
                         const auto& probes = config.at("screen_probes");
                         if (!probes.is_object()) throw std::runtime_error("SSGI screen_probes must be an object.");
-                        for (const char* field : {"rays_per_probe", "history_updates"})
+                        for (const char* field : {"rays_per_probe", "screen_rays_per_probe", "history_updates"})
                             if (probes.contains(field) && (!probes.at(field).is_number_integer() ||
                                 probes.at(field) < 1 || probes.at(field) > (std::numeric_limits<int>::max)()))
                                 throw std::runtime_error(std::string("SSGI screen_probes.") + field + " must be a positive integer representable as int.");
                         const auto rays = probes.value("rays_per_probe", 128);
+                        const auto screenRays = probes.value("screen_rays_per_probe", rays);
                         const auto updates = probes.value("history_updates", 4);
-                        if (rays < 64 || rays % 64 != 0 || updates < 1 || updates > 32)
-                            throw std::runtime_error("SSGI screen probes require rays_per_probe >= 64 divisible by 64 and history_updates in 1..32.");
+                        if ((rays < 64 || rays % 64 != 0) || updates < 1 || updates > 32)
+                            throw std::runtime_error("SSGI screen probes require rays_per_probe >=64 divisible by 64, and history_updates in 1..32.");
                         ssgi.raysPerScreenProbe = rays;
+                        ssgi.screenRaysPerProbe = screenRays;
+                        if (probes.contains("emissive_samples_per_probe") &&
+                            (!probes.at("emissive_samples_per_probe").is_number_integer() ||
+                            probes.at("emissive_samples_per_probe") < 0 || probes.at("emissive_samples_per_probe") > 64))
+                            throw std::runtime_error("SSGI emissive_samples_per_probe must be an integer in 0..64.");
+                        ssgi.emissiveSamplesPerProbe = probes.value("emissive_samples_per_probe", 0);
+                        if (!ssgi.HasValidScreenProbeRayCounts())
+                            throw std::runtime_error("SSGI requires screen_rays_per_probe >=64 divisible by64 and dividing rays_per_probe.");
                         ssgi.screenProbeHistoryUpdates = updates;
-                    }
-                    if (config.contains("world_sharing"))
-                    {
-                        const auto& sharing = config.at("world_sharing");
-                        if (!sharing.is_object())
-                            throw std::runtime_error("SSGI world_sharing must be an object.");
-                        ssgi.worldSharing = sharing.value("enabled", ssgi.worldSharing);
-                        if (sharing.contains("spatial_filter"))
-                        {
-                            const auto& filter = sharing.at("spatial_filter");
-                            if (!filter.is_object())
-                                throw std::runtime_error("SSGI world_sharing.spatial_filter must be an object.");
-                            ssgi.worldSpatialFilter = filter.value("enabled", ssgi.worldSpatialFilter);
-                            if (filter.contains("step_width"))
-                            {
-                                const auto& step = filter.at("step_width");
-                                if (!step.is_number_integer() || (step != 1 && step != 2 && step != 4))
-                                    throw std::runtime_error("SSGI world_sharing.spatial_filter.step_width must be 1, 2 or 4.");
-                                ssgi.worldSpatialStep = step.get<int>();
-                            }
-                        }
-                        if (sharing.contains("accumulation_updates"))
-                        {
-                            const auto& updates = sharing.at("accumulation_updates");
-                            if (!updates.is_number_integer() || updates < 1 || updates > 32)
-                                throw std::runtime_error("SSGI world_sharing.accumulation_updates must be an integer from 1 to 32.");
-                            ssgi.worldOwnerHistoryUpdates = updates.get<int>();
-                        }
+                        if (probes.contains("jitter_width_fraction") && !probes.at("jitter_width_fraction").is_number())
+                            throw std::runtime_error("SSGI jitter_width_fraction must be numeric.");
+                        ssgi.screenProbeJitterWidthFraction = probes.value("jitter_width_fraction", 0.125f);
+                        if (!ssgi.HasValidScreenProbeJitter())
+                            throw std::runtime_error("SSGI jitter_width_fraction must be finite in 0..1 (total tile-width fraction).");
                     }
                     if (config.contains("world_sampling"))
                     {
                         const auto& sampling = config.at("world_sampling");
                         if (!sampling.is_object())
                             throw std::runtime_error("SSGI world_sampling must be an object.");
-                        ssgi.worldNearDistance = sampling.value("near_distance", ssgi.worldNearDistance);
-                        ssgi.worldNearExitDistance = sampling.value("near_exit_distance", ssgi.worldNearExitDistance);
+                        ssgi.worldMeshMaxTraceDistance = sampling.value("mesh_max_trace_distance", ssgi.worldMeshMaxTraceDistance);
+                        ssgi.worldMaxTraceDistance = sampling.value("max_trace_distance", ssgi.worldMaxTraceDistance);
+                        if (!SSGIConfig::IsValidWorldMaxTraceDistance(ssgi.worldMaxTraceDistance))
+                            throw std::runtime_error("SSGI world_sampling.max_trace_distance must be finite and within [2, 16] meters.");
                         ssgi.worldMeshMinHitDistance = sampling.value("mesh_min_hit_distance", ssgi.worldMeshMinHitDistance);
                         if (!SSGIConfig::IsValidMeshMinHitDistance(ssgi.worldMeshMinHitDistance))
                             throw std::runtime_error("SSGI world_sampling.mesh_min_hit_distance must be finite and >= 0.");
-                        const auto readRayCount = [&sampling](const char* field, int fallback) {
-                            if (!sampling.contains(field)) return fallback;
-                            const auto& value = sampling.at(field);
-                            const std::string error = std::string("SSGI world_sampling.") + field +
-                                " must be an integer >= 4 divisible by 4 and representable as int.";
-                            if (!value.is_number_integer() || value < 4 ||
-                                value > (std::numeric_limits<int>::max)())
-                                throw std::runtime_error(error);
-                            const int count = value.get<int>();
-                            if (!SSGIConfig::IsValidWorldRayCount(count)) throw std::runtime_error(error);
-                            return count;
-                        };
-                        ssgi.worldNearRayCount = readRayCount("near_ray_count", ssgi.worldNearRayCount);
-                        ssgi.worldFarRayCount = readRayCount("far_ray_count", ssgi.worldFarRayCount);
                     }
+                    if (!ssgi.HasValidTraceDistances())
+                        throw std::runtime_error("SSGI screen_trace_distance and world_sampling.mesh_max_trace_distance must be finite, > 0 and <= world_sampling.max_trace_distance (2..16 meters).");
                     ssgi.intensity = config.value("intensity", ssgi.intensity);
                     if (config.contains("trace_downsample_factor"))
                     {
@@ -457,11 +443,8 @@ private:
                     }
                     ssgi.traceDownsampleFactor = config.value("trace_downsample_factor", ssgi.traceDownsampleFactor);
                     if (!(std::isfinite(ssgi.intensity) && ssgi.intensity >= 0 &&
-                        SSGIConfig::IsValidTraceDownsampleFactor(ssgi.traceDownsampleFactor) &&
-                        SSGIConfig::IsValidWorldSampling(ssgi.worldNearDistance, ssgi.worldNearExitDistance) &&
-                        SSGIConfig::IsValidWorldRayCount(ssgi.worldNearRayCount) &&
-                        SSGIConfig::IsValidWorldRayCount(ssgi.worldFarRayCount)))
-                        throw std::runtime_error("SSGI requires finite intensity >= 0, positive integer trace_downsample_factor, finite world distances 0 < near_distance <= near_exit_distance with a finite squared exit distance, and near_ray_count/far_ray_count integers >= 4 divisible by 4.");
+                        SSGIConfig::IsValidTraceDownsampleFactor(ssgi.traceDownsampleFactor)))
+                        throw std::runtime_error("SSGI requires finite intensity >= 0 and positive integer trace_downsample_factor.");
                 }
 
                 if (j.contains("vxgi"))
@@ -535,7 +518,6 @@ private:
                         if (probes.contains("backface_threshold") && !probes.at("backface_threshold").is_number())
                             throw std::runtime_error("VXGI probes.backface_threshold must be a finite number from 0 to 1.");
                         vxgi.probeBackfaceThreshold = probes.value("backface_threshold", vxgi.probeBackfaceThreshold);
-                        vxgi.probeDistanceVisibility = probes.value("distance_visibility", false);
                         if (probes.contains("filter_neighbor_weight") && !probes.at("filter_neighbor_weight").is_number())
                             throw std::runtime_error("VXGI probes.filter_neighbor_weight must be a finite number from 0 to 1.");
                         vxgi.probeFilterNeighborWeight = probes.value("filter_neighbor_weight", vxgi.probeFilterNeighborWeight);

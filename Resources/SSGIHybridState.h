@@ -19,15 +19,13 @@ public:
         uint64_t screenSourceStamp=0; // Actual uploaded screen source, all modes.
         uint32_t traceDownsampleFactor=2;
         bool screenProbes=false;
-        uint32_t raysPerScreenProbe=128,screenProbeHistoryUpdates=4;
-        bool worldSharing=false;
-        uint32_t worldOwnerHistoryUpdates=1;
-        bool worldSpatialFilter=false;
-        uint32_t worldSpatialStep=2;
-        float worldNearDistance=2.0f,worldNearExitDistance=2.2f;
+        uint32_t raysPerScreenProbe=128,screenRaysPerProbe=128,screenProbeHistoryUpdates=4;
+        uint32_t emissiveSamplesPerProbe=0;
+        float screenProbeJitterWidthFraction=0.125f;
         float worldMeshMinHitDistance=0.0f;
-        uint32_t worldNearRayCount=8,worldFarRayCount=8;
-        uint32_t worldSamplingVersion=12; // Threshold marches use the full conservative safeDistance.
+        float worldMaxTraceDistance=4.0f;
+        float screenTraceDistance=2.0f,worldMeshMaxTraceDistance=3.0f;
+        uint32_t worldSamplingVersion=21; // Confirm Mesh/Global SDF cache endpoints against actual geometry.
         bool globalEnabled=false;
         float globalTraceDistance=0,globalCellSize=0;
         uint32_t globalMaxSteps=0,globalCells=0,globalClipmaps=0;
@@ -57,17 +55,18 @@ private:
         // World geometry/material/light revisions may affect the screen bounce
         // source as well. Pass zero when that source identity is not supplied.
         if(a.screenProbes!=b.screenProbes || a.raysPerScreenProbe!=b.raysPerScreenProbe ||
-            a.screenProbeHistoryUpdates!=b.screenProbeHistoryUpdates) return false;
+            a.screenRaysPerProbe!=b.screenRaysPerProbe ||
+            a.emissiveSamplesPerProbe!=b.emissiveSamplesPerProbe ||
+            a.screenProbeJitterWidthFraction!=b.screenProbeJitterWidthFraction ||
+            a.screenProbeHistoryUpdates!=b.screenProbeHistoryUpdates ||
+            a.screenTraceDistance!=b.screenTraceDistance) return false;
         if(a.effectiveWorldMode!=b.effectiveWorldMode || a.traceDownsampleFactor!=b.traceDownsampleFactor ||
             a.worldGeometryRevision!=b.worldGeometryRevision ||
             a.surfaceRevision!=b.surfaceRevision || a.screenSourceStamp!=b.screenSourceStamp) return false;
         if(a.effectiveWorldMode>=1 && (a.sdfGeometryRevision!=b.sdfGeometryRevision ||
-            (!a.screenProbes && (a.worldSharing!=b.worldSharing || a.worldNearDistance!=b.worldNearDistance ||
-                a.worldOwnerHistoryUpdates!=b.worldOwnerHistoryUpdates ||
-                a.worldSpatialFilter!=b.worldSpatialFilter || a.worldSpatialStep!=b.worldSpatialStep ||
-                a.worldNearExitDistance!=b.worldNearExitDistance ||
-                a.worldNearRayCount!=b.worldNearRayCount || a.worldFarRayCount!=b.worldFarRayCount)) ||
             a.worldMeshMinHitDistance!=b.worldMeshMinHitDistance ||
+            a.worldMaxTraceDistance!=b.worldMaxTraceDistance ||
+            a.worldMeshMaxTraceDistance!=b.worldMeshMaxTraceDistance ||
             a.worldSamplingVersion!=b.worldSamplingVersion)) return false;
         if(a.effectiveWorldMode>=1 && (a.globalEnabled!=b.globalEnabled ||
             (a.globalEnabled && (a.globalTraceDistance!=b.globalTraceDistance ||

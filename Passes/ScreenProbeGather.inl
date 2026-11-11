@@ -2,12 +2,12 @@
 static TraceOutput AddScreenProbesToGraph(RDGBuilder& graph, ResourceManager* resources,
     PipelineManager* pipelines, int frameIndex, SSGITraceConstants trace,
     const RDGPassParameters& sourceParams, const WorldAddresses& worldAddresses,
-    const SSGIConfig& config, bool previewHistory)
+    const SSGIConfig& config, bool previewHistory, RDGTextureHandle emissive)
 {
     const int index = resources->GetSSGICurrentHistoryIdx(previewHistory);
     const auto& current = resources->GetSSGIHistoryTextures(index, previewHistory);
     const auto& previous = resources->GetSSGIHistoryTextures(1 - index, previewHistory);
-    if (!current.probeRadiance || !previous.probeRadiance) return {};
+    if (!current.probeRadiance || !previous.probeRadiance || !current.probeAnchor || !previous.probeAnchor) return {};
     auto import = [&](ID3D12Resource* resource, const char* name) {
         return graph.RegisterExternalTexture(resource, D3D12_RESOURCE_STATE_COMMON,
             D3D12_RESOURCE_STATE_COMMON, name);
@@ -16,6 +16,9 @@ static TraceOutput AddScreenProbesToGraph(RDGBuilder& graph, ResourceManager* re
     const auto normal = import(current.probeNormal.Get(), "ScreenProbes.NormalState");
     const auto receiver = import(current.probeReceiver.Get(), "ScreenProbes.Receiver");
     const auto radiance = import(current.probeRadiance.Get(), "ScreenProbes.RawDirectionalHistory");
+    const auto anchor = import(current.probeAnchor.Get(), "ScreenProbes.StableAnchor");
+    const auto anchorUav = graph.CreateTextureUAVView(anchor);
+    const auto oldAnchor = graph.CreateTextureSRVView(import(previous.probeAnchor.Get(), "ScreenProbes.PreviousAnchor"));
     const auto oldPosition = graph.CreateTextureSRVView(import(previous.probePosition.Get(), "ScreenProbes.PreviousPosition"));
     const auto oldNormal = graph.CreateTextureSRVView(import(previous.probeNormal.Get(), "ScreenProbes.PreviousNormal"));
     const auto oldRadiance = graph.CreateTextureSRVView(import(previous.probeRadiance.Get(), "ScreenProbes.PreviousDirections"));
@@ -39,7 +42,7 @@ static TraceOutput AddScreenProbesToGraph(RDGBuilder& graph, ResourceManager* re
         DXGI_FORMAT_R32G32B32A32_FLOAT, "ScreenProbes.ReprojectedFastGI");
     auto rawUav = graph.CreateTextureUAVView(raw), reprojUav = graph.CreateTextureUAVView(reprojected);
     auto fastUav = graph.CreateTextureUAVView(reprojectedFast);
-    if (!oldPosition.IsValid() || !oldNormal.IsValid() || !oldRadiance.IsValid() ||
+    if (!oldPosition.IsValid() || !oldNormal.IsValid() || !oldRadiance.IsValid() || !anchorUav.IsValid() || !oldAnchor.IsValid() ||
         !positionUav.IsValid() || !normalUav.IsValid() || !receiverUav.IsValid() || !radianceUav.IsValid() ||
         !positionSrv.IsValid() || !normalSrv.IsValid() || !receiverSrv.IsValid() || !radianceSrv.IsValid() ||
         !filteredUav.IsValid() || !filteredSrv.IsValid() || !shUav.IsValid() || !shSrv.IsValid() ||
@@ -56,14 +59,38 @@ static TraceOutput AddScreenProbesToGraph(RDGBuilder& graph, ResourceManager* re
     trace.levels[3].z = filteredSrv.descriptorIndex;
     trace.levels[3].w = static_cast<uint32_t>(config.screenProbeHistoryUpdates);
     trace.levels[4].y = static_cast<uint32_t>(config.raysPerScreenProbe);
+    trace.levels[4].z = static_cast<uint32_t>(config.screenRaysPerProbe);
     trace.levels[4].w = shUav.descriptorIndex;
     trace.levels[5].y = shSrv.descriptorIndex;
     trace.levels[5].z = positionUav.descriptorIndex;
     trace.levels[5].w = normalUav.descriptorIndex;
     trace.levels[6].y = receiverUav.descriptorIndex;
+    memcpy(&trace.levels[6].z, &config.screenProbeJitterWidthFraction, sizeof(float));
+    trace.levels[6].w = anchorUav.descriptorIndex;
+    trace.levels[2].z = oldAnchor.descriptorIndex;
     trace.outputIndex = rawUav.descriptorIndex;
     trace.reprojectedGIIndex = reprojUav.descriptorIndex;
     trace.reprojectedFastIndex = fastUav.descriptorIndex;
+    RDGTextureSRVHandle emissiveSrv{}, lightListSrv{}, lightCountSrv{};
+    RDGTextureUAVHandle lightListUav{}, lightCountUav{};
+    trace.sharedMeshSpan = static_cast<uint32_t>(config.emissiveSamplesPerProbe);
+    if (config.emissiveSamplesPerProbe > 0)
+    {
+        if (!emissive.IsValid()) return {};
+        emissiveSrv = graph.CreateTextureSRVView(emissive);
+        auto list = CreateUAVTexture(graph, trace.width, trace.height, DXGI_FORMAT_R32_UINT, "ScreenProbes.EmissivePixels");
+        auto count = CreateUAVTexture(graph, 1, 1, DXGI_FORMAT_R32_UINT, "ScreenProbes.EmissivePixelCount");
+        lightListSrv = graph.CreateTextureSRVView(list); lightCountSrv = graph.CreateTextureSRVView(count);
+        lightListUav = graph.CreateTextureUAVView(list); lightCountUav = graph.CreateTextureUAVView(count);
+        if (!emissiveSrv.IsValid() || !lightListSrv.IsValid() || !lightCountSrv.IsValid() ||
+            !lightListUav.IsValid() || !lightCountUav.IsValid()) return {};
+        // Screen-probe-only aliases of the inactive legacy sharing fields.
+        trace.sharedMeshLightingIndex = emissiveSrv.descriptorIndex;
+        trace.sharedMeshReceiverIndex = lightListUav.descriptorIndex;
+        trace.sharedGlobalLightingIndex = lightCountUav.descriptorIndex;
+        trace.sharedGlobalReceiverIndex = lightListSrv.descriptorIndex;
+        trace.sharedRepairQueueIndex = lightCountSrv.descriptorIndex;
+    }
     auto add = [&](const char* name, ID3D12PipelineState* pso, RDGPassParameters params) {
         const auto allocation = resources->AllocatePassConstants(frameIndex, sizeof(trace));
         if (!allocation) return RDGPassHandle{};
@@ -71,18 +98,32 @@ static TraceOutput AddScreenProbesToGraph(RDGBuilder& graph, ResourceManager* re
         auto address = allocation.gpuAddress;
         return graph.AddPass(name, ERDGPassFlags::Compute, params, [=](ID3D12GraphicsCommandList* cmdList) {
             // Probe shaders use one 64-lane group per receiver, not one lane per receiver.
+            const bool clearLights = pso == pipelines->GetScreenEmissiveClearPSO();
+            const bool fullPixels = pso == pipelines->GetScreenProbeResolvePSO() || pso == pipelines->GetScreenEmissiveBuildPSO();
             ExecuteComputeNoBarrier(cmdList, resources, pipelines, pso, address,
-                pso == pipelines->GetScreenProbeResolvePSO() ? trace.width : trace.outputWidth * 8u,
-                pso == pipelines->GetScreenProbeResolvePSO() ? trace.height : trace.outputHeight * 8u, &worldAddresses);
+                clearLights ? 8u : fullPixels ? trace.width : trace.outputWidth * 8u,
+                clearLights ? 8u : fullPixels ? trace.height : trace.outputHeight * 8u, &worldAddresses);
         });
     };
+    if (config.emissiveSamplesPerProbe > 0)
+    {
+        RDGPassParameters clear; clear.WriteUAV(lightCountUav);
+        if (!add("ScreenProbes.ClearEmissivePixels", pipelines->GetScreenEmissiveClearPSO(), clear).IsValid()) return {};
+        auto build = sourceParams; build.ReadComputeSRV(emissiveSrv);
+        build.WriteUAV(lightListUav); build.WriteUAV(lightCountUav);
+        if (!add("ScreenProbes.BuildEmissivePixels", pipelines->GetScreenEmissiveBuildPSO(), build).IsValid()) return {};
+    }
     RDGPassParameters place;
     place = sourceParams;
     place.WriteUAV(positionUav); place.WriteUAV(normalUav); place.WriteUAV(receiverUav);
+    place.WriteUAV(anchorUav);
     if (!add("ScreenProbes.Place", pipelines->GetScreenProbePlacePSO(), place).IsValid()) return {};
     auto rays = sourceParams;
     rays.ReadComputeSRV(oldPosition); rays.ReadComputeSRV(oldNormal); rays.ReadComputeSRV(oldRadiance);
+    rays.ReadComputeSRV(oldAnchor); rays.WriteUAV(anchorUav);
     rays.ReadComputeSRV(receiverSrv);
+    if (config.emissiveSamplesPerProbe > 0)
+    { rays.ReadComputeSRV(emissiveSrv); rays.ReadComputeSRV(lightListSrv); rays.ReadComputeSRV(lightCountSrv); }
     rays.WriteUAV(positionUav); rays.WriteUAV(normalUav); rays.WriteUAV(radianceUav);
     if (!add("ScreenProbes.TraceDirections", pipelines->GetScreenProbeTracePSO(), rays).IsValid()) return {};
     RDGPassParameters filter = sourceParams;
@@ -99,6 +140,6 @@ static TraceOutput AddScreenProbesToGraph(RDGBuilder& graph, ResourceManager* re
     resolve.WriteUAV(rawUav); resolve.WriteUAV(reprojUav); resolve.WriteUAV(fastUav);
     auto pass = add("ScreenProbes.ResolveFullResolution", pipelines->GetScreenProbeResolvePSO(), resolve);
     if (!pass.IsValid()) return {};
-    for (auto texture : {position, normal, receiver, radiance}) graph.MarkTextureAsOutput(texture);
+    for (auto texture : {position, normal, receiver, radiance, anchor}) graph.MarkTextureAsOutput(texture);
     return {raw, pass, raw, pass, reprojected, reprojectedFast, {}, radiance, receiver, position, normal, filtered};
 }

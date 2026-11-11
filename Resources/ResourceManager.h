@@ -619,7 +619,9 @@ public:
     bool InitVXGI(RenderDevice* dc, const VXGIConfig& config, const LightingConfig& lighting, UINT frameCount,
         const InitializationProgress& progress = {})
     {
-        if(dc && config.enabled && config.probeDistanceVisibility)
+        // Probe interpolation must reject contributors across geometry.
+        // Allocate its baked visibility cache for every enabled VXGI scene.
+        if(dc && config.enabled)
         {
             std::vector<VXGIProbePass::DistanceDescriptors> descriptors(frameCount);
             for(auto& slot:descriptors)
@@ -629,8 +631,9 @@ public:
             }
             m_vxgi.probePass.SetDistanceDescriptors(std::move(descriptors));
         }
-        return dc && m_vxgi.Initialize(*dc, frameCount, m_sceneInstances, m_globalMaterials,
-            config, lighting, mainDescriptorHeap.Get(), m_materialBuffer.Get(), progress);
+        if (!dc || !m_vxgi.Initialize(*dc, frameCount, m_sceneInstances, m_globalMaterials,
+            config, lighting, mainDescriptorHeap.Get(), m_materialBuffer.Get(), progress)) return false;
+        return true;
     }
 
     VXGIResources& GetVXGI() { return m_vxgi; }
@@ -788,6 +791,7 @@ public:
     {
         // Raw temporally accumulated directional radiance: 8x8 cells per receiver.
         Microsoft::WRL::ComPtr<ID3D12Resource> probeRadiance,probePosition,probeNormal,probeReceiver;
+        Microsoft::WRL::ComPtr<ID3D12Resource> probeAnchor; // Unjittered reference associated with the stored batch.
         // gi.a = history length; fastGI.a = slow-history luminance second moment.
         Microsoft::WRL::ComPtr<ID3D12Resource> gi;
         Microsoft::WRL::ComPtr<ID3D12Resource> fastGI;
@@ -1573,6 +1577,7 @@ private:
             for (auto& set : created)
                 if (!create(RenderFormats::IndirectLighting, set.probeRadiance, width * 8u, height * 8u) ||
                     !create(DXGI_FORMAT_R32G32B32A32_FLOAT, set.probePosition) ||
+                    !create(DXGI_FORMAT_R32G32B32A32_FLOAT, set.probeAnchor) ||
                     !create(DXGI_FORMAT_R16G16B16A16_FLOAT, set.probeNormal) ||
                     !create(DXGI_FORMAT_R32_UINT, set.probeReceiver)) return false;
         for (int index = 0; index < 2; ++index) destination[index] = std::move(created[index]);

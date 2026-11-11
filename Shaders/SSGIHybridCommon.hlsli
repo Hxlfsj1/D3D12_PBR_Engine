@@ -49,8 +49,8 @@ struct SSGIHybridParameters
     uint3 cellDimensions; uint triangleCount;
     float3 boundsMaximum; uint materialCount;
     float3 reservedLighting0; float materialMipLevel;
-    float3 reservedLighting1; float reservedLighting2;
-    float reservedWorldRange; float voxelSize; uint probeCount; uint worldMode;
+    float3 reservedLighting1; float worldMeshMaxTraceDistance;
+    float worldMaxTraceDistance; float voxelSize; uint probeCount; uint worldMode;
 #ifdef VXGI_SSGI_THRESHOLD
     uint nodeCount; uint assetCount; uint instanceCount; uint bvhNodeCount;
 #endif
@@ -225,6 +225,73 @@ bool SSGIPrimarySurfaceMatchDepth(float3 nearPosition, float3 targetPosition,
 }
 #endif
 
+#ifdef VXGI_SSGI_THRESHOLD
+// A distance-field tolerance is broad-phase coverage. Its point may still be
+// in free space, so it cannot be used as the surface radiance-cache endpoint.
+// Keep the original finite interval: a near query examines only the closest
+// broad-phase instances and cannot prove that every earlier instance is clear.
+void SSGIConfirmMeshEndpoint(float3 origin, float3 direction, float minimum, float maximum,
+    SSGIHybridParameters parameters, StructuredBuffer<float> nodes,
+    inout VXGIMeshSDFThresholdResult result)
+{
+#if SSGI_MESH_ORIGIN_CONFIRMATION_ENABLED
+    if (result.status != VXGI_THRESHOLD_HIT) return;
+    StructuredBuffer<uint> offsets = ResourceDescriptorHeap[asuint(parameters.reservedLighting0.y)];
+    StructuredBuffer<uint> references = ResourceDescriptorHeap[asuint(parameters.reservedLighting0.z)];
+    StructuredBuffer<VXGISDFTriangle> triangles = ResourceDescriptorHeap[asuint(parameters.reservedLighting1.x)];
+    VXGISDFGrid unused = (VXGISDFGrid)0;
+    VXGISDFHit confirmed = (VXGISDFHit)0;
+    bool found = false;
+    float3 unitDirection;
+    if (!SSGINormalizeDirection(direction, unitDirection)) { result.status = VXGI_THRESHOLD_INVALID; return; }
+    uint index = 0;
+    bool useBVH = parameters.instanceCount > 2u;
+    uint traversalCount = useBVH ? parameters.bvhNodeCount : 1u;
+    // With at most two instances, the near query covered the complete scene.
+    // Its conservative steps prove the prefix clear, as in the all-instance
+    // Global refinement. Avoid traversing those cells a second time.
+    if (!useBVH)
+    {
+        float margin = max(0.0001, 8.0 * 1.1920928955078125e-7 *
+            (VXGIProbeMaximumCoordinate(origin) + abs(result.distance)));
+        minimum = max(minimum, result.distance - margin);
+    }
+    // Reuse the existing stackless scene BVH rather than scan every instance
+    // for each confirmed ray. The leaf query still accepts the nearest triangle.
+    [loop] while (index < traversalCount)
+    {
+        float nearest = found ? confirmed.distance : maximum;
+        uint instanceIndex = 0xffffffffu;
+        if (useBVH)
+        {
+            VXGIMeshSDFBVHNode node = VXGIMeshSDFBVH[index];
+            if (node.escapeIndex <= index || node.escapeIndex > parameters.bvhNodeCount ||
+                (node.instanceIndex != 0xffffffffu && node.instanceIndex >= parameters.instanceCount))
+            { result.status = VXGI_THRESHOLD_INVALID; return; }
+            float3 error = 8.0 * 1.1920928955078125e-7 * (abs(origin) + abs(unitDirection) * nearest) + 1e-6;
+            float entry, exit;
+            if (!VXGIMeshSDFThresholdBounds(origin, unitDirection, node.boundsMinimum - error,
+                node.boundsMaximum + error, minimum, nearest, entry, exit))
+            { index = node.escapeIndex; continue; }
+            if (node.instanceIndex == 0xffffffffu) { ++index; continue; }
+            instanceIndex = node.instanceIndex;
+        }
+        VXGISDFHit candidate;
+        bool candidateFound = VXGISDFTraceInstance(instanceIndex, origin, direction, minimum, nearest,
+            unused, nodes, offsets, references, triangles, candidate);
+        if (candidate.traceStatus >= 2) { result.status = VXGI_THRESHOLD_INVALID; return; }
+        if (candidateFound) { confirmed = candidate; found = true; }
+        ++index;
+    }
+    result.status = found ? VXGI_THRESHOLD_HIT
+        : (confirmed.traceStatus >= 2 ? VXGI_THRESHOLD_INVALID : VXGI_THRESHOLD_MISS);
+    result.distance = confirmed.distance;
+    result.position = confirmed.position;
+    result.instanceIndex = confirmed.instanceIndex;
+#endif
+}
+#endif
+
 #if defined(VXGI_SSGI_THRESHOLD) && defined(VXGI_SSGI_GLOBAL)
 // Continue only a completed clear near interval. The caller owns the near MISS
 // proof and has already spent the receiver offset out of both distance ranges.
@@ -255,7 +322,7 @@ SSGIHybridRayResult SSGIGlobalRaySource(float3 origin, float3 direction, float r
     VXGIThresholdParameters traceParameters;
     traceParameters.hitThresholdCells = SSGI_WORLD_HIT_THRESHOLD_CELLS;
     traceParameters.stepScale = 1.0; // safeDistance already subtracts interpolation error and roundoff.
-    traceParameters.maxSteps = 512;
+    traceParameters.maxSteps = 128;
     traceParameters.padding = 0;
     if (!isfinite(global.maxTraceDistance) || global.maxTraceDistance < 0.0
         || global.maxSteps == 0)
@@ -282,7 +349,7 @@ SSGIHybridRayResult SSGIGlobalRaySource(float3 origin, float3 direction, float r
         global.constants.clipmaps[global.constants.clipmapCount - 1],
         rayLength, global.maxTraceDistance, farStart, farEnd)) return result;
     uint remainingGlobalSteps = global.maxSteps;
-    uint remainingFineSteps = 512;
+    uint remainingFineSteps = 128;
     [loop] for (uint window = 0; window < 8; ++window)
     {
         if (remainingGlobalSteps == 0 || remainingFineSteps == 0) break;
@@ -325,6 +392,20 @@ SSGIHybridRayResult SSGIGlobalRaySource(float3 origin, float3 direction, float r
         result.status = refined.status >= VXGI_THRESHOLD_INVALID ? SSGI_SCREEN_INVALID : SSGI_SCREEN_MISS;
         if (refined.status == VXGI_THRESHOLD_HIT)
         {
+            // This all-instance fine traversal has already proved the prefix
+            // clear. Unlike the closest-two near query, its confirmation can
+            // start at the candidate, with a world-space arithmetic margin.
+            float confirmationMargin = max(0.0001, 8.0 * 1.1920928955078125e-7 *
+                (VXGIProbeMaximumCoordinate(origin) + abs(refined.distance)));
+            float confirmationStart = max(fineStart, refined.distance - confirmationMargin);
+            SSGIConfirmMeshEndpoint(origin, unitDirection, confirmationStart, farEnd, parameters, nodes, refined);
+            result.worldTraceStatus = refined.status;
+            result.distance = refined.distance;
+            if (refined.status != VXGI_THRESHOLD_HIT)
+            {
+                result.status = refined.status >= VXGI_THRESHOLD_INVALID ? SSGI_SCREEN_INVALID : SSGI_SCREEN_MISS;
+                return result;
+            }
             result.hit = 1;
             result.status = SSGI_SCREEN_HIT;
             result.confidence = 1.0;
@@ -358,13 +439,6 @@ SSGIHybridRayResult SSGIGlobalRaySource(float3 origin, float3 direction, float r
 #endif
 
 #ifdef VXGI_SSGI_THRESHOLD
-#if SSGI_MESH_ORIGIN_CONFIRMATION_ENABLED
-// A tolerance HIT at the launch point may belong to the neighboring wall's
-// expanded distance band. Confirm the finite ray instead of lighting that point.
-// Other hits retain the fast tolerance path to bound the extra runtime work.
-static const float SSGI_WORLD_ORIGIN_CONFIRM_DISTANCE = 0.0001;
-#endif
-
 VXGIMeshSDFThresholdResult SSGITraceMeshNear(float3 origin, float3 direction,
     float minimum, float maximum, VXGIMeshSDFThresholdCounts counts,
     VXGIThresholdParameters traceParameters, StructuredBuffer<float> nodes,
@@ -382,25 +456,7 @@ VXGIMeshSDFThresholdResult SSGITraceMeshNear(float3 origin, float3 direction,
     }
     VXGIMeshSDFThresholdResult result = VXGIMeshSDFTraceThreshold(origin, direction,
         minimum, maximum, counts, traceParameters, nodes);
-#if SSGI_MESH_ORIGIN_CONFIRMATION_ENABLED
-    if (result.status != VXGI_THRESHOLD_HIT || result.distance > minimum + SSGI_WORLD_ORIGIN_CONFIRM_DISTANCE)
-        return result;
-
-    StructuredBuffer<uint> offsets = ResourceDescriptorHeap[asuint(parameters.reservedLighting0.y)];
-    StructuredBuffer<uint> references = ResourceDescriptorHeap[asuint(parameters.reservedLighting0.z)];
-    StructuredBuffer<VXGISDFTriangle> triangles = ResourceDescriptorHeap[asuint(parameters.reservedLighting1.x)];
-    VXGISDFGrid unused = (VXGISDFGrid)0;
-    VXGISDFHit confirmed;
-    // Geometry-only confirmation matches the current conservative cutout proxy.
-    // This does not add per-contributor visibility queries to probe interpolation.
-    bool found = VXGISDFTrace(origin, direction, minimum, maximum, unused,
-        nodes, offsets, references, triangles, confirmed);
-    result.status = found ? VXGI_THRESHOLD_HIT
-        : (confirmed.traceStatus >= 2 ? VXGI_THRESHOLD_INVALID : VXGI_THRESHOLD_MISS);
-    result.distance = confirmed.distance;
-    result.position = confirmed.position;
-    result.instanceIndex = confirmed.instanceIndex;
-#endif
+    SSGIConfirmMeshEndpoint(origin, direction, minimum, maximum, parameters, nodes, result);
     return result;
 }
 #endif
@@ -449,7 +505,7 @@ SSGIHybridRayResult SSGIWorldRaySource(float3 origin, float3 direction, float ra
     VXGIThresholdParameters traceParameters;
     traceParameters.hitThresholdCells = SSGI_WORLD_HIT_THRESHOLD_CELLS;
     traceParameters.stepScale = 1.0; // safeDistance already subtracts interpolation error and roundoff.
-    traceParameters.maxSteps = 512;
+    traceParameters.maxSteps = 128;
     traceParameters.padding = 0;
     VXGIMeshSDFThresholdResult hit;
 #ifdef VXGI_SSGI_GLOBAL

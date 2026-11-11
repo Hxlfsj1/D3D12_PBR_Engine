@@ -36,8 +36,8 @@ struct SSGIHybridParameters
     // Reserved to preserve the shared shader constant-buffer layout.
     // World fallback reads cached radiance; it has no per-hit light/range inputs.
     DirectX::XMFLOAT3 reservedLighting0; float materialMipLevel;
-    DirectX::XMFLOAT3 reservedLighting1; float reservedLighting2; // y = Mesh ray minimum distance.
-    float reservedWorldRange; float voxelSize; uint32_t probeCount; uint32_t worldMode;
+    DirectX::XMFLOAT3 reservedLighting1; float worldMeshMaxTraceDistance; // y = Mesh ray minimum distance.
+    float worldMaxTraceDistance; float voxelSize; uint32_t probeCount; uint32_t worldMode;
     uint32_t nodeCount, assetCount, instanceCount, bvhNodeCount;
 };
 static_assert(sizeof(SSGIHybridParameters) == 112);
@@ -275,6 +275,7 @@ public:
         RDGTextureHandle orm;
         RDGTextureHandle albedo;
         RDGTextureHandle bounceSource;
+        RDGTextureHandle emissive;
     };
     struct Output
     {
@@ -392,13 +393,9 @@ private:
     {
         if (!resourceManager || !pipelineManager || width == 0 || height == 0 ||
             !SSGIConfig::IsValidTraceDownsampleFactor(config.traceDownsampleFactor) ||
-            !SSGIConfig::IsValidWorldSampling(config.worldNearDistance, config.worldNearExitDistance) ||
             !SSGIConfig::IsValidMeshMinHitDistance(config.worldMeshMinHitDistance) ||
-            !SSGIConfig::IsValidWorldRayCount(config.worldNearRayCount) ||
-            config.worldOwnerHistoryUpdates < 1 || config.worldOwnerHistoryUpdates > 32 ||
-            (config.worldSpatialStep != 1 && config.worldSpatialStep != 2 && config.worldSpatialStep != 4) ||
-            !SSGIConfig::IsValidWorldRayCount(config.worldFarRayCount)) return {};
-        if (config.screenProbes && (config.raysPerScreenProbe < 64 || config.raysPerScreenProbe % 64 != 0 ||
+            !config.HasValidTraceDistances()) return {};
+        if (config.screenProbes && (!config.HasValidScreenProbeRayCounts() || !config.HasValidScreenProbeJitter() ||
             config.screenProbeHistoryUpdates < 1 || config.screenProbeHistoryUpdates > 32)) return {};
         const uint32_t traceDownsampleFactor = static_cast<uint32_t>(config.traceDownsampleFactor);
         const UINT traceWidth = TraceExtent(width, traceDownsampleFactor), traceHeight = TraceExtent(height, traceDownsampleFactor);
@@ -443,7 +440,7 @@ private:
             return {};
         }
         auto trace = AddTraceToGraph(graph, resourceManager, pipelineManager, view, proj, invProj, invViewProj, width, height,
-            frameIndex, sampleFrame, config, views, {input.bounceSource}, world, history, previewHistory);
+            frameIndex, sampleFrame, config, views, {input.bounceSource, input.emissive}, world, history, previewHistory);
         if (!trace.reconstructedGI.IsValid() || !trace.reconstructionPass.IsValid())
         {
             return {};
@@ -468,6 +465,7 @@ private:
     struct TraceInput
     {
         RDGTextureHandle bounceSource;
+        RDGTextureHandle emissive;
     };
     struct TraceOutput
     {
@@ -593,7 +591,7 @@ private:
         trace.blueNoiseIndex = noise.descriptorIndex;
         constexpr float TraceThickness = 0.15f;
         constexpr float TraceNormalBias = 0.02f;
-        trace.radius = 1.0f;
+        trace.radius = config.screenTraceDistance;
         trace.thickness = TraceThickness;
         trace.normalBias = TraceNormalBias;
         // Screen remains four member observations per 2x2. Each world tile uses
@@ -607,9 +605,16 @@ private:
         // Bind legal addresses even for unused resources in screen-only shaders.
         ID3D12Resource* fallbackBuffer = world && world->materialBuffer ? world->materialBuffer : resourceManager->GetMaterialBuffer();
         worldAddresses.fill(fallbackBuffer ? fallbackBuffer->GetGPUVirtualAddress() : resourceManager->GetCBVGPUAddress(frameIndex));
+        trace.hybrid.worldMeshMaxTraceDistance = config.worldMeshMaxTraceDistance;
+        trace.hybrid.worldMaxTraceDistance = config.worldMaxTraceDistance;
         trace.hybrid.worldMode = EffectiveWorldMode(world, frameIndex);
         if (trace.hybrid.worldMode)
         {
+            if (!world->distanceCache)
+            {
+                ErrorLog::Write("SSGI: world probe visibility cache is required.");
+                return {};
+            }
             const auto& grid = world->scene->GetGrid(frameIndex);
             trace.hybrid.gridOrigin = grid.origin;
             trace.hybrid.cellSize = grid.cellSize;
@@ -657,7 +662,7 @@ private:
                 memcpy(index, &view.descriptorIndex, sizeof(uint32_t));
             }
 #endif
-            if(world->distanceCache && world->probeCount)
+            if(world->probeCount)
             {
                 const auto buffer=graph.RegisterExternalBuffer(world->distanceCache,VXGIGPUScene::ReadState,
                     VXGIGPUScene::ReadState,"SSGI.ProbeDistance");
@@ -665,7 +670,7 @@ private:
                 desc.ViewDimension=D3D12_SRV_DIMENSION_BUFFER;desc.Shader4ComponentMapping=D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
                 desc.Buffer.NumElements=world->probeCount*64;desc.Buffer.StructureByteStride=8;
                 const auto distanceView=graph.CreateBufferSRVView(buffer,&desc);
-                if(!distanceView.IsValid()) return {};
+                if(!distanceView.IsValid() || distanceView.descriptorIndex == 0u) return {};
                 traceParams.ReadSRV(distanceView);
                 memcpy(&trace.hybrid.reservedLighting0.x,&distanceView.descriptorIndex,sizeof(uint32_t));
             }
@@ -701,7 +706,7 @@ private:
                 traceParams.ReadComputeSRV(globalView);
                 trace.global.enabled = 1;
                 trace.global.textureIndex = globalView.descriptorIndex;
-                trace.global.maxTraceDistance = 8.0f;
+                trace.global.maxTraceDistance = config.worldMaxTraceDistance;
                 trace.global.maxSteps = world->globalMaxSteps;
                 const auto& state = world->globalSDF->GetState();
                 trace.global.constants = state.HasPendingPlan() ?
@@ -761,7 +766,14 @@ private:
 
         if (config.screenProbes)
             return AddScreenProbesToGraph(graph, resourceManager, pipelineManager, frameIndex,
-                trace, traceParams, worldAddresses, config, previewHistory);
+                trace, traceParams, worldAddresses, config, previewHistory, input.emissive);
+
+        // Fixed compatibility values for the inactive legacy path. These are
+        // not settings and do not participate in screen-probe history identity.
+        constexpr bool LegacyWorldSharing = true, LegacySpatialFilter = false;
+        constexpr float LegacyNearDistance = 2.0f, LegacyNearExitDistance = 2.2f;
+        constexpr uint32_t LegacyNearRayCount = 8, LegacyFarRayCount = 8;
+        constexpr uint32_t LegacyHistoryUpdates = 1, LegacySpatialStep = 2;
 
         // Preserve every mip's x descriptor while reusing its formerly reserved
         // yzw channels. Keep this after the pyramid's uint4 initializations.
@@ -771,18 +783,18 @@ private:
         trace.levels[1].y = UINT_MAX; // Sparse screen receiver, supplied below.
         trace.levels[1].z = previousWorldPolicy.descriptorIndex;
         trace.levels[1].w = currentWorldPolicy.descriptorIndex;
-        const float nearDistanceSquared = config.worldNearDistance * config.worldNearDistance;
-        const float nearExitDistanceSquared = config.worldNearExitDistance * config.worldNearExitDistance;
+        const float nearDistanceSquared = LegacyNearDistance * LegacyNearDistance;
+        const float nearExitDistanceSquared = LegacyNearExitDistance * LegacyNearExitDistance;
         memcpy(&trace.levels[2].y, &nearDistanceSquared, sizeof(nearDistanceSquared));
         memcpy(&trace.levels[2].z, &nearExitDistanceSquared, sizeof(nearExitDistanceSquared));
-        trace.levels[2].w = static_cast<uint32_t>(config.worldNearRayCount);
-        trace.levels[3].y = static_cast<uint32_t>(config.worldFarRayCount);
+        trace.levels[2].w = static_cast<uint32_t>(LegacyNearRayCount);
+        trace.levels[3].y = static_cast<uint32_t>(LegacyFarRayCount);
         // Owner caching uses only reserved channels; all depth-pyramid x
         // descriptors and the 1024-byte trace constant ABI remain unchanged.
         trace.levels[3].z = trace.levels[3].w = UINT_MAX;
         trace.levels[4].y = trace.levels[4].z = UINT_MAX;
         trace.levels[5].y = UINT_MAX;
-        trace.levels[5].z = static_cast<uint32_t>(config.worldOwnerHistoryUpdates);
+        trace.levels[5].z = static_cast<uint32_t>(LegacyHistoryUpdates);
         trace.levels[6].z = 0u;
 
         auto raw = CreateUAVTexture(
@@ -807,7 +819,7 @@ private:
         RDGTextureSRVHandle worldDisplaySrv{};
         RDGTextureHandle worldDisplay{};
         RDGTextureHandle worldOwners{};
-        if (config.worldSharing)
+        if (LegacyWorldSharing)
         {
             // Screen uses fixed 2x2. World estimates choose 2x2 or 4x4;
             // coarse estimates are replicated into four fine-grid atlas slots.
@@ -1007,7 +1019,7 @@ private:
         reconstruction.rawIndex = rawSrv.descriptorIndex;
         reconstruction.padding[0] = worldDisplaySrv.IsValid() ? worldDisplaySrv.descriptorIndex : UINT_MAX;
         reconstruction.padding[1] = trace.levels[6].z;
-        reconstruction.worldSpatialStep = config.worldSpatialFilter ? static_cast<uint32_t>(config.worldSpatialStep) : 0u;
+        reconstruction.worldSpatialStep = LegacySpatialFilter ? static_cast<uint32_t>(LegacySpatialStep) : 0u;
 
         reconstruction.outputIndex = reconstructedUav.descriptorIndex;
         auto reconstructionAllocation = resourceManager->AllocatePassConstants(frameIndex, sizeof(reconstruction));

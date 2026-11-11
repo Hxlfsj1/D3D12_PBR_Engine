@@ -4,6 +4,7 @@
 #include "VXGIProbeData.hlsli"
 #include "VXGIProbeDistanceCommon.hlsli"
 
+
 static const uint VXGI_PROBE_MISSING_INDEX = 0xffffffffu;
 
 // World-origin cell coordinates, sorted lexicographically by X, Y, then Z.
@@ -137,12 +138,13 @@ VXGIProbeRadianceQueryResult VXGIProbeQueryRadiance(float3 worldPosition, float3
         if (probeIndex == VXGI_PROBE_MISSING_INDEX) continue;
         ++result.candidateCount;
         VXGIProbeRecord source = rawRecords[probeIndex];
+        float3 visibilityCenter=(float3(base+corner)+0.5)*voxelSize;
+        uint visibilityIndex=probeIndex,visibilityDescriptor=distanceDescriptorIndex;
         if (!VXGIProbeQueryRecordValid(source)) continue;
         float visibility=1.0;
-        if(distanceDescriptorIndex!=0u)
+        if(visibilityDescriptor!=0u)
         {
-            float3 center=(float3(base+corner)+0.5)*voxelSize;
-            visibility=VXGIProbeDistanceVisibility(distanceDescriptorIndex,probeIndex,worldPosition-center,voxelSize,worldRayDirection);
+            visibility=VXGIProbeDistanceVisibility(visibilityDescriptor,visibilityIndex,worldPosition-visibilityCenter,voxelSize,worldRayDirection);
             if(visibility<=0.0) continue;
             weight*=visibility;
         }

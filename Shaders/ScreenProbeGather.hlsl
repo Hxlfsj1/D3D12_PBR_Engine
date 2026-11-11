@@ -20,9 +20,17 @@
 #define SP_FILTERED_SRV levels[3].z
 #define SP_HISTORY_LIMIT levels[3].w
 #define SP_RAYS levels[4].y
+#define SP_SCREEN_RAYS levels[4].z
 #define SP_POSITION_UAV levels[5].z
 #define SP_NORMAL_UAV levels[5].w
 #define SP_RECEIVER_UAV levels[6].y
+#define SP_JITTER_WIDTH saturate(asfloat(levels[6].z))
+#define SP_ANCHOR_UAV levels[6].w
+#define SP_PREVIOUS_ANCHOR levels[2].z
+
+
+
+#include "ScreenProbeEmissive.hlsli"
 
 uint2 ProbePixel(uint packed)
 {
@@ -33,12 +41,14 @@ uint2 ProbePixel(uint packed)
 float3 ProbeDirection(float2 xi, float3 n)
 {
     // Equal-solid-angle hemisphere cells: mu=cos(theta) is uniform. Radiance
-    // is stored without cosine/PDF weights; integration applies 2*cos/N once.
+    // radiance is stored per bin before SH solid-angle projection and diffuse convolution.
     n = normalize(n);
     float mu = xi.x, phi = 6.28318530718 * xi.y;
     float3 tangent = normalize(cross(abs(n.z) < 0.999 ? float3(0, 0, 1) : float3(0, 1, 0), n));
     return sqrt(max(0, 1 - mu * mu)) * (cos(phi) * tangent + sin(phi) * cross(n, tangent)) + mu * n;
 }
+
+
 
 float ProbeFootprint(uint2 pixel, float3 p)
 {
@@ -52,6 +62,30 @@ float ProbeFootprint(uint2 pixel, float3 p)
         z, center, sceneSize, invViewProjMat), 1e-5);
 }
 
+bool ProbeSurfaceCompatible(float3 p, float3 n, float3 q, float3 m, float footprint)
+{
+    return all(isfinite(q)) && all(isfinite(m)) && dot(n, m) >= 0.99 &&
+        dot(ProbeDirection(float2(.5, 0), n), ProbeDirection(float2(.5, 0), m)) >= .98 &&
+        SymmetricPlaneDistance(q - p, n, m) <= max(footprint * .75, .001);
+}
+
+bool ProbeHistorySampleVisible(float3 p, float3 n, float footprint)
+{
+    float3 viewPosition = mul(float4(p, 1), viewMat).xyz;
+    if (viewPosition.z <= 0 || !all(isfinite(viewPosition))) return false;
+    float3 projected = Project(viewPosition);
+    if (!all(isfinite(projected)) || any(projected.xy < 0) || any(projected.xy >= 1)) return false;
+    uint2 pixel = min(uint2(projected.xy * sceneSize), sceneSize - 1u);
+    Texture2D<float> depth = ResourceDescriptorHeap[depthTextureIdx];
+    Texture2D<float4> orm = ResourceDescriptorHeap[ormTextureIdx];
+    Texture2D<float4> normals = ResourceDescriptorHeap[normalTextureIdx];
+    float z = depth.Load(int3(pixel, 0));
+    if (!isfinite(z) || z < 0 || z >= 1 || orm.Load(int3(pixel, 0)).a < .5) return false;
+    float3 q = ReconstructPosition((pixel + .5) / sceneSize, z, invViewProjMat);
+    float3 m = SSGIReceiverGeometricNormal(pixel, normalize(DecodeGBufferNormal(normals.Load(int3(pixel, 0)).xyz)));
+    return ProbeSurfaceCompatible(p, n, q, m, footprint);
+}
+
 uint PreviousProbe(float3 p, float3 n, float footprint)
 {
     if (historyValid == 0u) return 0u;
@@ -62,7 +96,7 @@ uint PreviousProbe(float3 p, float3 n, float footprint)
     if (any(uv < 0) || any(uv >= 1) || ndc.z < 0 || ndc.z >= 1) return 0u;
     float2 grid = uv * sceneSize / float(SSGITraceFactor(traceDownsampleFactor)) - 0.5;
     int2 base = int2(floor(grid));
-    Texture2D<float4> positions = ResourceDescriptorHeap[SP_PREVIOUS_POSITION];
+    Texture2D<float4> positions = ResourceDescriptorHeap[SP_PREVIOUS_ANCHOR];
     Texture2D<float4> normals = ResourceDescriptorHeap[SP_PREVIOUS_NORMAL];
     float best = 1e20;
     uint result = 0;
@@ -132,8 +166,9 @@ void CSMain_ProbePlace(uint3 group : SV_GroupID, uint lane : SV_GroupIndex)
         RWTexture2D<float4> positions = ResourceDescriptorHeap[SP_POSITION_UAV];
         RWTexture2D<float4> normals = ResourceDescriptorHeap[SP_NORMAL_UAV];
         RWTexture2D<uint> receivers = ResourceDescriptorHeap[SP_RECEIVER_UAV];
+        RWTexture2D<float4> anchors = ResourceDescriptorHeap[SP_ANCHOR_UAV];
         uint receiver = probePixels[0];
-        float4 position = 0, normal = 0;
+        float4 position = 0, normal = 0, anchor = 0;
         if (receiver != 0u)
         {
             uint2 pixel = ProbePixel(receiver);
@@ -141,35 +176,72 @@ void CSMain_ProbePlace(uint3 group : SV_GroupID, uint lane : SV_GroupIndex)
             float3 n = normalize(DecodeGBufferNormal(gbNormals.Load(int3(pixel, 0)).xyz));
             n = SSGIReceiverGeometricNormal(pixel, n);
             float3 p = ReconstructPosition((pixel + 0.5) / sceneSize, depth.Load(int3(pixel, 0)), invViewProjMat);
-            if (all(isfinite(n)) && all(isfinite(p))) { position = float4(p, 1); normal = float4(n, 0); }
+            if (all(isfinite(n)) && all(isfinite(p)))
+            {
+                anchor = float4(p, 1);
+                position = anchor; normal = float4(n, 0);
+                float width = float(factor) * SP_JITTER_WIDTH;
+                if (width > 0)
+                {
+                    // Total width, not radius. Quantize within the bounded region;
+                    // if it contains no pixel centers, retain the stable receiver.
+                    int2 lower = max(int2(blockMin), int2(ceil(center - width * .5)));
+                    int2 upper = min(int2(blockMin + blockSize - 1u), int2(floor(center + width * .5)));
+                    if (all(lower <= upper))
+                    {
+                        // Eight centered Hammersley phases. Intended checkerboard
+                        // hold frames share the phase of the preceding fresh batch.
+                        uint phase = (((frameIndex + ((probe.x + probe.y) & 1u)) >> 1u) + probe.x * 3u + probe.y * 5u) & 7u;
+                        uint reverse = ((phase & 1u) << 2u) | (phase & 2u) | ((phase & 4u) >> 2u);
+                        float2 sequence = (float2(phase, reverse) + .5) / 8.0;
+                        uint2 tap = uint2(clamp(int2(floor(center + (sequence - .5) * width + .5)), lower, upper));
+                        float tapDepth = depth.Load(int3(tap, 0));
+                        if (isfinite(tapDepth) && tapDepth >= 0 && tapDepth < 1 && orm.Load(int3(tap, 0)).a >= .5)
+                        {
+                            float3 q = ReconstructPosition((tap + .5) / sceneSize, tapDepth, invViewProjMat);
+                            float3 m = SSGIReceiverGeometricNormal(tap, normalize(DecodeGBufferNormal(gbNormals.Load(int3(tap, 0)).xyz)));
+                            if (ProbeSurfaceCompatible(p, n, q, m, ProbeFootprint(pixel, p)))
+                            {
+                                position = float4(q, 1); normal = float4(m, 0);
+                                receiver = tap.y * sceneSize.x + tap.x + 1u;
+                            }
+                        }
+                    }
+                }
+            }
             else receiver = 0u;
         }
         positions[probe] = position;
         normals[probe] = normal;
         receivers[probe] = receiver;
+        anchors[probe] = anchor;
     }
 }
 
-float4 ProbeRay(uint2 receiver, float3 p, float3 n, float3 direction, inout float4 cachedOffset)
+float4 ProbeScreenRay(uint2 receiver, float3 p, float3 n, float3 direction, out bool hit)
 {
-#ifdef SCREEN_PROBE_VALIDATE_CONSTANT
-#ifndef SCREEN_PROBE_VALIDATE_VALUE
-#define SCREEN_PROBE_VALIDATE_VALUE 1
-#endif
-    return float4(SCREEN_PROBE_VALIDATE_VALUE, SCREEN_PROBE_VALIDATE_VALUE, SCREEN_PROBE_VALIDATE_VALUE, 8);
-#endif
+    hit = false;
     float3 viewOrigin = mul(float4(p + n * normalBias, 1), viewMat).xyz;
     float3 viewDirection = normalize(mul(float4(direction, 0), viewMat).xyz);
     SSGIScreenRayResult screen = TraceScreenRay(receiver, viewOrigin, viewDirection);
     if (screen.status == SSGI_SCREEN_HIT)
     {
+        hit = true;
         Texture2D<float4> source = ResourceDescriptorHeap[sourceTextureIdx];
         float3 radiance = source.Load(int3(screen.hitPixel, 0)).rgb;
+        // Emission is supplied by explicit screen-emitter sampling once.
+        if (ScreenEmissiveCount() != 0u)
+            radiance = max(radiance - ScreenEmissiveRadiance(screen.hitPixel), 0);
         return float4(all(isfinite(radiance)) ? clamp(radiance, 0, 60000) : 0, max(screen.distance, 0.001));
     }
-    if (SSGIWorldMode() == 0u) return float4(0, 0, 0, 8);
+    return float4(0, 0, 0, hybrid.worldMaxTraceDistance);
+}
+
+float4 ProbeWorldRay(uint2 receiver, float3 p, float3 n, float3 direction, inout float4 cachedOffset)
+{
+    if (SSGIWorldMode() == 0u) return float4(0, 0, 0, hybrid.worldMaxTraceDistance);
     float3 origin = p + n * normalBias;
-    float limit = 2.0;
+    float limit = hybrid.worldMeshMaxTraceDistance;
     if (!SSGIApplyWorldNormalBias(receiver, origin, limit, cachedOffset)) return float4(0, 0, 0, 0.001);
     float spent = max(cachedOffset.w, 0.0);
     VXGIMeshSDFThresholdCounts counts;
@@ -177,13 +249,13 @@ float4 ProbeRay(uint2 receiver, float3 p, float3 n, float3 direction, inout floa
     counts.instanceCount = hybrid.instanceCount; counts.bvhNodeCount = hybrid.bvhNodeCount;
     VXGIThresholdParameters parameters;
     parameters.hitThresholdCells = SSGI_WORLD_HIT_THRESHOLD_CELLS;
-    parameters.stepScale = 1.0; parameters.maxSteps = 512; parameters.padding = 0;
+    parameters.stepScale = 1.0; parameters.maxSteps = 128; parameters.padding = 0;
     VXGIMeshSDFThresholdResult hit = (VXGIMeshSDFThresholdResult)0;
     if (limit > 0) hit = SSGITraceMeshNear(origin, direction, 0, limit, counts, parameters, hybridNodes, hybrid);
     if (hit.status == VXGI_THRESHOLD_HIT)
     {
         float3 radiance = 0;
-        if (hit.distance + spent <= 2.0)
+        if (hit.distance + spent <= hybrid.worldMeshMaxTraceDistance)
         {
             VXGIProbeRadianceQueryResult query = VXGIProbeQueryRadiance(hit.position, direction,
                 hybrid.voxelSize, hybrid.probeCount, hybridLookup, hybridRawRecords,
@@ -193,16 +265,17 @@ float4 ProbeRay(uint2 receiver, float3 p, float3 n, float3 direction, inout floa
         return float4(radiance, max(hit.distance + spent, 0.001));
     }
     // A failed/unfinished query must not see through an unresolved near surface.
-    if (hit.status != VXGI_THRESHOLD_MISS || global.enabled == 0u) return float4(0, 0, 0, 8);
+    if (hit.status != VXGI_THRESHOLD_MISS || global.enabled == 0u) return float4(0, 0, 0, hybrid.worldMaxTraceDistance);
     SSGIGlobalParameters farParameters = global;
-    farParameters.maxTraceDistance = max(0.0, 8.0 - spent);
+    farParameters.maxTraceDistance = max(0.0, hybrid.worldMaxTraceDistance - spent);
     SSGIHybridRayResult farHit = SSGIGlobalRaySource(origin, direction, limit, hybrid,
         hybridNodes, hybridLookup, hybridRawRecords, farParameters, probeNeighborsIndex);
     float distance = farHit.distance + spent;
-    if (farHit.hit != 0u && distance > 2.0 && distance <= 8.0)
+    if (farHit.hit != 0u && distance > hybrid.worldMeshMaxTraceDistance && distance <= hybrid.worldMaxTraceDistance)
         return float4(all(isfinite(farHit.radiance)) ? clamp(farHit.radiance, 0, 60000) : 0, max(distance, 0.001));
-    return float4(0, 0, 0, 8);
+    return float4(0, 0, 0, hybrid.worldMaxTraceDistance);
 }
+
 
 groupshared uint previousProbe, heldProbe, rejectedHistory;
 groupshared float previousCount, originDisplacement;
@@ -218,9 +291,12 @@ void CSMain_ProbeTrace(uint3 group : SV_GroupID, uint lane : SV_GroupIndex)
     RWTexture2D<float4> normals = ResourceDescriptorHeap[SP_NORMAL_UAV];
     Texture2D<uint> receivers = ResourceDescriptorHeap[SP_RECEIVER];
     RWTexture2D<float4> output = ResourceDescriptorHeap[SP_RADIANCE_UAV];
+    RWTexture2D<float4> anchors = ResourceDescriptorHeap[SP_ANCHOR_UAV];
     float4 position = positions[probe], normal = normals[probe];
+    float4 anchor = anchors[probe];
     uint packed = receivers.Load(int3(probe, 0));
-    if (position.a <= 0 || packed == 0u) { output[probe * 8u + cell] = 0; return; }
+    if (position.a <= 0 || packed == 0u)
+    { output[probe * 8u + cell] = 0; return; }
     uint2 receiver = ProbePixel(packed);
     float footprint = ProbeFootprint(receiver, position.xyz);
     Texture2D<float4> gbNormals = ResourceDescriptorHeap[normalTextureIdx];
@@ -228,15 +304,25 @@ void CSMain_ProbeTrace(uint3 group : SV_GroupID, uint lane : SV_GroupIndex)
     Texture2D<float4> previous = ResourceDescriptorHeap[SP_PREVIOUS_RADIANCE];
     Texture2D<float4> oldPositions = ResourceDescriptorHeap[SP_PREVIOUS_POSITION];
     Texture2D<float4> oldNormals = ResourceDescriptorHeap[SP_PREVIOUS_NORMAL];
+    Texture2D<float4> oldAnchors = ResourceDescriptorHeap[SP_PREVIOUS_ANCHOR];
     if (lane == 0u)
     {
-        previousProbe = PreviousProbe(position.xyz, normal.xyz, footprint);
+        previousProbe = PreviousProbe(anchor.xyz, normal.xyz, footprint);
         previousCount = 0; originDisplacement = 0; rejectedHistory = 0;
         if (previousProbe != 0u)
         {
             uint2 q = uint2((previousProbe - 1u) % outputSize.x, (previousProbe - 1u) / outputSize.x);
-            previousCount = oldNormals.Load(int3(q, 0)).a;
-            originDisplacement = distance(oldPositions.Load(int3(q, 0)).xyz, position.xyz);
+            float4 previousPosition = oldPositions.Load(int3(q, 0));
+            float4 previousNormal = oldNormals.Load(int3(q, 0));
+            // Anchor stability is not permission to reuse a point now hidden
+            // behind a wall. Check the actual old receiver against this GBuffer.
+            if (SP_JITTER_WIDTH > 0 && !ProbeHistorySampleVisible(previousPosition.xyz, previousNormal.xyz, footprint))
+                previousProbe = 0;
+            else
+            {
+                previousCount = previousNormal.a;
+                originDisplacement = distance(oldAnchors.Load(int3(q, 0)).xyz, anchor.xyz);
+            }
         }
     }
     GroupMemoryBarrierWithGroupSync();
@@ -260,36 +346,68 @@ void CSMain_ProbeTrace(uint3 group : SV_GroupID, uint lane : SV_GroupIndex)
     GroupMemoryBarrierWithGroupSync();
     if (lane == 0u)
     {
+        sharedScreenEmissiveCount = LoadScreenEmissiveCount();
         sharedWorldOffset = float4(0, 0, 0, -1);
         if (heldProbe == 0u && SSGIWorldMode() != 0u)
         {
             float3 launch = position.xyz + launchNormal * normalBias;
-            float limit = 2.0;
+            float limit = hybrid.worldMeshMaxTraceDistance;
             SSGIApplyWorldNormalBias(receiver, launch, limit, sharedWorldOffset);
         }
     }
     GroupMemoryBarrierWithGroupSync();
+    if (sharedScreenEmissiveCount > 0u && heldProbe == 0u)
+    {
+        ScreenEmissiveSample light = SampleScreenEmissive(probe, receiver, lane, position.xyz, launchNormal, normal.xyz);
+        sharedEmissiveRadiance[lane] = light.radiance;
+        sharedEmissiveCell[lane] = light.cell;
+        sharedEmissiveDistance[lane] = light.distance;
+        GroupMemoryBarrierWithGroupSync();
+    }
     float4 value = oldValue;
     if (heldProbe == 0u)
     {
         Texture2DArray<uint2> noise = ResourceDescriptorHeap[blueNoiseTextureIdx];
         uint samples = SP_RAYS / 64u;
-        float3 radiance = 0;
-        float hitDistance = 8.0;
+        float3 radiance;
+        float hitDistance;
+        uint screenReuse = SP_RAYS / SP_SCREEN_RAYS;
+        bool screenHit = false;
+        float4 screenValue = 0;
+        radiance = 0;
+        hitDistance = hybrid.worldMaxTraceDistance;
         float4 cachedOffset = sharedWorldOffset;
         [loop] for (uint sample = 0; sample < samples; ++sample)
         {
             float2 xi = (float2(cell) + LoadSTBN2D(noise, probe, frameIndex,
                 SSGIRaySampleIndex(16u, lane * samples + sample))) / 8.0;
-            float4 ray = ProbeRay(receiver, position.xyz, launchNormal, ProbeDirection(xi, normal.xyz), cachedOffset);
+            float3 direction = ProbeDirection(xi, normal.xyz);
+            // Reuse the representative screen observation in this direction cell.
+            // On a miss, each world sample still traces its own direction.
+            if (sample % screenReuse == 0u)
+                screenValue = ProbeScreenRay(receiver, position.xyz, launchNormal, direction, screenHit);
+            float4 ray;
+            if (screenHit) ray = screenValue;
+            else ray = ProbeWorldRay(receiver, position.xyz, launchNormal, direction, cachedOffset);
             radiance += ray.rgb;
             hitDistance = min(hitDistance, ray.a);
+        }
+        if (sharedScreenEmissiveCount > 0u)
+        {
+            [loop] for (uint i = 0; i < SP_EMISSIVE_SAMPLES; ++i)
+                if (sharedEmissiveCell[i] == lane)
+                {
+                    radiance += sharedEmissiveRadiance[i] * float(samples);
+                    hitDistance = min(hitDistance, sharedEmissiveDistance[i]);
+                }
         }
         value = float4(radiance / float(samples), hitDistance);
         bool reuse = previousProbe != 0u && all(isfinite(oldValue)) && oldValue.a > 0 &&
             originDisplacement <= min(oldValue.a, hitDistance) * 0.1;
         if (reuse)
+        {
             value.rgb = lerp(oldValue.rgb, value.rgb, rcp(min(previousCount + 1.0, float(SP_HISTORY_LIMIT))));
+        }
         else InterlockedOr(rejectedHistory, 1u);
     }
     output[probe * 8u + cell] = value;
@@ -301,6 +419,7 @@ void CSMain_ProbeTrace(uint3 group : SV_GroupID, uint lane : SV_GroupIndex)
             uint2 q = uint2((previousProbe - 1u) % outputSize.x, (previousProbe - 1u) / outputSize.x);
             normals[probe] = oldNormals.Load(int3(q, 0));
             positions[probe] = float4(oldPositions.Load(int3(q, 0)).xyz, 1);
+            anchors[probe] = oldAnchors.Load(int3(q, 0));
         }
         else
         {
@@ -309,6 +428,7 @@ void CSMain_ProbeTrace(uint3 group : SV_GroupID, uint lane : SV_GroupIndex)
             positions[probe] = float4(position.xyz, 2);
         }
     }
+
 }
 
 [numthreads(64, 1, 1)]

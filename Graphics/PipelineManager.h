@@ -136,6 +136,8 @@ public:
     {
         return ssgiRootSignature.Get();
     }
+    ID3D12PipelineState* GetScreenEmissiveClearPSO() { return screenEmissiveClearPSO.Get(); }
+    ID3D12PipelineState* GetScreenEmissiveBuildPSO() { return screenEmissiveBuildPSO.Get(); }
     ID3D12PipelineState* GetScreenProbePlacePSO() { return screenProbePlacePSO.Get(); }
     ID3D12PipelineState* GetScreenProbeTracePSO() { return screenProbeTracePSO.Get(); }
     ID3D12PipelineState* GetScreenProbeFilterPSO() { return screenProbeFilterPSO.Get(); }
@@ -1085,6 +1087,8 @@ private:
                                         ssgiAtrousFirstPSO, {L"SSGI_PASS_ATROUS=1", L"SSGI_ATROUS_FIRST=1"}) &&
                BuildSSGIComputePipeline(device, L"Shaders/Shaders_For_SSGI_Spatial.hlsl", L"CSMain_Atrous",
                                         ssgiAtrousPSO, {L"SSGI_PASS_ATROUS=1"}) &&
+               BuildSSGIComputePipeline(device, L"Shaders/ScreenProbeGather.hlsl", L"CSMain_EmissiveClear", screenEmissiveClearPSO) &&
+               BuildSSGIComputePipeline(device, L"Shaders/ScreenProbeGather.hlsl", L"CSMain_EmissiveBuild", screenEmissiveBuildPSO) &&
                BuildSSGIComputePipeline(device, L"Shaders/ScreenProbeGather.hlsl", L"CSMain_ProbePlace", screenProbePlacePSO) &&
                BuildSSGIComputePipeline(device, L"Shaders/ScreenProbeGather.hlsl", L"CSMain_ProbeTrace", screenProbeTracePSO) &&
                BuildSSGIComputePipeline(device, L"Shaders/ScreenProbeGather.hlsl", L"CSMain_ProbeFilter", screenProbeFilterPSO) &&
@@ -1750,6 +1754,7 @@ private:
     ComPtr<ID3D12RootSignature> ssgiRootSignature;
     ComPtr<ID3D12PipelineState> ssgiPyramidPSO;
     ComPtr<ID3D12PipelineState> ssgiTracePSO;
+    ComPtr<ID3D12PipelineState> screenEmissiveClearPSO,screenEmissiveBuildPSO;
     ComPtr<ID3D12PipelineState> screenProbePlacePSO,screenProbeTracePSO,screenProbeFilterPSO,screenProbeIntegratePSO,screenProbeResolvePSO;
     ComPtr<ID3D12PipelineState> ssgiSharedWorldPSO;
     ComPtr<ID3D12PipelineState> ssgiSharedTracePSO;

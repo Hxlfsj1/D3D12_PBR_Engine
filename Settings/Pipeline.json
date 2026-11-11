@@ -15,14 +15,20 @@
   "ssgi": {
     "enabled": true,
     "sampling_mode": "screen_probes",
+    "screen_trace_distance": 2.0,
     "screen_probes": {
       "rays_per_probe": 128,
-      "history_updates": 4
+      "screen_rays_per_probe": 64,
+      "emissive_samples_per_probe": 48,
+      "history_updates": 4,
+      "jitter_width_fraction": 0.5
     },
     "world_sampling": {
-      "mesh_min_hit_distance": 0.0
+      "mesh_min_hit_distance": 0.0,
+      "mesh_max_trace_distance": 2.0,
+      "max_trace_distance": 4.0
     },
-    "trace_downsample_factor": 8,
+    "trace_downsample_factor": 12,
     "intensity": 1
   },
   "vxgi": {

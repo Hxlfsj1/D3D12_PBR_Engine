@@ -140,7 +140,7 @@ New-Item -ItemType Directory -Force Models, HDRs
 当前 `Settings/Scene.json` 引用了：
 
 ```text
-Models/CyberPunk_Car.glb
+Models/Cornell_Box.glb
 Models/Plain.glb
 HDRs/citrus_orchard_road_puresky_4k.hdr
 ```
@@ -252,22 +252,36 @@ GI 配置使用同一 `Settings/Pipeline.json`，下表列出当前仓库配置�
 | 键 | 当前值 | 说明 |
 | --- | --- | --- |
 | `ssgi.enabled` | `true` | 启用 Deferred 混合 GI。 |
-| `ssgi.world_sharing.enabled` | `true` | 世界贡献使用共享采样和缓存。 |
-| `ssgi.world_sampling.near_distance` | `2.0` | 接收点距摄像机不超过此距离时请求近档 2×2。 |
-| `ssgi.world_sampling.near_exit_distance` | `2.2` | 超过此距离时请求远档 4×4；中间范围使用同表面历史滞回。 |
-| `ssgi.world_sampling.near_ray_count` | `16` | 近档每份世界估计的方向预算。 |
-| `ssgi.world_sampling.far_ray_count` | `8` | 远档每份世界估计的方向预算。 |
-| `ssgi.trace_downsample_factor` | `2` | GI 网格相对内部场景分辨率每轴缩小两倍，独立于 DLSS 输出放大。 |
+| `ssgi.sampling_mode` | `screen_probes` | 当前使用屏幕探针；`legacy` 保留旧路径。 |
+| `ssgi.screen_trace_distance` | `2.0` | 屏幕追踪沿射线的最大距离，单位为米。 |
+| `ssgi.screen_probes.rays_per_probe` | `128` | 每个屏幕探针的基础方向样本预算，包含世界回退。 |
+| `ssgi.screen_probes.screen_rays_per_probe` | `64` | 基础方向样本中的屏幕查询预算；同一角度格内可复用屏幕命中结果。 |
+| `ssgi.screen_probes.emissive_samples_per_probe` | `48` | 每个新鲜探针额外抽取的屏幕可见自发光表面样本数；0 关闭。 |
+| `ssgi.screen_probes.history_updates` | `4` | 屏幕探针方向光照的新鲜批次积累上限，不是最终像素历史上限。 |
+| `ssgi.screen_probes.jitter_width_fraction` | `0.5` | 发射点抖动区域总宽度占屏幕块宽度的比例；0 关闭。历史匹配使用稳定锚点。 |
+| `ssgi.world_sampling.mesh_min_hit_distance` | `0.0` | Mesh 世界追踪最小距离；当前不保留近处盲区。 |
+| `ssgi.world_sampling.mesh_max_trace_distance` | `2.0` | 近段 Mesh SDF 追踪范围，单位为米。 |
+| `ssgi.world_sampling.max_trace_distance` | `4.0` | 世界射线总范围，Global 接续近段；可配置范围为 2～16 米。 |
+| `ssgi.trace_downsample_factor` | `12` | 每个 12×12 内部渲染像素块放置一个屏幕探针，独立于 DLSS 输出放大。 |
 | `ssgi.intensity` | `1` | 间接漫反射强度。 |
 | `vxgi.enabled` | `true` | 启用世界几何与探针缓存。 |
 | `vxgi.global_sdf.enabled` | `true` | 启用 Global SDF 世界贡献。 |
 | `vxgi.debug_view` | `0` | 默认不叠加 VXGI 诊断图。 |
 
-近/远质量按接收点到摄像机的欧氏距离选择，2×2/4×4 块均以 GI 网格计。
-SSGI 仍使用原接收位置、每块最多四个方向和两帧刷新。Mesh 与 Global 都使用上表的近16/远8预算，正常分别按两帧、四帧刷新。
-沿射线的贡献范围分别为 SSGI 0–1 m、Mesh SDF 0–2 m、Global SDF (2,8] m；这些范围与摄像机质量距离相互独立。
-世界射线数接受 4–64 内的 4 的倍数，读取默认值为8/8；实际工作量还受缓存复用、有效成员与 Repair 补追影响。
-棋盘格固定开启，没有 JSON 或运行时开关。
+当前不再按摄像机距离切换近/远档共享块或射线数。每个屏幕块选择一个有效接收点，
+以 8×8 半球方向格保存光照；当前每格两个基础方向样本，共 128 个。
+屏幕命中结果在同一方向格内复用；屏幕未命中时，各世界样本沿自己的方向追踪。
+48 个自发光样本额外估计屏幕可见的发光表面，其发射项从普通屏幕命中读数中扣除，避免重复累计。
+当前的显式重要性采样用于屏幕可见自发光项。
+
+基础总样本数与屏幕查询数均须至少为 64 且为 64 的倍数，屏幕查询数还须整除基础总样本数。
+自发光样本数接受 0～64；探针历史批次上限接受 1～32；抖动宽度比例接受 0～1。
+降采样因子接受可表示为 `int` 的正整数；实际可用预算仍受显存与 GPU 时间约束。
+屏幕与 Mesh 追踪距离须为正数，且不超过世界总范围；各段范围按射线长度定义。
+
+屏幕探针采用有历史验证的棋盘格刷新：正常情况下约两帧更新一轮，历史失效时重新追踪。
+方向光照先进行时间积累与几何约束的空间过滤，再积分到九系数 SH 并重建完整内部渲染分辨率。
+最终像素还经过 RELAX 风格的快慢历史积累、历史钳制和 à-trous 空间滤波，最后由所选抗锯齿/重建模式处理。
 
 顶部 **Debug → Pass** 按完整 Pass 选择本步结果或截至本步的累计画面，
 未启用项置灰。抗锯齿四选一、与后处理一样只提供累计结果；ToneMap 归后处理。
@@ -278,8 +292,12 @@ GI 内只有三个条目，依次为：默认（SSGI + Mesh SDF VXGI + Global SD
 T 快捷键、Details 的旧 source 选择、JSON 的 `gi_only` 和 `vxgi.hybrid.mode` 已移除；启动为默认正常合成。
 世界回退保留原射线方向；起点沿深度重建的几何法线偏移，目标偏移自动取
 `max(SSGI 原偏移, 模型世界空间 SDF 命中阈值 × 1.1)`，新增位移从原有限长度中扣除。
-SSGI 屏幕追踪仍使用原偏移。世界命中后只读取邻近缓存、插值并求值 SH，
-不发出逐探针遮挡射线，也不在命中点计算直接光或太阳阴影。
+SSGI 屏幕追踪仍使用原偏移。Mesh 与 Global 的 SDF 容差命中只作为候选，
+使用双面三角形求交确认真实表面端点后，再读取邻近缓存、插值并求值 SH。
+确认使用现有实例 BVH 与模型网格；只有已证明为空的射线前缀可以跳过，未完成的查询不当作无遮挡。
+世界探针的烘焙距离/遮挡缓存是运行时插值的必需资源，不再作为可关闭选项。
+缓存查询不发出逐探针遮挡射线，也不在命中点计算直接光或太阳阴影；
+世界缓存的烘焙源为直接漫反射与限幅自发光，当前不包含多次反弹反馈。
 `vxgi.surface.max_ray_distance` 用于缓存更新/诊断，不是 SSGI 回退射线的长度。
 
 `hbao` 对象控制屏幕空间环境遮蔽（当前在 Deferred 路径使用）：
@@ -421,6 +439,8 @@ HLSL 在运行时通过 DXC 编译为 Shader Model 6.6，不依赖 Visual Studio
 - 模型加载面向 `.glb` 内嵌资源；动画/蒙皮字段存在，但当前帧流程没有动画更新。
 - 透明物体按距离排序以保证混合，可能降低 batching 效率。
 - 配置和 shader 没有热重载，修改后需要重启。
+- 世界回退仍使用固定世界探针的低阶入射辐射率 SH 缓存；它不是表面光照缓存，墙角等区域仍可能有偏差。真实端点确认只修正了其中一项误差，不能视为彻底消除黑边或漏光。
+- 精简版 Surface Cache 属于后续研究方向，当前尚未实现；写死康奈尔盒坐标的分区实验和临时测试开关已清理。
 - 资源路径大量使用相对路径，工作目录错误会导致初始化失败或资源为空。
 - DLSS 是显式且严格的模式：NGX capability、quality/resolution 或 evaluation 失败都会停止相应流程，不会静默降级。
 
