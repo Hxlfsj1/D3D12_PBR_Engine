@@ -150,6 +150,13 @@ public:
     Hit TraceReference(const DirectX::XMFLOAT3& origin, const DirectX::XMFLOAT3& direction,
         float maxDistance = 1000.0f) const
     {
+        return TraceReference(origin, direction, 0.0f, maxDistance);
+    }
+
+    // Card construction needs successive intersections and a surface-ray bias.
+    Hit TraceReference(const DirectX::XMFLOAT3& origin, const DirectX::XMFLOAT3& direction,
+        float minDistance, float maxDistance) const
+    {
         Vec rayOrigin, rayDirection;
         if (!PrepareRay(origin, direction, maxDistance, rayOrigin, rayDirection) || m_data.bvh.empty()) return {};
         Hit best;
@@ -160,11 +167,11 @@ public:
         {
             const auto& node = m_data.bvh[stack[--count]];
             double enter, exit;
-            if (!RayBox(rayOrigin, rayDirection, node.bounds, 0, bestDistance, enter, exit)) continue;
+            if (!RayBox(rayOrigin, rayDirection, node.bounds, minDistance, bestDistance, enter, exit)) continue;
             if (node.count)
             {
                 for (uint32_t i = 0; i < node.count; ++i)
-                    ConsiderHit(m_data, m_data.order[node.first+i], rayOrigin, rayDirection, 0, maxDistance, bestDistance, best);
+                    ConsiderHit(m_data, m_data.order[node.first+i], rayOrigin, rayDirection, minDistance, maxDistance, bestDistance, best);
             }
             else
             {

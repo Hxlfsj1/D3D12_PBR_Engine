@@ -9,8 +9,7 @@ enum class RenderDebugPass
 {
     Default,
     SSGIOnly,
-    GIOnly,
-    VXGIOff
+    GIOnly
 };
 
 inline bool IsRenderDebugPassAvailable(RenderDebugPass pass, const RenderPassAvailability& available)
@@ -20,7 +19,6 @@ inline bool IsRenderDebugPassAvailable(RenderDebugPass pass, const RenderPassAva
     case RenderDebugPass::Default: return true;
     case RenderDebugPass::SSGIOnly:
     case RenderDebugPass::GIOnly: return IsScreenGIAvailable(available);
-    case RenderDebugPass::VXGIOff: return IsWorldGIAvailable(available);
     }
     return false;
 }
@@ -33,9 +31,4 @@ inline void NormalizeRenderDebugPass(RenderDebugPass& pass, const RenderPassAvai
 inline bool IsGIOnlyDebugPass(RenderDebugPass pass)
 {
     return pass == RenderDebugPass::SSGIOnly || pass == RenderDebugPass::GIOnly;
-}
-
-inline uint32_t RenderDebugWorldMode(RenderDebugPass pass)
-{
-    return pass == RenderDebugPass::SSGIOnly || pass == RenderDebugPass::VXGIOff ? 0u : 2u;
 }

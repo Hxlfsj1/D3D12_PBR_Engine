@@ -12,56 +12,51 @@
       "transition_fraction": 0.1
     }
   },
+  "surface_cache": {
+    "card_cell_size": 0.1,
+    "max_cards_per_mesh": 12,
+    "world_texel_size": 0.1,
+    "max_distance": 32,
+    "min_card_resolution": 16,
+    "max_card_resolution": 512,
+    "atlas_size": 2048
+  },
+  "world_geometry": {
+    "enabled": true,
+    "mesh_cell_size": 1,
+    "mesh_trace_distance": 2,
+    "trace_distance": 128,
+    "global_sdf": {
+      "enabled": true,
+      "cells": 64,
+      "clipmaps": 3,
+      "cell_size": 0.5
+    }
+  },
   "ssgi": {
+    "mode": "SSGI",
     "enabled": true,
     "sampling_mode": "screen_probes",
-    "screen_trace_distance": 2.0,
+    "screen_trace_distance": 2,
+    "max_trace_iterations": 96,
+    "camera_fade": {
+      "enabled": true,
+      "start": 16,
+      "end": 24
+    },
     "screen_probes": {
-      "rays_per_probe": 128,
       "screen_rays_per_probe": 64,
       "emissive_samples_per_probe": 48,
       "history_updates": 4,
-      "jitter_width_fraction": 0.5
+      "jitter_width_fraction": 0.5,
+      "adaptive": {
+        "enabled": true,
+        "max_fraction": 0.4
+      }
     },
-    "world_sampling": {
-      "mesh_min_hit_distance": 0.0,
-      "mesh_max_trace_distance": 2.0,
-      "max_trace_distance": 4.0
-    },
-    "trace_downsample_factor": 12,
+    "trace_downsample_factor": 24,
+    "denoise_downsample_factor": 2,
     "intensity": 1
-  },
-  "vxgi": {
-    "enabled": true,
-    "voxel_size": 0.5,
-    "debug_view": 0,
-    "global_sdf": {
-      "enabled": true,
-      "cells_per_axis": [4, 8, 8],
-      "clipmaps": 3,
-      "cell_size": 0.25,
-      "trace_distance": 128.0,
-      "max_trace_steps": 256
-    },
-    "probes": {
-      "padding_layers": 1,
-      "probes_per_frame": 256,
-      "classify_rays": 64,
-      "rays_per_update": 64,
-      "max_history_updates": 32,
-      "backface_threshold": 0.25,
-      "filter_neighbor_weight": 0.25
-    },
-    "sdf": {
-      "cell_size": 0.1,
-      "slice_axis": 2,
-      "slice_position": 0.0
-    },
-    "surface": {
-      "material_mip_level": 0.0,
-      "ray_min_distance": 0.0001,
-      "max_ray_distance": 128.0
-    }
   },
   "hbao": {
     "enabled": true,

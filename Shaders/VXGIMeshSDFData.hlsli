@@ -25,4 +25,13 @@ StructuredBuffer<VXGIMeshSDFAsset> VXGIMeshSDFAssets : register(t0, space1);
 StructuredBuffer<VXGIMeshSDFInstance> VXGIMeshSDFInstances : register(t1, space1);
 StructuredBuffer<uint> VXGIMeshSDFMaterials : register(t2, space1);
 
+// Shared preorder instance tree. Surface Cache point queries and Mesh SDF ray
+// queries use the same tight world bounds and stackless escape indices.
+struct VXGIMeshSDFBVHNode
+{
+    float3 boundsMinimum; uint instanceIndex;
+    float3 boundsMaximum; uint escapeIndex;
+};
+StructuredBuffer<VXGIMeshSDFBVHNode> VXGIMeshSDFBVH : register(t3, space1);
+
 #endif

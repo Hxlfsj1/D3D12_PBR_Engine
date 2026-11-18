@@ -71,39 +71,30 @@ AntiAliasing entry; tone mapping belongs to PostProcess. Those two stages offer
 accumulated scene results only. Inactive stages are disabled and show `未启用`.
 The selected result is checked. Invalid selections return to Default.
 
-GI offers exactly three mutually exclusive pure-light views, in order:
-**默认（SSGI + Mesh SDF VXGI + Global SDF GI）**, **SSGI**, and
-**SSGI + Mesh SDF VXGI**. They compare the cumulative tracing tiers. Without
-Global SDF the default becomes **默认（SSGI + Mesh SDF VXGI）**, or **默认（SSGI）**
-without VXGI. The Mesh SDF choice is disabled when world GI is unavailable.
+**Debug > Pass > GI** contains exactly **SSGI** and **Lumen**. These items select
+the actual tracing mode and display its pure GI result. The active mode is checked.
+There are no mode items directly under Debug and no separate top-level GI menu.
+`GITracingModeContent` is shared with the F10 **GI tracing mode** section;
+`DebugPassMenu` is shared with the F10 Debug dropdown. Both modes read Surface
+Cache lighting. Mode changes reset GI/color/DLSS histories. The previous Default
+and Independent preview items and the AA status footer are absent from this submenu.
+Independent diagnostic history remains available through the existing CLI.
+
 `WrappedMenuItem` reuses the normal menu widget with viewport-aware line breaks
 and a stable `###` ID; narrow layouts retain full labels and unchanged font size.
-The F10 menu demonstrates this same component. Accumulated GI remains available
-through CLI capture, but has no entry in this three-item submenu. Pure views display indirect
-light before receiver material response. Diagnostic sources use separate output
-and history while normal mixed GI keeps running. Switching diagnostic sources
-invalidates their shared preview history. There is no isolated Mesh SDF/GDF-only
-contribution view. The entire GI menu is disabled when GI is unavailable.
-All three pure GI views continue through the configured AA and ToneMap
-before display. Accumulated GI remains a snapshot at the GI composition boundary.
-The AA choice follows Pipeline.json; None stays off. A wrapped muted footer reads
-**纯 GI 输出：抗锯齿已启用** or **纯 GI 输出：抗锯齿未启用**, according to the
-caller-supplied availability. The F10 template reuses this same status marker.
-Mixed/diagnostic GI histories stay separate; color AA histories restart on view or
-source changes instead of reusing colors from a different image. CLI captures of
-pure GI store the final full-output-resolution RGBA8 resource after configured
-AA and one ToneMap; accumulated GI captures retain the native HDR resource at the
-GI boundary. Capture metadata records the output stage and effective AA state.
+GI is disabled when unavailable. Pure GI shows indirect light before receiver
+material response, then uses configured AA and ToneMap. None keeps AA off.
+CLI captures retain the existing output stage and effective AA metadata.
+Accumulated GI remains available through CLI capture at the GI composition boundary.
 
-A stage choice never enables a feature or edits JSON. Normal GI computation and
-its history updates continue while the viewer presents the selected result;
-pure GI results use the AA/ToneMap display path described above.
+Stage viewing never enables a feature or edits JSON. The GI mode items additionally
+select the runtime tracing mode; choosing Default in Pass restores normal composition.
 Skybox and Transparent pass output
 means signed linear after-minus-before color change (orange brighter, blue darker),
 explicitly described in their menus; their accumulated result is normal scene color.
 
 `DebugPassMenu` is shared by production and the F10 template. The template exposes
-independent availability controls, including Global SDF, to inspect disabled stages, forward/deferred
+independent screen-feature availability controls to inspect disabled stages, forward/deferred
 paths and AA's accumulated-only result. It stays inside the viewport at narrow
 widths; long text wraps and short windows scroll without changing font size.
 

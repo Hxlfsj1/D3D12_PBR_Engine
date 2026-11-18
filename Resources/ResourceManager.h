@@ -7,10 +7,10 @@
 #include "PBR_Model.h"
 #include "IBLBaker.h"
 #include "Settings_Manager.h"
+#include "ScreenProbeLayout.h"
 #include "RenderStructs.h"
 #include "RDGResourceLease.h"
 #include "BlueNoiseTexture.h"
-#include "VXGIResources.h"
 #include "InitializationProgress.h"
 
 #include <map>
@@ -615,30 +615,6 @@ public:
         cmdList->ResourceBarrier(1, &barrier);
     }
 
-    // Like IBL, publish the initial scene cache only after GPU baking completes.
-    bool InitVXGI(RenderDevice* dc, const VXGIConfig& config, const LightingConfig& lighting, UINT frameCount,
-        const InitializationProgress& progress = {})
-    {
-        // Probe interpolation must reject contributors across geometry.
-        // Allocate its baked visibility cache for every enabled VXGI scene.
-        if(dc && config.enabled)
-        {
-            std::vector<VXGIProbePass::DistanceDescriptors> descriptors(frameCount);
-            for(auto& slot:descriptors)
-            {
-                slot.readIndex=AllocateSrvUavDescriptor();slot.writeIndex=AllocateSrvUavDescriptor();
-                slot.read=GetSrvUavCPUHandle(slot.readIndex);slot.write=GetSrvUavCPUHandle(slot.writeIndex);
-            }
-            m_vxgi.probePass.SetDistanceDescriptors(std::move(descriptors));
-        }
-        if (!dc || !m_vxgi.Initialize(*dc, frameCount, m_sceneInstances, m_globalMaterials,
-            config, lighting, mainDescriptorHeap.Get(), m_materialBuffer.Get(), progress)) return false;
-        return true;
-    }
-
-    VXGIResources& GetVXGI() { return m_vxgi; }
-    const VXGIResources& GetVXGI() const { return m_vxgi; }
-
     bool InitShadowResources(RenderDevice* dc)
     {
         D3D12_RESOURCE_DESC texDesc = CD3DX12_RESOURCE_DESC::Tex2D(
@@ -792,37 +768,29 @@ public:
         // Raw temporally accumulated directional radiance: 8x8 cells per receiver.
         Microsoft::WRL::ComPtr<ID3D12Resource> probeRadiance,probePosition,probeNormal,probeReceiver;
         Microsoft::WRL::ComPtr<ID3D12Resource> probeAnchor; // Unjittered reference associated with the stored batch.
+        Microsoft::WRL::ComPtr<ID3D12Resource> probeSeed;
+        Microsoft::WRL::ComPtr<ID3D12Resource> probeAdaptiveCount, probeTileHeader, probeTileIndices;
+        ScreenProbeLayout probeLayout;
         // gi.a = history length; fastGI.a = slow-history luminance second moment.
         Microsoft::WRL::ComPtr<ID3D12Resource> gi;
         Microsoft::WRL::ComPtr<ID3D12Resource> fastGI;
-        // Independent screen / Mesh / Global contributions: RGB + cache age.
-        // Reprojection reads these only when the submitted history is valid.
-        Microsoft::WRL::ComPtr<ID3D12Resource> screenBand;
-        Microsoft::WRL::ComPtr<ID3D12Resource> meshBand;
-        Microsoft::WRL::ComPtr<ID3D12Resource> globalBand;
-        // World owner-domain observations preserve independent raw cache ages.
-        // Packed bands: Mesh occupies the left atlas, Global the right atlas.
-        // Each band has one slot per 2x2 GI pixels; coarse owners repeat their
-        // identity in four slots without creating additional observations.
-        Microsoft::WRL::ComPtr<ID3D12Resource> globalOwnerRaw;
-        // float2: fresh-batch count capped at two, and last fresh frame stamp.
-        Microsoft::WRL::ComPtr<ID3D12Resource> globalOwnerState;
-        // uint2: current receiver address and original raw-batch receiver address.
-        Microsoft::WRL::ComPtr<ID3D12Resource> globalOwnerReceiver;
-        // Camera-quality hysteresis and independent world cache provenance tags.
-        Microsoft::WRL::ComPtr<ID3D12Resource> worldPolicy;
+        // Geometry history validates the screen signal during reprojection.
         Microsoft::WRL::ComPtr<ID3D12Resource> depth;
         Microsoft::WRL::ComPtr<ID3D12Resource> normal;
     };
 
     // Initialize/reinitialize only while the GPU is idle, as with other history resources.
-    bool InitSSGIHistoryResources(RenderDevice* dc, UINT width, UINT height, UINT traceDownsampleFactor = 2, bool screenProbes = false)
+    bool InitSSGIHistoryResources(RenderDevice* dc, UINT width, UINT height, UINT traceDownsampleFactor = 2,
+        bool screenProbes = false, UINT denoiseDownsampleFactor = 2,
+        bool adaptive = false, float adaptiveMaxFraction = 0.25f)
     {
         if (!dc || !dc->GetDevice() || width == 0 || height == 0 ||
-            !SSGIConfig::IsValidTraceDownsampleFactor(static_cast<int>(traceDownsampleFactor))) return false;
+            !SSGIConfig::IsValidTraceDownsampleFactor(static_cast<int>(traceDownsampleFactor)) ||
+            !SSGIConfig::IsValidDenoiseDownsampleFactor(static_cast<int>(denoiseDownsampleFactor))) return false;
         const UINT traceWidth = (width - 1) / traceDownsampleFactor + 1;
         const UINT traceHeight = (height - 1) / traceDownsampleFactor + 1;
-        if (!AllocateSSGIHistoryTextures(dc->GetDevice(), traceWidth, traceHeight, m_ssgiHistoryTextures, screenProbes, width, height))
+        if (!AllocateSSGIHistoryTextures(dc->GetDevice(), traceWidth, traceHeight, m_ssgiHistoryTextures,
+            screenProbes, width, height, denoiseDownsampleFactor, adaptive, adaptiveMaxFraction))
             return false;
         m_ssgiCurrentHistoryIdx = 0;
         // The caller already holds the GPU-idle boundary used for resize/init.
@@ -835,18 +803,26 @@ public:
     // First selection only allocates new resources; it never replaces in-flight
     // history. Resolution changes must use InitSSGIHistoryResources at GPU idle.
     bool EnsureSSGIPreviewHistoryResources(RenderDevice* dc, UINT width, UINT height,
-        UINT traceDownsampleFactor = 2, bool screenProbes = false)
+        UINT traceDownsampleFactor = 2, bool screenProbes = false, UINT denoiseDownsampleFactor = 2,
+        bool adaptive = false, float adaptiveMaxFraction = 0.25f)
     {
         if (!dc || !dc->GetDevice() || width == 0 || height == 0 ||
-            !SSGIConfig::IsValidTraceDownsampleFactor(static_cast<int>(traceDownsampleFactor))) return false;
+            !SSGIConfig::IsValidTraceDownsampleFactor(static_cast<int>(traceDownsampleFactor)) ||
+            !SSGIConfig::IsValidDenoiseDownsampleFactor(static_cast<int>(denoiseDownsampleFactor))) return false;
         const UINT traceWidth = (width - 1) / traceDownsampleFactor + 1;
         const UINT traceHeight = (height - 1) / traceDownsampleFactor + 1;
+        ScreenProbeLayout layout;
+        if (screenProbes && !ScreenProbeLayout::Calculate(width, height, traceDownsampleFactor,
+            adaptive, adaptiveMaxFraction, layout)) return false;
         if (m_ssgiPreviewHistoryTextures[0].gi)
         {
             const auto desc = m_ssgiPreviewHistoryTextures[0].gi->GetDesc();
-            return desc.Width == (screenProbes ? width : traceWidth) && desc.Height == (screenProbes ? height : traceHeight);
+            return desc.Width == (screenProbes ? (width - 1) / denoiseDownsampleFactor + 1 : traceWidth) &&
+                desc.Height == (screenProbes ? (height - 1) / denoiseDownsampleFactor + 1 : traceHeight) &&
+                m_ssgiPreviewHistoryTextures[0].probeLayout == layout;
         }
-        if (!AllocateSSGIHistoryTextures(dc->GetDevice(), traceWidth, traceHeight, m_ssgiPreviewHistoryTextures, screenProbes, width, height))
+        if (!AllocateSSGIHistoryTextures(dc->GetDevice(), traceWidth, traceHeight, m_ssgiPreviewHistoryTextures,
+            screenProbes, width, height, denoiseDownsampleFactor, adaptive, adaptiveMaxFraction))
             return false;
         m_ssgiPreviewCurrentHistoryIdx = 0;
         return true;
@@ -1540,9 +1516,13 @@ public:
 
 private:
     static bool AllocateSSGIHistoryTextures(ID3D12Device* device, UINT width, UINT height,
-        SSGIHistoryTextures (&destination)[2], bool screenProbes = false, UINT fullWidth = 0, UINT fullHeight = 0)
+        SSGIHistoryTextures (&destination)[2], bool screenProbes = false, UINT fullWidth = 0, UINT fullHeight = 0,
+        UINT denoiseDownsampleFactor = 2, bool adaptive = false, float adaptiveMaxFraction = 0.25f)
     {
-        if (screenProbes && (width > D3D12_REQ_TEXTURE2D_U_OR_V_DIMENSION / 8u || height > D3D12_REQ_TEXTURE2D_U_OR_V_DIMENSION / 8u))
+        ScreenProbeLayout layout;
+        // width/height here are already the uniform grid dimensions.
+        if (screenProbes && !ScreenProbeLayout::Calculate(width, height, 1u,
+            adaptive, adaptiveMaxFraction, layout))
         {
             ErrorLog::Write("Screen probes: directional atlas exceeds D3D12 texture dimensions; increase trace_downsample_factor.");
             return false;
@@ -1559,27 +1539,29 @@ private:
             if (FAILED(hr)) ErrorLog::HRESULT("ResourceManager: SSGI history allocation failed.", hr);
             return SUCCEEDED(hr);
         };
-        const UINT historyWidth = screenProbes ? fullWidth : width;
-        const UINT historyHeight = screenProbes ? fullHeight : height;
+        const UINT historyWidth = screenProbes ? (fullWidth - 1) / denoiseDownsampleFactor + 1 : width;
+        const UINT historyHeight = screenProbes ? (fullHeight - 1) / denoiseDownsampleFactor + 1 : height;
         for (auto& set : created)
             if (!create(RenderFormats::IndirectLighting, set.gi, historyWidth, historyHeight) ||
                 !create(RenderFormats::IndirectLighting, set.fastGI, historyWidth, historyHeight) ||
-                !create(RenderFormats::IndirectLighting, set.screenBand) ||
-                !create(RenderFormats::IndirectLighting, set.meshBand) ||
-                !create(RenderFormats::IndirectLighting, set.globalBand) ||
-                !create(RenderFormats::IndirectLighting, set.globalOwnerRaw, 2u * ((width + 1u) / 2u), (height + 1u) / 2u) ||
-                !create(DXGI_FORMAT_R32G32_FLOAT, set.globalOwnerState, 2u * ((width + 1u) / 2u), (height + 1u) / 2u) ||
-                !create(DXGI_FORMAT_R32G32_UINT, set.globalOwnerReceiver, 2u * ((width + 1u) / 2u), (height + 1u) / 2u) ||
-                !create(DXGI_FORMAT_R32_UINT, set.worldPolicy) ||
                 !create(RenderFormats::DepthSRV, set.depth, historyWidth, historyHeight) ||
                 !create(RenderFormats::GBufferNormal, set.normal, historyWidth, historyHeight)) return false;
         if (screenProbes)
             for (auto& set : created)
-                if (!create(RenderFormats::IndirectLighting, set.probeRadiance, width * 8u, height * 8u) ||
-                    !create(DXGI_FORMAT_R32G32B32A32_FLOAT, set.probePosition) ||
-                    !create(DXGI_FORMAT_R32G32B32A32_FLOAT, set.probeAnchor) ||
-                    !create(DXGI_FORMAT_R16G16B16A16_FLOAT, set.probeNormal) ||
-                    !create(DXGI_FORMAT_R32_UINT, set.probeReceiver)) return false;
+            {
+                set.probeLayout = layout;
+                if (!create(RenderFormats::IndirectLighting, set.probeRadiance, layout.atlasWidth * 8u, layout.atlasHeight * 8u) ||
+                    !create(DXGI_FORMAT_R32G32B32A32_FLOAT, set.probePosition, layout.atlasWidth, layout.atlasHeight) ||
+                    !create(DXGI_FORMAT_R32G32B32A32_FLOAT, set.probeAnchor, layout.atlasWidth, layout.atlasHeight) ||
+                    !create(DXGI_FORMAT_R16G16B16A16_FLOAT, set.probeNormal, layout.atlasWidth, layout.atlasHeight) ||
+                    !create(DXGI_FORMAT_R32_UINT, set.probeReceiver, layout.atlasWidth, layout.atlasHeight) ||
+                    !create(DXGI_FORMAT_R32G32_UINT, set.probeSeed, layout.atlasWidth, layout.atlasHeight)) return false;
+                if (layout.adaptiveCapacity > 0u &&
+                    (!create(DXGI_FORMAT_R32_UINT, set.probeAdaptiveCount, 1u, 1u) ||
+                     !create(DXGI_FORMAT_R32_UINT, set.probeTileHeader, width, height) ||
+                     !create(DXGI_FORMAT_R32_UINT, set.probeTileIndices,
+                         width * ScreenProbeLayout::AdaptiveSamplesPerTile, height))) return false;
+            }
         for (int index = 0; index < 2; ++index) destination[index] = std::move(created[index]);
         return true;
     }
@@ -1759,7 +1741,6 @@ private:
     // A map for storing model data
     std::unordered_map<std::string, std::unique_ptr<Model>> myModels;
     std::vector<ModelInstance> m_sceneInstances;
-    VXGIResources m_vxgi;
     UINT m_nextEditorId = 1;
     std::map<ID3D12Resource*, UINT> textureSrvIndices;
 

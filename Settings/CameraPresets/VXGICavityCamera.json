@@ -23,11 +23,6 @@
     640,
     400
   ],
-  "ssgi_gi_only": true,
-  "world_mode": 2,
-  "probe_voxel_size": 0.5,
-  "probe_padding_layers": 1,
-  "ssgi_radius": 0.5,
   "purpose": "User-confirmed fixed view of straight-edged block GI on the car cavity floor; preserve this camera for subsequent diagnosis and before/after comparisons.",
   "reference_report": "tmp/VXGIStage75-cavity-yaw90-down50-640x400-report.json",
   "reference_image": "tmp/vxgi-stage75-performance/cavity-yaw90-down50-640x400-camera0_mode2.png"

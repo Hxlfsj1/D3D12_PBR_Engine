@@ -64,6 +64,7 @@ StructuredBuffer<InstanceData> gInstanceData : register(t6);
 SamplerState s1 : register(s0);
 SamplerComparisonState shadowSampler : register(s1);
 SamplerState shadowDepthPointSampler : register(s2);
+SamplerState brdfLUTSampler : register(s3); // Linear Clamp: LUT edges must not wrap.
 
 StructuredBuffer<MaterialData> gMaterialData : register(t7);
 
@@ -346,7 +347,7 @@ float4 PSMain(VS_OUTPUT input, bool isFrontFace : SV_IsFrontFace) : SV_TARGET
     Texture2D tBRDF = ResourceDescriptorHeap[iblBRDFIdx];
     
     float3 prefilteredColor = tPrefilter.SampleLevel(s1, R, roughness * SPECULAR_IBL_MAX_MIP).rgb;
-    float2 brdf = tBRDF.Sample(s1, float2(max(dot(N, V), 0.0), roughness)).rg;
+    float2 brdf = tBRDF.Sample(brdfLUTSampler, float2(max(dot(N, V), 0.0), roughness)).rg;
     specular_IBL = ComputeSplitSumSpecularIBL(prefilteredColor, brdf, F_IBL);
 #elif LOD_LEVEL == 1
     TextureCube tPrefilter = ResourceDescriptorHeap[iblPrefilterIdx];

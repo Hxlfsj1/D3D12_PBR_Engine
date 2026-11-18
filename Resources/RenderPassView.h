@@ -31,8 +31,7 @@ enum class RenderPassResult : uint8_t
 enum class RenderPassGISource : uint8_t
 {
     Default,
-    SSGIOnly,
-    SSGIAndMeshSDF
+    SSGIOnly
 };
 
 inline constexpr const char* RenderPassGISourceId(RenderPassGISource source) noexcept
@@ -40,7 +39,6 @@ inline constexpr const char* RenderPassGISourceId(RenderPassGISource source) noe
     switch (source)
     {
     case RenderPassGISource::SSGIOnly: return "ssgi";
-    case RenderPassGISource::SSGIAndMeshSDF: return "mesh-sdf";
     default: return "default";
     }
 }
@@ -103,11 +101,9 @@ struct RenderPassAvailability
     bool zPrepass = false;
     bool hbao = false;
     bool ssgi = false;
-    bool vxgi = false;
     bool antiAliasing = false;
     bool motionVectors = false;
     bool transparent = false;
-    bool globalSDF = false;
 };
 
 struct RenderPassView
@@ -131,17 +127,9 @@ inline constexpr bool IsScreenGIAvailable(const RenderPassAvailability& availabl
     return available.deferred && available.ssgi;
 }
 
-inline constexpr bool IsWorldGIAvailable(const RenderPassAvailability& available) noexcept
-{
-    // The current world cache supplements the deferred SSGI trace. It is not a
-    // separate scene-color pass merely because its resources were initialized.
-    return IsScreenGIAvailable(available) && available.vxgi;
-}
 
-inline constexpr bool IsGlobalGIAvailable(const RenderPassAvailability& available) noexcept
-{
-    return IsWorldGIAvailable(available) && available.globalSDF;
-}
+
+
 
 inline constexpr bool IsRenderPassAvailable(RenderPassId pass,
     const RenderPassAvailability& available) noexcept
@@ -190,8 +178,7 @@ inline constexpr bool SupportsRenderPassResult(RenderPassId pass, RenderPassResu
 inline constexpr bool CanSelectRenderPassView(const RenderPassView& view,
     const RenderPassAvailability& available) noexcept
 {
-    return IsRenderPassAvailable(view.pass, available) && SupportsRenderPassResult(view.pass, view.result) &&
-        (view.giSource != RenderPassGISource::SSGIAndMeshSDF || IsWorldGIAvailable(available));
+    return IsRenderPassAvailable(view.pass, available) && SupportsRenderPassResult(view.pass, view.result);
 }
 
 // Disabled stages return to the normal frame. A supported stage keeps its
@@ -211,8 +198,7 @@ inline constexpr bool NormalizeRenderPassView(RenderPassView& view,
         static_cast<uint8_t>(view.channel) > static_cast<uint8_t>(RenderPassChannel::Depth))
         view.channel = RenderPassChannel::Albedo;
     if (view.pass != RenderPassId::GI || view.result != RenderPassResult::PassOutput ||
-        static_cast<uint8_t>(view.giSource) > static_cast<uint8_t>(RenderPassGISource::SSGIAndMeshSDF) ||
-        (view.giSource == RenderPassGISource::SSGIAndMeshSDF && !IsWorldGIAvailable(available)))
+        static_cast<uint8_t>(view.giSource) > static_cast<uint8_t>(RenderPassGISource::SSGIOnly))
         view.giSource = RenderPassGISource::Default;
     return before.pass != view.pass || before.result != view.result || before.channel != view.channel ||
         before.giSource != view.giSource;

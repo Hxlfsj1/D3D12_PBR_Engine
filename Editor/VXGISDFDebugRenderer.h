@@ -2,13 +2,15 @@
 
 #include "RenderDevice.h"
 #include "PBR_Shader.h"
-#include "VXGISurface.h"
 #include "VXGIGPUScene.h"
+#include "Settings_Manager.h"
+#include "VXGIGlobalSDFPass.h"
+#include "SurfaceCacheCards.h"
+#include <span>
 #include <array>
+#include <cstddef>
 #include <cstdint>
 #include <cstring>
-#include <limits>
-#include <utility>
 #include <vector>
 
 // Full-screen world-SDF diagnostics after post-process and before selection/UI.
@@ -22,36 +24,33 @@ public:
         if (frameCount == 0 || !CreatePipeline(deviceContext.GetDevice(),
             deviceContext.GetRenderTarget(0)->GetDesc().Format)) return false;
         m_constants.resize(frameCount);
+        m_cardBuffers.resize(frameCount);
+        m_cardBufferBytes.resize(frameCount);
         const auto heap=CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_UPLOAD);
-        const auto desc=CD3DX12_RESOURCE_DESC::Buffer(256);
+        const auto desc=CD3DX12_RESOURCE_DESC::Buffer(512);
         for(auto& buffer:m_constants)
             if(!Check(deviceContext.GetDevice()->CreateCommittedResource(&heap,D3D12_HEAP_FLAG_NONE,&desc,
                 D3D12_RESOURCE_STATE_GENERIC_READ,nullptr,IID_PPV_ARGS(&buffer)),"create diagnostic constants")) return false;
         return true;
     }
 
-    // SDF contract: GetGrid/GetNodes/GetCellOffsets/GetTriangleReferences/
-    // GetTriangles/GetGeometryRevision/GetMaterialRevision. Grid is independent
-    // of the sparse probe grid; material edits reuse distance/CSR GPU buffers.
     // inverseViewProjectionGpu uses the engine's transposed GPU matrix convention.
     // Call once per frame after WaitForPreviousFrame; back buffer enters/leaves PRESENT.
-    template<class SDF>
-    bool Record(RenderDevice& deviceContext, ID3D12DescriptorHeap* engineHeap, int frameIndex,
+    // globalSDFIndex is a copy of global.GetSRVCPUHandle() in engineHeap.
+    // Modes: 4..7 Mesh geometry/shadow; 13..15 Global geometry; 17 hybrid hit;
+    // 18 Card placement, 19 geometric capture coverage (no material atlas yet).
+    bool RecordGeometry(RenderDevice& deviceContext, ID3D12DescriptorHeap* engineHeap, int frameIndex,
         const DirectX::XMFLOAT4X4& inverseViewProjectionGpu, D3D12_CPU_DESCRIPTOR_HANDLE backBufferRtv,
-        const SDF& sdf, const VXGIGPUScene& scene, uint32_t debugMode, uint32_t sliceAxis, float sliceCoordinateWorld,
-        const DirectX::XMFLOAT3& sunDirectionTowardLight,
-        const VXGISurface* surfaceState = nullptr, D3D12_GPU_VIRTUAL_ADDRESS materialBuffer = 0,
-        float voxelSize = 1, uint32_t probeCount = 0, ID3D12Resource* rawProbes = nullptr)
+        const VXGIGPUScene& scene, const VXGIGlobalSDFPass& global, UINT globalSDFIndex,
+        const VXGIConfig& config, uint32_t debugMode, const DirectX::XMFLOAT3& sunDirectionTowardLight,
+        D3D12_GPU_VIRTUAL_ADDRESS materialBuffer, uint32_t materialCount,
+        std::span<const SurfaceCacheCards::DebugCard> cards = {})
     {
-        (void)sdf;
         if(frameIndex<0 || size_t(frameIndex)>=m_constants.size()) return false;
-        if (!((debugMode >= 4 && debugMode <= 12) || (debugMode >= 18 && debugMode <= 20)) || !scene.GetGrid(frameIndex).valid) return true;
-        if (debugMode >= 18 && probeCount && (!rawProbes || !scene.Get(frameIndex,5))) return false;
-        // The diagnostic shares the production mesh backend and alpha coverage.
-        if (!surfaceState || !materialBuffer) return false;
+        if (!scene.GetGrid(frameIndex).valid || !scene.GetTriangleCount(frameIndex)) return true;
         if (!m_pipeline || !engineHeap || !scene.IsMeshBackend(frameIndex) || !scene.Get(frameIndex,0)) return false;
         const auto& grid = scene.GetGrid(frameIndex);
-        if (!scene.GetTriangleCount(frameIndex)) return true;
+        const bool usesGlobal = debugMode >= 13 && debugMode <= 17;
         auto* cmd = deviceContext.GetCommandList();
         auto* backBuffer = deviceContext.GetRenderTarget(frameIndex);
         const auto output = backBuffer->GetDesc();
@@ -63,29 +62,48 @@ public:
         constants.debugMode = debugMode;
         constants.boundsMaximum = grid.boundsMaximum;
         constants.triangleCount = scene.GetTriangleCount(frameIndex);
-        constants.voxelSize = voxelSize;constants.probeCount = probeCount;
-        const auto sun = DirectX::XMLoadFloat3(&sunDirectionTowardLight);
-        if (DirectX::XMVectorGetX(DirectX::XMVector3LengthSq(sun)) > 1e-20f)
-            DirectX::XMStoreFloat3(&constants.sunDirectionTowardLight, DirectX::XMVector3Normalize(sun));
-        else
-            constants.sunDirectionTowardLight = { 0, 1, 0 };
-        constants.sliceCoordinateWorld = sliceCoordinateWorld;
-        constants.sliceAxis = sliceAxis < 3 ? sliceAxis : 2;
+        DirectX::XMStoreFloat3(&constants.sunDirectionTowardLight,
+            DirectX::XMVector3Normalize(DirectX::XMLoadFloat3(&sunDirectionTowardLight)));
+        constants.sliceCoordinateWorld = config.sdfSlicePosition;
+        constants.sliceAxis = static_cast<uint32_t>(config.sdfSliceAxis);
         constants.inverseOutputSize = { 1.0f / static_cast<float>(output.Width), 1.0f / static_cast<float>(output.Height) };
-        if (surfaceState)
+        constants.materialMipLevel = config.surfaceMaterialMipLevel;
+        constants.rayMinDistance = config.surfaceRayMinDistance;
+        constants.maxRayDistance = config.surfaceMaxRayDistance;
+        constants.materialCount = materialCount;
+        constants.globalSDFIndex = globalSDFIndex;
+        constants.meshTraceDistance = config.meshTraceDistance;
+        constants.globalTraceDistance = config.globalSDFTraceDistance;
+        constants.globalMaxSteps = static_cast<uint32_t>(config.globalSDFMaxSteps);
+        constants.cardCount = static_cast<uint32_t>(cards.size());
+        constants.global = global.GetLayout().constants;
+
+        if (!cards.empty())
         {
-            const auto& parameters = surfaceState->GetParameters();
-            constants.sunRadiance = parameters.lightColor;
-            constants.materialMipLevel = parameters.materialMipLevel;
-            constants.rayMinDistance = parameters.rayMinDistance;
-            constants.maxRayDistance = parameters.maxRayDistance;
-            constants.materialCount = static_cast<uint32_t>(surfaceState->GetMaterials().size());
+            const uint64_t bytes=cards.size_bytes();
+            auto& buffer=m_cardBuffers[frameIndex];
+            if(m_cardBufferBytes[frameIndex]!=bytes)
+            {
+                const auto heap=CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_UPLOAD);
+                const auto desc=CD3DX12_RESOURCE_DESC::Buffer(bytes);
+                if(!Check(deviceContext.GetDevice()->CreateCommittedResource(&heap,D3D12_HEAP_FLAG_NONE,&desc,
+                    D3D12_RESOURCE_STATE_GENERIC_READ,nullptr,IID_PPV_ARGS(buffer.ReleaseAndGetAddressOf())),"create Card debug buffer"))return false;
+                m_cardBufferBytes[frameIndex]=bytes;
+            }
+            void* mappedCards=nullptr;const D3D12_RANGE noReads{0,0};
+            if(!Check(buffer->Map(0,&noReads,&mappedCards),"map Card debug buffer"))return false;
+            std::memcpy(mappedCards,cards.data(),bytes);buffer->Unmap(0,nullptr);
         }
 
         void* mapped=nullptr;const D3D12_RANGE noReads{0,0};
         if(!Check(m_constants[frameIndex]->Map(0,&noReads,&mapped),"map diagnostic constants")) return false;
         std::memcpy(mapped,&constants,sizeof(constants));
         const D3D12_RANGE written{0,sizeof(constants)};m_constants[frameIndex]->Unmap(0,&written);
+        // The composition pass tracks NON_PIXEL reads. Restore that state after
+        // this pixel-shader diagnostic so its next update retains the contract.
+        if (usesGlobal)
+            Transition(cmd, global.GetTexture(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
+                VXGIGPUScene::ReadState);
         Transition(cmd, backBuffer, D3D12_RESOURCE_STATE_PRESENT, D3D12_RESOURCE_STATE_RENDER_TARGET);
         cmd->OMSetRenderTargets(1, &backBufferRtv, FALSE, nullptr);
         const D3D12_VIEWPORT viewport{ 0, 0, static_cast<float>(output.Width), static_cast<float>(output.Height), 0, 1 };
@@ -99,16 +117,17 @@ public:
         cmd->SetGraphicsRootConstantBufferView(0,m_constants[frameIndex]->GetGPUVirtualAddress());
         for (UINT i = 0; i < 4; ++i)
             cmd->SetGraphicsRootShaderResourceView(i + 1, scene.Get(frameIndex,i)->GetGPUVirtualAddress());
-        // Alpha-aware tracing reuses the same t4 material pool as surface shading.
+        // The geometry query retains the existing alpha-coverage material pool.
         cmd->SetGraphicsRootShaderResourceView(5, materialBuffer);
-        const auto fallback = scene.Get(frameIndex,3)->GetGPUVirtualAddress();
-        cmd->SetGraphicsRootShaderResourceView(6, scene.Get(frameIndex,4) ? scene.Get(frameIndex,4)->GetGPUVirtualAddress() : fallback);
-        cmd->SetGraphicsRootShaderResourceView(7, scene.Get(frameIndex,5) ? scene.Get(frameIndex,5)->GetGPUVirtualAddress() : fallback);
-        cmd->SetGraphicsRootShaderResourceView(8, rawProbes ? rawProbes->GetGPUVirtualAddress() : fallback);
-        for(UINT i=0;i<3;++i) cmd->SetGraphicsRootShaderResourceView(9+i,scene.Get(frameIndex,7+i)->GetGPUVirtualAddress());
+        for(UINT i=0;i<3;++i) cmd->SetGraphicsRootShaderResourceView(6+i,scene.Get(frameIndex,4+i)->GetGPUVirtualAddress());
+        cmd->SetGraphicsRootShaderResourceView(9,cards.empty()?scene.Get(frameIndex,0)->GetGPUVirtualAddress():
+            m_cardBuffers[frameIndex]->GetGPUVirtualAddress());
         cmd->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
         cmd->DrawInstanced(3, 1, 0, 0);
         Transition(cmd, backBuffer, D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_PRESENT);
+        if (usesGlobal)
+            Transition(cmd, global.GetTexture(), VXGIGPUScene::ReadState,
+                D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
         return true;
     }
 
@@ -120,13 +139,13 @@ private:
         std::array<uint32_t, 3> cellDimensions; uint32_t debugMode;
         DirectX::XMFLOAT3 boundsMaximum; uint32_t triangleCount;
         DirectX::XMFLOAT3 sunDirectionTowardLight; float sliceCoordinateWorld;
-        uint32_t sliceAxis; DirectX::XMFLOAT2 inverseOutputSize; float unusedPadding;
-        DirectX::XMFLOAT3 sunRadiance; float materialMipLevel;
-        float rayMinDistance, maxRayDistance; uint32_t materialCount, surfacePadding;
-        float voxelSize;uint32_t probeCount,queryPadding[2];
+        uint32_t sliceAxis; DirectX::XMFLOAT2 inverseOutputSize; float materialMipLevel;
+        float rayMinDistance, maxRayDistance; uint32_t materialCount, globalSDFIndex;
+        float meshTraceDistance, globalTraceDistance; uint32_t globalMaxSteps, cardCount;
+        VXGIGlobalSDF::Constants global;
     };
     // The CBV leaves room for the three shared Mesh SDF SRVs under the root limit.
-    static_assert(sizeof(Constants) == 48 * sizeof(UINT));
+    static_assert(sizeof(Constants) == 352 && offsetof(Constants, global) == 176);
     static bool Check(HRESULT hr, const char* operation)
     {
         if (SUCCEEDED(hr)) return true;
@@ -141,13 +160,14 @@ private:
     }
     bool CreatePipeline(ID3D12Device* device, DXGI_FORMAT outputFormat)
     {
-        CD3DX12_ROOT_PARAMETER parameters[12];
+        CD3DX12_ROOT_PARAMETER parameters[10];
         parameters[0].InitAsConstantBufferView(0,0,D3D12_SHADER_VISIBILITY_PIXEL);
-        for (UINT i = 0; i < 8; ++i)
+        for (UINT i = 0; i < 5; ++i)
             parameters[i + 1].InitAsShaderResourceView(i, 0, D3D12_SHADER_VISIBILITY_PIXEL);
-        for(UINT i=0;i<3;++i) parameters[i+9].InitAsShaderResourceView(i,1,D3D12_SHADER_VISIBILITY_PIXEL);
+        for(UINT i=0;i<3;++i) parameters[i+6].InitAsShaderResourceView(i,1,D3D12_SHADER_VISIBILITY_PIXEL);
+        parameters[9].InitAsShaderResourceView(5,0,D3D12_SHADER_VISIBILITY_PIXEL);
         const auto sampler = CD3DX12_STATIC_SAMPLER_DESC(0, D3D12_FILTER_MIN_MAG_MIP_LINEAR);
-        const CD3DX12_ROOT_SIGNATURE_DESC rootDesc(12, parameters, 1, &sampler,
+        const CD3DX12_ROOT_SIGNATURE_DESC rootDesc(10, parameters, 1, &sampler,
             D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT |
             D3D12_ROOT_SIGNATURE_FLAG_CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED);
         Microsoft::WRL::ComPtr<ID3DBlob> blob, errors;
@@ -180,4 +200,6 @@ private:
     Microsoft::WRL::ComPtr<ID3D12RootSignature> m_root;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> m_pipeline;
     std::vector<Microsoft::WRL::ComPtr<ID3D12Resource>> m_constants;
+    std::vector<Microsoft::WRL::ComPtr<ID3D12Resource>> m_cardBuffers;
+    std::vector<uint64_t> m_cardBufferBytes;
 };

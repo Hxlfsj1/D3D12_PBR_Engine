@@ -45,7 +45,16 @@ They are constants in the pass, not new Pipeline.json settings.
 The clamp uses a 5x5 neighborhood, including valid black GI, with edge coordinates
 clamped and invalid background/material pixels excluded. Like RELAX, it does not
 apply the reprojection same-surface test to the color-box neighborhood. The 12x12
-shared tile for an 8x8 workgroup avoids 25 global reads per pixel per signal.
+shared tile for an 8x8 workgroup serves the unit-spacing neighborhood. Screen-probe
+statistics use a wider spacing of ceil(probe spacing / denoising factor), so that
+branch gathers its distant taps directly from textures and still uses the tile's
+center values. It does not eliminate all 25 global reads per signal in that mode.
+
+Screen-probe pixel reconstruction, reprojection, histories and spatial filtering
+share the grid selected by `ssgi.denoise_downsample_factor` (1 or 2, default 2).
+Signal texel i uses full-resolution receiver pixel factor*i. The final composite
+uses full-resolution geometry to upsample the filtered signal before material
+response; the probe tracing grid and ray budgets are independent.
 
 Local differences: `GI.a` still holds history length; fast-history alpha now stores
 the slow luminance second moment (not fast-history variance or a validity flag).
@@ -59,7 +68,7 @@ confidence input and SDK resource abstraction are not imported.
 ## Two-pass spatial filtering
 
 `Shaders/Shaders_For_SSGI_Spatial.hlsl` and `RelaxAtrous.hlsli` adapt RELAX's first and subsequent
-diffuse A-trous stages. Two passes run at half resolution with steps 1 and 2. These
+diffuse A-trous stages. Two passes run at the configured denoising resolution with steps 1 and 2. These
 steps change tap spacing on the same image; they do not construct or sample a new
 Hi-Z hierarchy. Both variants use a 12x12 shared tile for an 8x8 workgroup.
 

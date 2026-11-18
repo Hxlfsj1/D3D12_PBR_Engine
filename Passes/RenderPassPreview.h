@@ -3,6 +3,7 @@
 #include "stdafx.h"
 #include "RDG.h"
 #include "PBR_Shader.h"
+#include "OutputDither.h"
 #include <algorithm>
 #include <array>
 #include <string>
@@ -39,7 +40,7 @@ public:
         auto* gpu = device.GetDevice();
         if (!gpu) return false;
         CD3DX12_ROOT_PARAMETER parameter;
-        parameter.InitAsConstants(12, 0, 0, D3D12_SHADER_VISIBILITY_PIXEL);
+        parameter.InitAsConstants(16, 0, 0, D3D12_SHADER_VISIBILITY_PIXEL);
         const CD3DX12_ROOT_SIGNATURE_DESC desc(1, &parameter, 0, nullptr,
             D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT |
             D3D12_ROOT_SIGNATURE_FLAG_CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED);
@@ -71,6 +72,8 @@ public:
         pso.RTVFormats[0] = DXGI_FORMAT_R16G16B16A16_FLOAT;
         return Check(gpu->CreateGraphicsPipelineState(&pso, IID_PPV_ARGS(&m_difference)), "create difference pipeline");
     }
+
+    void SetBlueNoiseTexture(ID3D12Resource* texture) { m_blueNoise = texture; }
 
     // Insert exactly at the stage boundary. Declared CopySrc/CopyDst accesses
     // preserve the old contents before a later pass writes the same SceneColor.
@@ -130,8 +133,10 @@ private:
         uint32_t sourceIndex, beforeIndex, mode, channel;
         uint32_t slice, arraySize, width, height;
         float nearZ, farZ, exposure, motionScale;
+        uint32_t blueNoiseIndex = UINT_MAX;
+        uint32_t padding[3]{};
     };
-    static_assert(sizeof(Constants) == 48);
+    static_assert(sizeof(Constants) == 64);
 
     static bool Check(HRESULT hr, const char* action)
     {
@@ -195,6 +200,15 @@ private:
         RDGPassParameters params;
         params.ReadSRV(input);
         if (source.beforeTexture.IsValid()) params.ReadSRV(before);
+        // LDR presentation copies an already quantized result. Raw differences,
+        // GBuffer channels, depth, normals and masks keep their exact mapping.
+        if (source.mapping == Mapping::HDR || source.mapping == Mapping::DeltaHDR)
+        {
+            const auto noise = ImportOutputDither(graph, m_blueNoise);
+            if (!noise.IsValid()) return {};
+            params.ReadSRV(noise);
+            cb.blueNoiseIndex = noise.descriptorIndex;
+        }
         params.WriteRTV(output);
         auto* root = m_root.Get();
         auto* pipeline = format == DXGI_FORMAT_R16G16B16A16_FLOAT ? m_difference.Get() : m_display.Get();
@@ -205,7 +219,7 @@ private:
                 cmd->SetDescriptorHeaps(1, heaps);
                 cmd->SetGraphicsRootSignature(root);
                 cmd->SetPipelineState(pipeline);
-                cmd->SetGraphicsRoot32BitConstants(0, 12, &cb, 0);
+                cmd->SetGraphicsRoot32BitConstants(0, 16, &cb, 0);
                 cmd->OMSetRenderTargets(1, &output.cpuHandle, FALSE, nullptr);
                 const D3D12_VIEWPORT viewport{0, 0, static_cast<float>(width), static_cast<float>(height), 0, 1};
                 const D3D12_RECT scissor{0, 0, static_cast<LONG>(width), static_cast<LONG>(height)};
@@ -219,4 +233,5 @@ private:
 
     Microsoft::WRL::ComPtr<ID3D12RootSignature> m_root;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> m_display, m_difference;
+    ID3D12Resource* m_blueNoise = nullptr; // Owned by ResourceManager.
 };

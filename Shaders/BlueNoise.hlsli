@@ -16,4 +16,14 @@ float2 LoadSTBN2D(Texture2DArray<uint2> noise, uint2 pixel, uint frame, uint sam
     return (float2(value) + 0.5) / 256.0;
 }
 
+// One fixed slice in output-pixel coordinates: no temporal shimmer, filtering or
+// sRGB conversion. Shared RGB noise keeps neutral gradients neutral. Apply once,
+// after tone mapping/encoding and before quantizing into an 8-bit display target.
+float3 ApplyOutputDither(float3 encodedColor, uint2 outputPixel, uint noiseIndex)
+{
+    Texture2DArray<uint2> noise = ResourceDescriptorHeap[noiseIndex];
+    float dither = (LoadSTBN2D(noise, outputPixel, 0u, 0u).x - 0.5) / 255.0;
+    return saturate(encodedColor + dither);
+}
+
 #endif

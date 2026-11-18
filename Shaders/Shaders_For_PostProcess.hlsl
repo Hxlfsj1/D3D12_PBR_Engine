@@ -1,6 +1,7 @@
 cbuffer PostProcessConstants : register(b0)
 {
     uint sceneTexIdx;
+    uint blueNoiseIndex;
 };
 
 #ifndef POST_PROCESS_SHARPEN
@@ -16,6 +17,7 @@ struct VS_OUTPUT
 };
 
 #include "FullscreenTriangle.hlsli"
+#include "BlueNoise.hlsli"
 
 VS_OUTPUT VSMain(uint vertexID : SV_VertexID)
 {
@@ -60,6 +62,7 @@ float4 PSMain(VS_OUTPUT input) : SV_TARGET
     const float e = 0.14;
     color = saturate((color * (a * color + b)) / (color * (c * color + d) + e));
     color = pow(color, 1.0 / 2.2);
+    color = ApplyOutputDither(color, uint2(input.pos.xy), blueNoiseIndex);
 
     return float4(color, hdrColor.a);
 }

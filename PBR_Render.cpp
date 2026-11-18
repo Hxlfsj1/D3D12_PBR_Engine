@@ -111,6 +111,99 @@ int WINAPI WinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance, _
 
 // Explicit finite runs finish pending exports and leave a machine-readable
 // outcome. Ordinary interactive runs retain the normal shutdown path.
+RenderPassCapture::Json D3D12App::WorldGeometryReport() const
+{
+    const auto& config = m_settingsManager.vxgi;
+    const auto& scene = m_worldGeometry.GetScene();
+    const auto& cache = m_worldGeometry.GetCache().GetStats();
+    const auto& global = m_worldGeometry.GetGlobalSDF();
+    const auto& stats = global.GetStats();
+    const auto& layout = global.GetPass().GetLayout();
+    nlohmann::json clipmaps = nlohmann::json::array();
+    for (uint32_t i = 0; i < layout.constants.clipmapCount; ++i)
+    {
+        const auto& layer = layout.constants.clipmaps[i];
+        clipmaps.push_back({{"origin", {layer.origin.x, layer.origin.y, layer.origin.z}},
+            {"cell_size", layer.cellSize}, {"scroll_offset", layer.scrollOffset}});
+    }
+    nlohmann::json result{{"enabled", config.enabled}, {"scene_revision", scene.GetRevision()},
+        {"instances", scene.GetInstances().size()}, {"assets", cache.assets}, {"asset_builds", cache.builds},
+        {"triangles", cache.triangles}, {"distance_nodes", cache.nodes},
+        {"instance_bvh_nodes", scene.GetInstanceBVH().GetNodes().size()},
+        {"mesh_cell_size", config.sdfCellSize}, {"mesh_trace_distance", config.meshTraceDistance},
+        {"trace_distance", config.globalSDFTraceDistance},
+        {"global_sdf", {{"enabled", config.enabled && config.globalSDFEnabled && (m_settingsManager.ssgi.lumen || m_passRunOptions.sdfView)},
+            {"frames", stats.frames}, {"idle_frames", stats.idleFrames}, {"dispatches", stats.dispatches},
+            {"updated_nodes", stats.updatedNodes}, {"full_layer_updates", stats.fullLayerUpdates},
+            {"allocations", stats.allocations}, {"clipmaps", clipmaps}}}};
+    if (config.enabled && !scene.GetInstances().empty())
+    {
+        const auto& grid = m_worldGeometry.GetGPUScene().GetGrid(m_geometryFrameSlot);
+        result["mesh_envelope"] = {{"origin", {grid.origin.x, grid.origin.y, grid.origin.z}},
+            {"bounds_maximum", {grid.boundsMaximum.x, grid.boundsMaximum.y, grid.boundsMaximum.z}}};
+    }
+    nlohmann::json cardAssets=nlohmann::json::array();
+    const auto vec=[](const DirectX::XMFLOAT3& v){return nlohmann::json::array({v.x,v.y,v.z});};
+    for(const auto& asset:m_worldGeometry.GetCardAssets())
+    {
+        const auto& data=asset.data;
+        nlohmann::json cards=nlohmann::json::array();
+        for(const auto& card:data.cards)
+            cards.push_back({{"direction",card.direction},{"origin",vec(card.origin)},{"extent",vec(card.extent)},
+                {"axis_x",vec(card.axisX)},{"axis_y",vec(card.axisY)},{"axis_z",vec(card.axisZ)},
+                {"near_plane",card.nearPlane},{"surfels",card.surfelCount},
+                {"coverage",card.coverage},{"weighted_coverage",card.weightedCoverage}});
+        cardAssets.push_back({{"cell_size",data.cellSize},{"budget",data.settings.maxCards},
+            {"candidate_cards",data.candidates},{"surfels",data.surfelCount},{"covered_surfels",data.coveredSurfels},
+            {"surfel_weighted_coverage",data.totalWeight>0?data.coveredWeight/data.totalWeight:0},
+            {"build_ms",data.buildMilliseconds},{"lookup",data.lookup},{"cards",cards}});
+    }
+    result["mesh_cards"]={{"builds",m_worldGeometry.GetCardBuildCount()},{"assets",cardAssets}};
+    nlohmann::json tiles=nlohmann::json::array();
+    for(const auto& tile:m_surfaceCacheCapture.GetTiles())
+    {
+        const auto& card=tile.card;const auto& instance=scene.GetInstances()[tile.instanceIndex];
+        nlohmann::json matrix=nlohmann::json::array();
+        for(uint32_t row=0;row<4;++row)
+            matrix.push_back({instance.worldFromLocal.m[row][0],instance.worldFromLocal.m[row][1],
+                instance.worldFromLocal.m[row][2],instance.worldFromLocal.m[row][3]});
+        tiles.push_back({{"instance_index",tile.instanceIndex},{"instance_id",instance.instanceId},
+            {"card_index",tile.cardIndex},{"direction",card.direction},
+            {"rect",{tile.x,tile.y,tile.width,tile.height}},
+            {"material_rect",{tile.materialX,tile.materialY,tile.width,tile.height}},
+            {"material_instance_index",tile.materialInstanceIndex},
+            {"origin",vec(card.origin)},{"extent",vec(card.extent)},{"axis_x",vec(card.axisX)},
+            {"axis_y",vec(card.axisY)},{"axis_z",vec(card.axisZ)},{"world_from_local",matrix}});
+    }
+    const auto captureStats=m_surfaceCacheCapture.GetStats();
+    result["card_capture"]={{"width",m_surfaceCacheCapture.GetWidth()},{"height",m_surfaceCacheCapture.GetHeight()},
+        {"material_width",m_surfaceCacheCapture.GetMaterialWidth()},{"material_height",m_surfaceCacheCapture.GetMaterialHeight()},
+        {"material_tiles",m_surfaceCacheCapture.GetMaterialTileCount()},
+        {"keep_unused_frames",SurfaceCacheFeedback::KeepUnusedFrames},
+        {"evicted_cards",m_surfaceCacheCapture.GetFeedback().GetEvictions()},
+        {"reloaded_cards",m_surfaceCacheCapture.GetFeedback().GetReloads()},
+        {"feedback_completed_frame",m_surfaceCacheCapture.GetFeedback().GetCompletedFrame()},
+        {"budget_halvings",captureStats.budgetHalvings},{"budget_rejections",captureStats.budgetRejections},
+        {"world_texel_size",m_settingsManager.surfaceCache.worldTexelSize},
+        {"max_distance",m_settingsManager.surfaceCache.maxDistance},
+        {"texel_distance_scale",0.02f},{"distance_metric","camera_to_card_world_obb"},
+        {"min_card_resolution",m_settingsManager.surfaceCache.minCardResolution},
+        {"max_card_resolution",m_settingsManager.surfaceCache.maxCardResolution},
+        {"atlas_size",m_settingsManager.surfaceCache.atlasSize},
+        {"capture_batches",captureStats.captureBatches},{"draws",captureStats.draws},{"tiles",tiles}};
+    const auto& light=m_settingsManager.lighting;
+    result["card_lighting"]={{"relight_batches",m_surfaceCacheLighting.GetRelightBatches()},
+        {"migration_batches",m_surfaceCacheLighting.GetMigrationBatches()},
+        {"update_block_size",SurfaceCacheLightingPass::UpdateBlockSize},
+        {"update_blocks",m_surfaceCacheLighting.GetUpdateBlockCount()},
+        {"remaining_blocks",m_surfaceCacheLighting.GetRemainingBlocks()},
+        {"light_direction",vec(light.lightDir)},{"light_color",vec(light.lightColor)},
+        {"shadow_backend","mesh_sdf_triangle_confirmation"},{"shadow_distance",config.globalSDFTraceDistance},
+        {"ray_bias",config.surfaceRayMinDistance},{"source_contract","GIComputeSourceRadiance"},{"emissive_cap",2.0}};
+    result["emissive_triangles"]=m_surfaceCacheGI.GetEmitterCount();
+    return result;
+}
+
 int D3D12App::FinishPassRun()
 {
     if (!m_passRunOptions.frameLimit && !m_passRunOptions.captureFrame) return 0;
@@ -148,36 +241,21 @@ int D3D12App::FinishPassRun()
         {"d3d12_validation_available", hasValidation}, {"d3d12_warnings", warnings}, {"d3d12_errors", errors},
         {"d3d12_messages", messages}, {"log", ErrorLog::RecentEntries()}};
     report["gpu_frame_ms"] = m_finiteGPUFrameTimer.Samples();
+    report["gpu_pass_ms"] = m_finiteGPUFrameTimer.PassSamples();
+    report["gpu_pass_timing_scope"] = "LEARNDX_PROFILE_PASSES=1 per-pass, =2 grouped; includes resource barriers; timestamp boundaries can perturb GPU overlap";
+    report["frame_wall_ms"] = m_finiteGPUFrameTimer.WallSamples();
     report["gpu_timing_scope"] = "complete rendering command list including ImGui; excludes present, warmup first 32 and capture frame";
-    report["probe_distance_bytes"] = m_vxgiProbePass.GetDistanceCacheBytes();
-    const auto& probeStats = m_vxgiProbes.GetStats();
-    report["vxgi_probes"] = {{"count", probeStats.probeCount}, {"valid", probeStats.valid},
-        {"disabled", probeStats.disabled}, {"unclassified", probeStats.unclassified},
-        {"total_updates", probeStats.totalUpdates}, {"reasons", probeStats.reasons},
-        {"target_updates", m_settingsManager.vxgi.probeMaxHistoryUpdates}};
-    const auto& global = m_resourceManager.GetVXGI().globalSDF;
-    const auto& globalStats = global.GetStats();
-    report["global_sdf"] = {{"enabled", m_settingsManager.vxgi.enabled && m_settingsManager.vxgi.globalSDFEnabled},
-        {"submitted_frames", globalStats.frames}, {"idle_frames", globalStats.idleFrames},
-        {"dispatches", globalStats.dispatches}, {"updated_nodes", globalStats.updatedNodes},
-        {"full_layer_updates", globalStats.fullLayerUpdates}, {"allocations", globalStats.allocations}};
-    if (global.GetState().IsInitialized())
-    {
-        const auto& layout = global.GetState().GetLayout();
-        report["global_sdf"]["shape"] = {layout.width, layout.height, layout.depth};
-        report["global_sdf"]["clipmaps"] = nlohmann::json::array();
-        for (uint32_t layer = 0; layer < layout.constants.clipmapCount; ++layer)
-        {
-            const auto& clipmap = layout.constants.clipmaps[layer];
-            report["global_sdf"]["clipmaps"].push_back({
-                {"origin", {clipmap.origin.x, clipmap.origin.y, clipmap.origin.z}},
-                {"cell_size", clipmap.cellSize},
-                {"cells_per_axis", VXGIGlobalSDF::Resolution(layout.constants, layer) - 1},
-                {"bounds_maximum", {clipmap.boundsMaximum.x, clipmap.boundsMaximum.y, clipmap.boundsMaximum.z}},
-                {"scroll_offset", clipmap.scrollOffset},
-                {"distance_limit", clipmap.distanceLimit}});
-        }
-    }
+    report["gi_backend"] = m_settingsManager.ssgi.lumen?"Lumen":"SSGI";
+    report["ssgi_trace"] = {{"method", m_settingsManager.ssgi.lumen?"hiz_then_mesh_sdf_then_global_sdf":"hiz"},
+        {"global_hit_confirmation", m_settingsManager.ssgi.lumen?"mesh_sdf_triangle_confirmation":"none"},
+        {"max_iterations", m_settingsManager.ssgi.maxTraceIterations},
+        {"screen_distance", m_settingsManager.ssgi.screenTraceDistance},
+        {"mesh_distance", m_settingsManager.vxgi.globalSDFEnabled ?
+            m_settingsManager.vxgi.meshTraceDistance : m_settingsManager.vxgi.globalSDFTraceDistance},
+        {"world_distance", m_settingsManager.vxgi.globalSDFTraceDistance}};
+    report["world_geometry"] = WorldGeometryReport();
+    report["mesh_sdf"] = {{"enabled", m_settingsManager.vxgi.enabled}, {"trace_method", "distance_field_with_triangle_confirmation"}};
+    report["global_sdf"] = report["world_geometry"]["global_sdf"];
     std::ofstream output("PassViewRun.json", std::ios::binary | std::ios::trunc);
     output << report.dump(2) << '\n';
     return passed && output ? 0 : 1;
@@ -317,14 +395,7 @@ bool D3D12App::Initialize(int nShowCmd, float uiScaleOverride)
             return false;
         }
 
-        if (m_settingsManager.vxgi.enabled &&
-            (!m_vxgiDebugRenderer.Initialize(m_deviceContext, frameBufferCount) ||
-             !m_vxgiSDFDebugRenderer.Initialize(m_deviceContext, frameBufferCount) ||
-             !m_vxgiProbeDebugRenderer.Initialize(m_deviceContext)))
-        {
-            ErrorLog::Write("Application: VXGI diagnostic renderer initialization failed.");
-            return false;
-        }
+
 
         ShowLoadingProgress(1.0f, "Ready");
         if (!WaitForLoadingFrame()) return false;
@@ -369,6 +440,8 @@ void D3D12App::Run()
             Update();
             // Graphics commands submission (generates drawcall)
             Render();
+            if(m_passRunOptions.frameLimit && m_renderedFrames>32)
+                m_finiteGPUFrameTimer.RecordWall(double(deltaTime)*1000.0);
         }
     }
 }
@@ -570,7 +643,9 @@ bool D3D12App::InitD3D()
     if (m_settingsManager.pipeline.useDeferred && m_settingsManager.ssgi.enabled &&
         (!m_pipelineManager.InitializeSSGI(&m_deviceContext) ||
          !m_resourceManager.InitSSGIHistoryResources(&m_deviceContext, SceneWidth, SceneHeight,
-             static_cast<UINT>(m_settingsManager.ssgi.traceDownsampleFactor), m_settingsManager.ssgi.screenProbes)))
+             static_cast<UINT>(m_settingsManager.ssgi.traceDownsampleFactor), m_settingsManager.ssgi.screenProbes,
+             static_cast<UINT>(m_settingsManager.ssgi.denoiseDownsampleFactor),
+             m_settingsManager.ssgi.screenProbeAdaptiveEnabled, m_settingsManager.ssgi.screenProbeAdaptiveMaxFraction)))
     {
         ErrorLog::Write("Application: SSGI pipeline initialization failed.");
         return false;
@@ -620,12 +695,35 @@ bool D3D12App::InitD3D()
         return false;
     }
 
-    if (!m_resourceManager.InitVXGI(&m_deviceContext, m_settingsManager.vxgi,
-        m_settingsManager.lighting, frameBufferCount, stage(0.45f, 0.93f)))
+
+
+    if (m_settingsManager.vxgi.enabled)
     {
-        ErrorLog::Write("Application: initial VXGI resource bake failed: " +
-            m_resourceManager.GetVXGI().GetLastError());
-        return false;
+        ShowLoadingProgress(0.60f, "Building Mesh SDF geometry and instance BVH");
+        if (!m_worldGeometry.Initialize(m_deviceContext, frameBufferCount) ||
+            !m_worldGeometry.Update(m_resourceManager.GetSceneInstances(), m_settingsManager.vxgi, m_settingsManager.surfaceCache))
+        {
+            ErrorLog::Write(m_worldGeometry.GetLastError());
+            return false;
+        }
+        if (!m_surfaceCacheCapture.Initialize(m_deviceContext, frameBufferCount)) return false;
+        if (!m_surfaceCacheLighting.Initialize(m_deviceContext, frameBufferCount)) return false;
+        m_surfaceCacheGI.Initialize(frameBufferCount);
+    }
+    if(m_settingsManager.pipeline.useDeferred && m_settingsManager.ssgi.enabled && !m_settingsManager.vxgi.enabled)
+    {ErrorLog::Write("SSGI Surface Cache requires world_geometry.enabled.");return false;}
+    if (m_passRunOptions.sdfView)
+    {
+        if (!m_settingsManager.vxgi.enabled ||
+            (((m_passRunOptions.sdfView >= 13 && m_passRunOptions.sdfView <= 17) || m_passRunOptions.sdfView==28) &&
+                !m_settingsManager.vxgi.globalSDFEnabled))
+        {
+            ErrorLog::Write("SDF diagnostics require the selected world_geometry backend to be enabled.");
+            return false;
+        }
+        if (m_passRunOptions.sdfView < 20 && !m_sdfDebugRenderer.Initialize(m_deviceContext, frameBufferCount)) return false;
+        if (m_passRunOptions.sdfView >= 26 && m_passRunOptions.sdfView <= 28 &&
+            !m_surfaceCacheQueryDebug.Initialize(m_deviceContext, frameBufferCount)) return false;
     }
 
     ShowLoadingProgress(0.94f, "Creating shadows and render targets");
@@ -669,12 +767,12 @@ bool D3D12App::InitD3D()
         return false;
     }
 
-    if (m_settingsManager.pipeline.useDeferred &&
-        !m_resourceManager.InitializeBlueNoiseTexture(&m_deviceContext))
+    if (!m_resourceManager.InitializeBlueNoiseTexture(&m_deviceContext))
     {
         ErrorLog::Write("Application: blue-noise texture initialization failed.");
         return false;
     }
+    m_passPreview.SetBlueNoiseTexture(m_resourceManager.GetBlueNoiseTexture());
 
     m_resourceManager.SealPersistentSrvUavDescriptors();
 
@@ -799,6 +897,12 @@ void D3D12App::Update()
         (ImGui::GetCurrentContext() == nullptr ||
             (!ImGui::GetIO().WantCaptureKeyboard && !ImGui::GetIO().WantCaptureMouse && !ImGui::GetIO().AppFocusLost));
     m_inputManager.Update(deltaTime, camera, allowCameraNavigation);
+    if (m_passRunOptions.frameLimit)
+    {
+        camera.Position.x += m_passRunOptions.cameraStep[0];
+        camera.Position.y += m_passRunOptions.cameraStep[1];
+        camera.Position.z += m_passRunOptions.cameraStep[2];
+    }
     UpdateTemporalHistoryValidity();
 
     // ====================================================================================================
@@ -940,20 +1044,6 @@ void D3D12App::Update()
     passCb.iblPrefilterIdx = m_resourceManager.GetIblPrefilterIdx();
     passCb.iblBRDFIdx = m_resourceManager.GetIblBRDFIdx();
     memcpy(cbvAddress, &passCb, sizeof(PassConstants));
-    // Use the parameters actually uploaded for this frame, including PCSS sun
-    // radius. Screen sources still change when VXGI world building is disabled.
-    uint64_t sourceStamp = 14695981039346656037ull;
-    const auto appendSource = [&](const auto& value) {
-        const auto* bytes = reinterpret_cast<const unsigned char*>(&value);
-        for (size_t i = 0; i < sizeof(value); ++i) sourceStamp = (sourceStamp ^ bytes[i]) * 1099511628211ull;
-    };
-    appendSource(passCb.lightDir);
-    appendSource(passCb.lightColor);
-    appendSource(passCb.tanSunAngularRadius);
-    appendSource(passCb.materialMipBias);
-    appendSource(m_resourceManager.GetMaterialRevision());
-    m_ssgiScreenSourceStamp = sourceStamp;
-
     // ====================================================================================================
     // Frustum culling and directional light shadow volume culling
     // ====================================================================================================
@@ -1025,16 +1115,6 @@ void D3D12App::Update()
                 g_shadowVisibleInstancesByCascade[cascadeIdx].push_back(&instances[i]);
             }
         }
-    }
-
-    // Initial data is already baked. Scene edits invalidate only affected probes.
-    if (m_settingsManager.vxgi.enabled &&
-        !m_resourceManager.GetVXGI().Prepare(m_deviceContext, instances,
-            m_resourceManager.GetGlobalMaterials(), m_settingsManager.vxgi, m_settingsManager.lighting))
-    {
-        ErrorLog::Write("VXGI: " + m_resourceManager.GetVXGI().GetLastError());
-        Running = false;
-        return;
     }
 
     m_visibleInstanceCount = static_cast<int>(g_visibleInstances.size());
@@ -1197,12 +1277,12 @@ bool D3D12App::EndFrame()
 void D3D12App::Render()
 {
     m_passCapture.Poll();
-    if (m_passRunOptions.captureFrame == m_renderedFrames + 1)
+    if (m_passRunOptions.RequestsCapture(m_renderedFrames + 1))
         m_savePassViewRequested = true;
     bool ssgiHistoryWritten = false;
     bool ssgiPreviewHistoryWritten = false;
     bool ssgiSourceReset = false;
-    SSGIHybridState::Key ssgiSourceKey;
+    SSGISourceState::Key ssgiSourceKey;
     bool temporalHistoryWritten = false;
     bool hbaoHistoryWritten = false;
     bool dlssHistoryWritten = false;
@@ -1220,17 +1300,20 @@ void D3D12App::Render()
         return;
     }
     if(m_passRunOptions.frameLimit && !m_finiteGPUFrameTimer.Begin(m_deviceContext,frameIndex,frameBufferCount,
-        m_renderedFrames,m_passRunOptions.captureFrame!=m_renderedFrames+1))
+        m_renderedFrames,!m_passRunOptions.RequestsCapture(m_renderedFrames+1)))
     {
         ErrorLog::Write("Finite run GPU timestamps could not be initialized.");Running=false;return;
     }
     struct CaptureFrameGuard
     {
         RenderPassCapture& capture;
+        WorldGeometryRuntime& geometry;
+        SurfaceCacheCapturePass& atlas;
+        SurfaceCacheLightingPass& lighting;
         UINT slot;
         bool executed = false;
-        ~CaptureFrameGuard() { if (!executed) capture.CancelRecorded(slot); }
-    } captureFrame{m_passCapture, static_cast<UINT>(frameIndex)};
+        ~CaptureFrameGuard() { if (!executed) { capture.CancelRecorded(slot); geometry.CancelRecording(); atlas.CancelRecording(); lighting.CancelRecording(); } }
+    } captureFrame{m_passCapture, m_worldGeometry, m_surfaceCacheCapture, m_surfaceCacheLighting, static_cast<UINT>(frameIndex)};
 
     // Start the ImGui frame before any graph work so panel state can affect this frame.
     // It is finalized inside EndFrame(), which every exit path below passes through exactly once.
@@ -1267,27 +1350,23 @@ void D3D12App::Render()
         .zPrepass = useZPrepass,
         .hbao = m_settingsManager.hbao.enabled,
         .ssgi = m_settingsManager.ssgi.enabled,
-        .vxgi = m_settingsManager.vxgi.enabled,
         .antiAliasing = m_antiAliasingMode != AntiAliasingMode::None,
         .motionVectors = m_settingsManager.pipeline.useDeferred ||
             m_antiAliasingMode == AntiAliasingMode::TAA ||
             m_antiAliasingMode == AntiAliasingMode::TSR ||
             m_antiAliasingMode == AntiAliasingMode::DLSS,
         .transparent = true,
-        .globalSDF = m_settingsManager.vxgi.globalSDFEnabled
     };
     NormalizeRenderPassView(m_passView, passAvailability);
     NormalizeRenderDebugPass(m_debugPass, passAvailability);
     const bool quitRequested = EditorUI::Draw(m_resourceManager, m_editorSelection, m_editorGizmo,
-        gizmoCamera, cameraSnapshot, m_editorHistory, m_vxgiWorld, m_vxgiMeshSDFScene, m_vxgiSurface, m_vxgiProbes,
-        m_vxgiProbePass.GetGPUMilliseconds(), m_vxgiProbePass.GetGPUMemoryBytes(),
-        m_vxgiProbeFilterPass.GetGPUMilliseconds(), m_vxgiProbeFilterPass.GetGPUMemoryBytes(), m_settingsManager.vxgi,
-        m_debugPass, m_passView, passAvailability, true);
+        gizmoCamera, cameraSnapshot, m_editorHistory,
+        m_debugPass, m_passView, passAvailability, true, &m_settingsManager.ssgi.lumen);
     const bool pureGIView = m_passView.pass == RenderPassId::GI &&
         m_passView.result == RenderPassResult::PassOutput;
     const bool screenOnlyGIView = pureGIView && m_passView.giSource == RenderPassGISource::SSGIOnly;
-    const bool meshSDFGIView = pureGIView && m_passView.giSource == RenderPassGISource::SSGIAndMeshSDF;
-    if ((!screenOnlyGIView && !meshSDFGIView) || m_passView.giSource != m_lastRenderedPureGISource)
+
+    if ((!screenOnlyGIView) || m_passView.giSource != m_lastRenderedPureGISource)
         m_ssgiPreviewHistory.valid = false;
     const bool saveThisFrame = m_savePassViewRequested && !m_passCapture.IsBusy(frameIndex);
     RenderPassViewer passViewer(m_passView, m_passPreview,
@@ -1321,12 +1400,27 @@ void D3D12App::Render()
                 {"camera", nlohmann::json::parse(cameraSnapshot.ToJson())},
                 {"render_size", {SceneWidth, SceneHeight}}, {"output_size", {Width, Height}},
                 {"ssgi", {{"enabled", m_settingsManager.ssgi.enabled},
+                    {"trace_method", m_settingsManager.ssgi.lumen?"hiz_then_mesh_sdf_then_global_sdf":"hiz"},
+                    {"source", "surface_cache_lo0"},
+                    {"mode",m_settingsManager.ssgi.lumen?"Lumen":"SSGI"},
+                    {"global_hit_confirmation", m_settingsManager.ssgi.lumen?"mesh_sdf_triangle_confirmation":"none"},
+                    {"source_stamp", ssgiSourceKey.sourceStamp},
+                    {"source_history_reset", ssgiSourceReset},
+                    {"world_emissive_triangles", m_surfaceCacheGI.GetEmitterCount()},
+                    {"world_mesh_distance", m_settingsManager.vxgi.globalSDFEnabled ?
+                        m_settingsManager.vxgi.meshTraceDistance : m_settingsManager.vxgi.globalSDFTraceDistance},
+                    {"world_trace_distance", m_settingsManager.vxgi.globalSDFTraceDistance},
+                    {"global_sdf_enabled", m_settingsManager.vxgi.globalSDFEnabled && m_settingsManager.ssgi.lumen},
+                    {"max_trace_iterations", m_settingsManager.ssgi.maxTraceIterations},
+                    {"screen_trace_distance", m_settingsManager.ssgi.screenTraceDistance},
+                    {"camera_fade", {{"enabled", m_settingsManager.ssgi.cameraFadeEnabled},
+                        {"start", m_settingsManager.ssgi.cameraFadeStart}, {"end", m_settingsManager.ssgi.cameraFadeEnd},
+                        {"metric", "camera_to_receiver_distance"}, {"stage", "composite_after_denoising"}}},
                     {"intensity", m_settingsManager.ssgi.intensity},
                     {"trace_downsample_factor", m_settingsManager.ssgi.traceDownsampleFactor},
+                    {"denoise_downsample_factor", m_settingsManager.ssgi.DenoiseFactor()},
                     {"checkerboard", true},
                     {"sampling", nlohmann::json::object()}}},
-                {"vxgi", {{"enabled", m_settingsManager.vxgi.enabled}, {"voxel_size", m_settingsManager.vxgi.voxelSize},
-                    {"sdf_cell_size", m_settingsManager.vxgi.sdfCellSize}}},
                 {"hbao", {{"enabled", m_settingsManager.hbao.enabled}, {"radius", m_settingsManager.hbao.radius},
                     {"intensity", m_settingsManager.hbao.intensity}}},
                 {"history_valid", {{"gi", m_ssgiHistory.valid}, {"color", m_temporalHistoryValid}, {"dlss", m_dlssHistoryValid}}}
@@ -1336,31 +1430,47 @@ void D3D12App::Render()
                 const uint64_t factor = static_cast<uint64_t>(m_settingsManager.ssgi.traceDownsampleFactor);
                 const uint64_t columns = (SceneWidth + factor - 1u) / factor;
                 const uint64_t rows = (SceneHeight + factor - 1u) / factor;
+                const uint64_t denoiseFactor = m_settingsManager.ssgi.DenoiseFactor();
+                ScreenProbeLayout probeLayout;
+                ScreenProbeLayout::Calculate(SceneWidth, SceneHeight, static_cast<uint32_t>(factor),
+                    m_settingsManager.ssgi.screenProbeAdaptiveEnabled,
+                    m_settingsManager.ssgi.screenProbeAdaptiveMaxFraction, probeLayout);
+                const uint64_t atlasSlots = uint64_t(probeLayout.atlasWidth) * probeLayout.atlasHeight;
+                metadata["ssgi"]["denoise_size"] = {
+                    (SceneWidth + denoiseFactor - 1u) / denoiseFactor,
+                    (SceneHeight + denoiseFactor - 1u) / denoiseFactor};
                 metadata["ssgi"]["sampling_mode"] = "screen_probes";
                 metadata["ssgi"]["sampling"] = {{"screen_probes", {
                     {"grid", {columns, rows}}, {"primary_receivers_per_cell", 1},
                     {"cell_width_internal_pixels", factor}, {"direction_cells", {8, 8}},
-                    {"rays_per_fresh_probe", m_settingsManager.ssgi.raysPerScreenProbe},
+                    {"adaptive", {{"enabled", probeLayout.adaptiveCapacity > 0u},
+                        {"max_fraction", m_settingsManager.ssgi.screenProbeAdaptiveMaxFraction},
+                        {"candidate_attempts_per_tile", ScreenProbeLayout::AdaptiveSamplesPerTile},
+                        {"capacity", probeLayout.adaptiveCapacity},
+                        {"atlas", {probeLayout.atlasWidth, probeLayout.atlasHeight}},
+                        {"placement", "UE 5.8.4 Mark/Spawn; lower-index candidate coverage rejection; tile lists"},
+                        {"count_texture", "requested count; actual count is clamped to capacity"}}},
                     {"emissive_samples_per_probe", m_settingsManager.ssgi.emissiveSamplesPerProbe},
                     {"screen_rays_per_probe", m_settingsManager.ssgi.screenRaysPerProbe},
-                    {"screen_budget_policy", "reuse representative screen hit/miss within each direction cell; world fallback keeps total budget"},
+                    {"visibility", m_settingsManager.ssgi.lumen?"world_mesh_sdf_triangle_confirmation":"screen_hiz"},
+                    {"screen_budget_policy", m_settingsManager.ssgi.lumen?"independent direction samples; screen misses trace world geometry":"independent direction samples; screen misses return zero"},
                     {"history_updates", m_settingsManager.ssgi.screenProbeHistoryUpdates},
                     {"jitter_enabled", m_settingsManager.ssgi.screenProbeJitterWidthFraction > 0.0f},
                     {"jitter_width_fraction", m_settingsManager.ssgi.screenProbeJitterWidthFraction},
                     {"configured_jitter_width_fraction", m_settingsManager.ssgi.screenProbeJitterWidthFraction},
-                    {"direction_measure", "uniform-solid-angle-hemisphere plus separately weighted screen emission"},
-                    {"integration", "SH2 diffuse convolution (1,2/3,1/4), evaluated with each full-resolution pixel normal"},
+                    {"direction_measure", "uniform-solid-angle-hemisphere plus separately weighted emitter samples; ordinary rays remove emission when explicit sampling is enabled"},
+                    {"integration", "SH2 diffuse convolution (1,2/3,1/4), evaluated with each denoising receiver normal; geometry-guided final upsample"},
                     {"screen_trace_distance", m_settingsManager.ssgi.screenTraceDistance},
-                    {"mesh_max_trace_distance", m_settingsManager.ssgi.worldMeshMaxTraceDistance},
-                    {"max_trace_distance", m_settingsManager.ssgi.worldMaxTraceDistance},
-                    {"routing", "screen to screen_trace_distance, else Mesh SDF to mesh_max_trace_distance, then Global SDF to max_trace_distance"},
+                    {"routing", m_settingsManager.ssgi.lumen?"Hi-Z, Mesh near, Global candidate plus Mesh confirmation far; Surface Cache Lo0":"Hi-Z only; Surface Cache Lo0; screen misses return zero"},
                     {"geometry", "stable nearest-center anchor; surface-compatible 8-phase receiver jitter within configured total width"},
                     {"filter", "same-direction 5x5 binomial, probe step 2; plane/normal/hit-distance guided"},
-                    {"pixel_history_statistics_step", factor},
+                    {"pixel_history_statistics_step", (factor + denoiseFactor - 1u) / denoiseFactor},
                     {"filtered_feedback", false},
                     {"update_policy", "full configured budget on fresh; checkerboard hold only after geometry/parallax acceptance"},
-                    {"persistent_probe_bytes", columns * rows * 2u * (64u * 8u + 16u + 16u + 8u + 4u)},
-                    {"transient_filtered_direction_bytes", columns * rows * 64u * 8u}
+                    {"persistent_probe_bytes", atlasSlots * 2u * (64u * 8u + 16u + 16u + 8u + 4u + 8u) +
+                        (probeLayout.adaptiveCapacity ? 2u * (4u + columns * rows * 4u * (1u + ScreenProbeLayout::AdaptiveSamplesPerTile)) : 0u)},
+                    {"transient_filtered_direction_bytes", atlasSlots * 64u * 8u},
+                    {"memory_metric", "logical texture payload, not committed/resident peak VRAM"}
                 }}};
             }
             else metadata["ssgi"]["sampling_mode"] = "legacy";
@@ -1370,36 +1480,37 @@ void D3D12App::Render()
                 "pure indirect-light display after configured anti-aliasing and tone mapping" :
                 "native selected pass resource; DXGI format and preview mapping recorded"}};
             raw.insert(raw.end(), giCaptureOutputs.begin(), giCaptureOutputs.end());
-            std::vector<RenderPassCapture::RawBuffer> buffers;
-            // Finite CLI GI captures can inspect the actual baked cache,
-            // independently of runtime visibility, interpolation and denoising.
-            if (m_passRunOptions.captureFrame && m_passView.pass == RenderPassId::GI &&
-                m_settingsManager.vxgi.enabled && m_vxgiProbePass.GetDisplayHistory())
+            if (m_passRunOptions.captureCompact)
+                std::erase_if(raw, [](const auto& output) {
+                    return output.name != "gi-filtered" && output.name != "gi-full-reconstructed" &&
+                        output.name != "screen-probe-diagnostics" && output.name != "screen-probe-adaptive-count";
+                });
+            if (m_passRunOptions.captureROI[2])
             {
-                const auto& centers = m_vxgiWorld.GetOccupiedCenters();
-                const auto buffer = graph.RegisterExternalBuffer(m_vxgiProbePass.GetDisplayHistory(),
-                    VXGIGPUScene::ReadState, VXGIGPUScene::ReadState, "Capture.BakedProbeSH");
-                if (!centers.empty())
+                const auto* roi = m_passRunOptions.captureROI;
+                if (uint64_t(roi[0]) + roi[2] > SceneWidth || uint64_t(roi[1]) + roi[3] > SceneHeight)
                 {
-                    buffers.push_back({"vxgi-probes", buffer, sizeof(VXGIProbeState::GPURecord),
-                        centers.size() * sizeof(VXGIProbeState::GPURecord),
-                        "little-endian VXGIProbeState::GPURecord[96B], raw unconvolved incident-radiance SH"});
-                    if(auto* depth=m_vxgiProbePass.GetDistanceCache())
-                    {
-                        const auto handle=graph.RegisterExternalBuffer(depth,VXGIGPUScene::ReadState,VXGIGPUScene::ReadState,"Capture.ProbeDistance");
-                        buffers.push_back({"vxgi-probe-distance",handle,8,centers.size()*512,
-                            "64 octahedral bins per probe: uint2 packed half normalized radial/plane distance, oct16x2 normal; zero unknown, zero normal verified miss; range 2*spacing"});
-                    }
-                    metadata["probe_snapshot"] = {{"epoch", m_vxgiProbes.GetStats().epoch},
-                        {"centers", nlohmann::json::array()}};
-                    for (const auto& center : centers)
-                        metadata["probe_snapshot"]["centers"].push_back({center.x, center.y, center.z});
+                    ErrorLog::Write("Capture ROI exceeds the internal scene size.");
+                    return false;
                 }
+                for (auto& output : raw)
+                    if (output.name == "gi-filtered" || output.name == "gi-full-reconstructed" ||
+                        output.name == "gi-full-raw" || output.name == "depth" || output.name == "normal")
+                    {
+                        // Signal i represents full pixel factor*i, including odd
+                        // extents. A ratio of rounded texture sizes shifts the crop.
+                        const uint64_t factor = output.name == "depth" || output.name == "normal"
+                            ? 1u : m_settingsManager.ssgi.DenoiseFactor();
+                        const auto left = roi[0] / factor, top = roi[1] / factor;
+                        const auto right = (uint64_t(roi[0]) + roi[2] + factor - 1u) / factor;
+                        const auto bottom = (uint64_t(roi[1]) + roi[3] + factor - 1u) / factor;
+                        output.region = {UINT(left), UINT(top), 0u, UINT(right), UINT(bottom), 1u};
+                    }
             }
             const std::string prefix = std::string("Captures/") + info->id + "-" +
                 std::to_string(m_renderedFrames + 1) + "-" + std::to_string(GetTickCount64());
             if (!m_passCapture.AddToGraph(graph, m_deviceContext.GetDevice(), frameIndex,
-                passViewer.PreviewTexture(), raw, prefix, metadata, buffers).IsValid())
+                passViewer.PreviewTexture(), raw, prefix, metadata).IsValid())
                 ErrorLog::Write("Pass capture: " + m_passCapture.GetLastError());
             m_savePassViewRequested = false;
         }
@@ -1415,22 +1526,33 @@ void D3D12App::Render()
         (pureGIView && m_passView.giSource != m_lastRenderedPureGISource))
     {
         // Color histories contain the composed viewport, unlike the GI signal's
-        // own history, which already tracks screen/world source changes.
+        // own history, which already tracks screen source changes.
         m_temporalHistoryValid = false;
         m_dlssHistoryValid = false;
     }
-    if (m_settingsManager.vxgi.enabled &&
-        (!m_resourceManager.GetVXGI().Record(m_deviceContext, frameIndex,
-            m_resourceManager.GetMainDescriptorHeap(), m_resourceManager.GetMaterialBuffer(), m_settingsManager.vxgi) ||
-         !m_resourceManager.GetVXGI().RecordGlobalSDF(m_deviceContext, frameIndex, camera.Position, m_settingsManager.vxgi)))
-    {
-        ErrorLog::Write("VXGI: GPU cache update failed; frame was not submitted: " + m_resourceManager.GetVXGI().GetLastError());
-        Running = false;
-        EndFrame();
-        return;
-    }
 
-    if (m_antiAliasingMode == AntiAliasingMode::DLSS)
+
+    if (m_settingsManager.vxgi.enabled)
+    {
+        if (!m_worldGeometry.Update(m_resourceManager.GetSceneInstances(), m_settingsManager.vxgi, m_settingsManager.surfaceCache) ||
+            !m_worldGeometry.Record(m_deviceContext, frameIndex, camera.Position,
+                [&]{auto config=m_settingsManager.vxgi;if(!frameSSGI.lumen && !m_passRunOptions.sdfView)config.globalSDFEnabled=false;return config;}()) ||
+            !m_surfaceCacheCapture.Record(m_deviceContext,m_resourceManager,m_worldGeometry,frameIndex,
+                m_settingsManager.surfaceCache,camera.Position) ||
+            !m_surfaceCacheLighting.Record(m_deviceContext,m_resourceManager,m_worldGeometry,m_surfaceCacheCapture,
+                frameIndex,m_settingsManager.lighting,m_settingsManager.vxgi))
+        {
+            ErrorLog::Write(m_worldGeometry.GetLastError());
+            ErrorLog::Write(m_surfaceCacheCapture.GetLastError());
+            Running = false;
+            EndFrame();
+            return;
+        }
+        m_geometryFrameSlot = frameIndex;
+    }
+    const bool geometryDiagnostic = m_passRunOptions.sdfView != 0;
+
+    if (!geometryDiagnostic && m_antiAliasingMode == AntiAliasingMode::DLSS)
     {
         if (!m_dlssManager.IsFeatureConfigured())
         {
@@ -1466,7 +1588,109 @@ void D3D12App::Render()
     bool hbaoTemporalHandledByDeferredGraph = false;
     bool dlssEvaluatedByDeferredGraph = false;
 
-    if (!m_settingsManager.pipeline.useDeferred)
+    if (geometryDiagnostic)
+    {
+        if(m_passRunOptions.sdfView>=26 && m_passRunOptions.sdfView<=28)
+        {
+            if(!m_surfaceCacheQueryDebug.Record(m_deviceContext,m_resourceManager,m_worldGeometry,m_surfaceCacheCapture,
+                m_surfaceCacheLighting,frameIndex,m_currUnjitteredInvViewProjGpu,m_imguiRtvHandles[frameIndex],m_passRunOptions.sdfView,
+                m_passRunOptions.cardQueryChannel,m_settingsManager.vxgi))
+            {Running=false;EndFrame();return;}
+        }
+        else if(m_passRunOptions.sdfView>=20)
+        {
+            if(!m_surfaceCacheCapture.RecordPreview(m_deviceContext,m_resourceManager,frameIndex,
+                m_imguiRtvHandles[frameIndex],m_passRunOptions.sdfView,m_surfaceCacheLighting.GetSRVCPUHandle()))
+            {
+                Running=false;EndFrame();return;
+            }
+        }
+        else
+        {
+            const auto& global = m_worldGeometry.GetGlobalSDF().GetPass();
+            UINT globalIndex = UINT_MAX;
+            if (global.GetTexture())
+            {
+                D3D12_CPU_DESCRIPTOR_HANDLE descriptor{};
+                if (!m_resourceManager.AllocateTransientSrvUavDescriptor(&globalIndex, &descriptor))
+                {
+                    Running = false; EndFrame(); return;
+                }
+                m_deviceContext.GetDevice()->CopyDescriptorsSimple(1, descriptor, global.GetSRVCPUHandle(),
+                    D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+            }
+            auto config = m_settingsManager.vxgi;
+            config.sdfSliceAxis = m_passRunOptions.sdfSliceAxis;
+            config.sdfSlicePosition = m_passRunOptions.sdfSlicePosition;
+            const auto& light = m_settingsManager.lighting.lightDir;
+            const auto cards = m_passRunOptions.sdfView >= 18 ? m_worldGeometry.BuildDebugCards() :
+                std::vector<SurfaceCacheCards::DebugCard>{};
+            if (!m_sdfDebugRenderer.RecordGeometry(m_deviceContext, m_resourceManager.GetMainDescriptorHeap(), frameIndex,
+                m_currUnjitteredInvViewProjGpu, m_imguiRtvHandles[frameIndex], m_worldGeometry.GetGPUScene(), global,
+                globalIndex, config, m_passRunOptions.sdfView, {-light.x, -light.y, -light.z},
+                m_resourceManager.GetMaterialBufferGPUAddress(), static_cast<uint32_t>(m_resourceManager.GetGlobalMaterials().size()),cards))
+            {
+                ErrorLog::Write("World geometry diagnostic recording failed.");
+                Running = false; EndFrame(); return;
+            }
+        }
+        if (saveThisFrame)
+        {
+            RDGBuilder graph(&m_deviceContext, "WorldGeometryCapture");
+            const auto output = graph.RegisterExternalTexture(m_deviceContext.GetRenderTarget(frameIndex),
+                D3D12_RESOURCE_STATE_PRESENT, D3D12_RESOURCE_STATE_PRESENT, "GeometryDiagnostic");
+            const std::string prefix = "Captures/sdf-" + std::to_string(m_passRunOptions.sdfView) + "-" +
+                std::to_string(m_renderedFrames + 1) + "-" + std::to_string(GetTickCount64());
+            nlohmann::json metadata{{"frame", m_renderedFrames + 1}, {"pass", "world-geometry"},
+                {"sdf_view", m_passRunOptions.sdfView},
+                {"card_view", CardViewName(m_passRunOptions.sdfView)},
+                {"camera", nlohmann::json::parse(cameraSnapshot.ToJson())},
+                {"world_geometry", WorldGeometryReport()}};
+            if(m_passRunOptions.sdfView>=26 && m_passRunOptions.sdfView<=28)
+                metadata["card_query"]={{"mode",CardQueryModes[m_passRunOptions.sdfView-26]},
+                    {"channel",CardQueryChannels[m_passRunOptions.cardQueryChannel]},
+                    {"point_tolerance",0.001},{"global_tolerance","2 * (clipmap cell size + mesh cell size)"}};
+            std::vector<RenderPassCapture::RawOutput> raw;
+            if(m_passRunOptions.sdfView>=20)
+            {
+                const char* names[]={"albedo-metallic","normal-roughness","emissive-source","card-depth"};
+                const char* descriptions[]={"linear base color RGB; metallic A","signed world shading normal XYZ; roughness A",
+                    "uncapped linear emission RGB; GI source enabled A","orthographic depth: 0 at Card near plane, 1 at far plane; 1 is invalid"};
+                for(UINT i=0;i<SurfaceCacheCapturePass::ChannelCount;++i)
+                {
+                    const auto texture=graph.RegisterExternalTexture(m_surfaceCacheCapture.GetTexture(i),
+                        SurfaceCacheCapturePass::ReadState,SurfaceCacheCapturePass::ReadState,names[i]);
+                    raw.push_back({names[i],texture,0,descriptions[i]});
+                }
+                const auto lighting=graph.RegisterExternalTexture(m_surfaceCacheLighting.GetTexture(),
+                    SurfaceCacheCapturePass::ReadState,SurfaceCacheCapturePass::ReadState,"radiance-visibility");
+                raw.push_back({"radiance-visibility",lighting,0,"linear outgoing diffuse source Lo0 RGB; directional visibility A; validity uses Card depth"});
+            }
+            if(m_passRunOptions.sdfView>=26 && m_passRunOptions.sdfView<=28)
+            {
+                const char* descriptions[]={"queried linear base color RGB; metallic A","queried signed world normal XYZ; roughness A",
+                    "queried uncapped linear emission RGB; source enabled A","input world position XYZ; geometry hit flag W",
+                    "instance index, local Card index, tile UV; instance and Card -1 for lookup miss",
+                    "reconstructed atlas world position XYZ; lookup valid flag W",
+                    "queried linear outgoing diffuse source Lo0 RGB; directional visibility A"};
+                for(UINT i=0;i<SurfaceCacheQueryDebugRenderer::OutputCount;++i)
+                {
+                    const char* name=SurfaceCacheQueryDebugRenderer::OutputNames[i];
+                    const auto texture=graph.RegisterExternalTexture(m_surfaceCacheQueryDebug.GetOutput(i),
+                        SurfaceCacheCapturePass::ReadState,SurfaceCacheCapturePass::ReadState,name);
+                    raw.push_back({name,texture,0,descriptions[i]});
+                }
+            }
+            if (!m_passCapture.AddToGraph(graph, m_deviceContext.GetDevice(), frameIndex, output, raw, prefix, metadata).IsValid())
+            {
+                ErrorLog::Write(m_passCapture.GetLastError());
+                Running = false; EndFrame(); return;
+            }
+            graph.Execute(m_deviceContext.GetCommandList());
+            m_savePassViewRequested = false;
+        }
+    }
+    else if (!m_settingsManager.pipeline.useDeferred)
     {
         const bool useInternalResolution =
             m_antiAliasingMode == AntiAliasingMode::TSR ||
@@ -2274,8 +2498,7 @@ void D3D12App::Render()
             SceneWidth,
             SceneHeight,
             frameIndex,
-            deferredInput,
-            m_settingsManager.ssgi.enabled);
+            deferredInput);
         if (!deferredOutput.sceneColor.IsValid() || !deferredOutput.pass.IsValid())
         {
             OutputDebugStringA(
@@ -2295,62 +2518,33 @@ void D3D12App::Render()
 
         if (m_settingsManager.ssgi.enabled)
         {
-            SSGIPass::WorldInput worldInput;
-            if (m_settingsManager.vxgi.enabled)
-            {
-                worldInput.scene = &m_vxgiGPUScene;
-                worldInput.rawRecords = m_vxgiProbePass.GetDisplayHistory();
-                worldInput.distanceCache = m_vxgiProbePass.GetDistanceCache();
-                worldInput.materialBuffer = m_resourceManager.GetMaterialBuffer();
-                worldInput.probeCount = static_cast<uint32_t>(m_vxgiWorld.GetOccupiedCenters().size());
-                worldInput.voxelSize = m_vxgiWorld.GetVoxelSize();
-                worldInput.mode = RenderDebugWorldMode(m_debugPass);
-                if (m_settingsManager.vxgi.globalSDFEnabled)
-                {
-                    worldInput.globalSDF = &m_resourceManager.GetVXGI().globalSDF;
-                    worldInput.globalTraceDistance = m_settingsManager.vxgi.globalSDFTraceDistance;
-                    worldInput.globalMaxSteps = uint32_t(m_settingsManager.vxgi.globalSDFMaxSteps);
-                }
-            }
-            ssgiSourceKey.effectiveWorldMode = SSGIPass::EffectiveWorldMode(&worldInput, frameIndex);
-            if (ssgiSourceKey.effectiveWorldMode != m_lastRenderedGIWorldMode)
-            {
-                m_temporalHistoryValid = false;
-                m_dlssHistoryValid = false;
-            }
-            ssgiSourceKey.screenSourceStamp = m_ssgiScreenSourceStamp;
+            SSGIPass::Input ssgiInput={deferredOutput.sceneColor,gbufferOutput.depth,gbufferOutput.normal,
+                gbufferOutput.orm,gbufferOutput.albedo,gbufferOutput.emissive};
+            if(!m_surfaceCacheGI.Prepare(m_deviceContext,m_resourceManager,m_worldGeometry,m_surfaceCacheCapture,
+                m_surfaceCacheLighting,frameIndex,m_settingsManager.vxgi,frameSSGI,ssgiInput.world))
+            {Running=false;EndFrame();return;}
+            ssgiSourceKey.sourceStamp=ssgiInput.world.sourceStamp;
+            ssgiSourceKey.lumen=frameSSGI.lumen;
             ssgiSourceKey.traceDownsampleFactor = static_cast<uint32_t>(m_settingsManager.ssgi.traceDownsampleFactor);
+            ssgiSourceKey.denoiseDownsampleFactor = static_cast<uint32_t>(m_settingsManager.ssgi.denoiseDownsampleFactor);
             ssgiSourceKey.screenProbes = m_settingsManager.ssgi.screenProbes;
+            ssgiSourceKey.maxTraceIterations = static_cast<uint32_t>(m_settingsManager.ssgi.maxTraceIterations);
             ssgiSourceKey.emissiveSamplesPerProbe = static_cast<uint32_t>(m_settingsManager.ssgi.emissiveSamplesPerProbe);
-            ssgiSourceKey.raysPerScreenProbe = static_cast<uint32_t>(m_settingsManager.ssgi.raysPerScreenProbe);
             ssgiSourceKey.screenRaysPerProbe = static_cast<uint32_t>(m_settingsManager.ssgi.screenRaysPerProbe);
             ssgiSourceKey.screenProbeHistoryUpdates = static_cast<uint32_t>(m_settingsManager.ssgi.screenProbeHistoryUpdates);
             ssgiSourceKey.screenProbeJitterWidthFraction = frameSSGI.screenProbeJitterWidthFraction;
+            ssgiSourceKey.screenProbeAdaptiveEnabled = frameSSGI.screenProbes && frameSSGI.screenProbeAdaptiveEnabled &&
+                frameSSGI.screenProbeAdaptiveMaxFraction > 0.0f;
+            ssgiSourceKey.screenProbeAdaptiveMaxFraction = ssgiSourceKey.screenProbeAdaptiveEnabled
+                ? frameSSGI.screenProbeAdaptiveMaxFraction : 0.0f;
             ssgiSourceKey.screenTraceDistance = m_settingsManager.ssgi.screenTraceDistance;
-            ssgiSourceKey.worldMeshMaxTraceDistance = m_settingsManager.ssgi.worldMeshMaxTraceDistance;
-            ssgiSourceKey.worldMaxTraceDistance = m_settingsManager.ssgi.worldMaxTraceDistance;
-            ssgiSourceKey.worldMeshMinHitDistance = m_settingsManager.ssgi.worldMeshMinHitDistance;
-            ssgiSourceKey.globalEnabled = ssgiSourceKey.effectiveWorldMode != 0 && worldInput.globalSDF != nullptr;
-            ssgiSourceKey.globalTraceDistance = worldInput.globalTraceDistance;
-            ssgiSourceKey.globalMaxSteps = worldInput.globalMaxSteps;
-            ssgiSourceKey.globalCellSize = m_settingsManager.vxgi.globalSDFCellSize;
-            ssgiSourceKey.globalCells = uint32_t(m_settingsManager.vxgi.globalSDFCells);
-            ssgiSourceKey.globalClipmaps = uint32_t(m_settingsManager.vxgi.globalSDFClipmaps);
-            ssgiSourceKey.globalLayerCells = m_settingsManager.vxgi.globalSDFLayerCells;
-            ssgiSourceKey.worldGeometryRevision = ssgiSourceKey.effectiveWorldMode ? m_vxgiWorld.GetGeometryRevision() : 0;
-            ssgiSourceKey.sdfGeometryRevision = m_vxgiMeshSDFScene.GetRevision();
-            ssgiSourceKey.surfaceRevision = ssgiSourceKey.effectiveWorldMode ? m_vxgiSurface.GetRevision() : 0;
-            // Prepare exposes the reset epoch used by the current recorded RAW buffer.
-            // Batch cursor/frame changes intentionally do not invalidate screen history.
-            ssgiSourceKey.probeResetEpoch = m_vxgiProbes.GetPendingPlan().epoch;
             ssgiSourceReset = m_ssgiSources.NeedsReset(ssgiSourceKey);
             if (ssgiSourceReset) m_ssgiHistory.valid = false;
-            SSGIPass::Input ssgiInput = { deferredOutput.sceneColor, gbufferOutput.depth,
-                gbufferOutput.normal, gbufferOutput.orm, gbufferOutput.albedo, deferredOutput.bounceSource, gbufferOutput.emissive };
+            ssgiInput.diagnostics = saveThisFrame && m_passView.pass == RenderPassId::GI;
             auto ssgiOutput = SSGIPass::AddToGraph(deferredGraph, &m_resourceManager,
                 &m_pipelineManager, m_ssgiHistory, m_currViewGpu, m_currJitteredProjGpu,
                 m_currJitteredInvProjGpu, m_currJitteredInvViewProjGpu,
-                SceneWidth, SceneHeight, frameIndex, m_ssgiFrameIndex, frameSSGI, ssgiInput, &worldInput);
+                SceneWidth, SceneHeight, frameIndex, m_ssgiFrameIndex, frameSSGI, ssgiInput);
             if (!ssgiOutput.sceneColor.IsValid() || !ssgiOutput.pass.IsValid())
             {
                 ErrorLog::Write("SSGI: RDG construction failed; rendering stopped.");
@@ -2361,59 +2555,20 @@ void D3D12App::Render()
             sceneColorProducer = ssgiOutput.pass;
             auto previewGI = ssgiOutput.indirectLighting;
             auto previewReceiverGuide = ssgiOutput.receiverGuide;
-            if ((screenOnlyGIView || (meshSDFGIView && worldInput.globalSDF)) &&
-                ssgiSourceKey.effectiveWorldMode != 0)
-            {
-                if (!m_ssgiHistory.valid) m_ssgiPreviewHistory.valid = false;
-                if (!m_resourceManager.EnsureSSGIPreviewHistoryResources(&m_deviceContext, SceneWidth, SceneHeight,
-                    static_cast<UINT>(frameSSGI.traceDownsampleFactor), frameSSGI.screenProbes))
-                {
-                    ErrorLog::Write("SSGI: preview history allocation failed; rendering stopped.");
-                    Running = false;
-                    EndFrame();
-                    return;
-                }
-                auto previewWorld = worldInput;
-                previewWorld.globalSDF = nullptr;
-                previewGI = SSGIPass::AddLightingPreviewToGraph(deferredGraph, &m_resourceManager,
-                    &m_pipelineManager, m_ssgiPreviewHistory, m_currViewGpu, m_currJitteredProjGpu,
-                    m_currJitteredInvProjGpu, m_currJitteredInvViewProjGpu, SceneWidth, SceneHeight,
-                    frameIndex, m_ssgiFrameIndex, frameSSGI, ssgiInput,
-                    meshSDFGIView ? &previewWorld : nullptr);
-                if (!previewGI.IsValid())
-                {
-                    ErrorLog::Write("SSGI: GI tier preview construction failed; rendering stopped.");
-                    Running = false;
-                    EndFrame();
-                    return;
-                }
-                if (frameSSGI.screenProbes)
-                {
-                    const auto& previewTextures = m_resourceManager.GetSSGIHistoryTextures(
-                        m_resourceManager.GetSSGICurrentHistoryIdx(true), true);
-                    previewReceiverGuide = deferredGraph.RegisterExternalTexture(previewTextures.probeReceiver.Get(),
-                        D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_COMMON, "ScreenProbes.PreviewReceiverGuide");
-                }
-                ssgiPreviewHistoryWritten = true;
-            }
-            else m_ssgiPreviewHistory.valid = false;
+
+            m_ssgiPreviewHistory.valid = false;
             if (saveThisFrame && m_passView.pass == RenderPassId::GI)
             {
                 giCaptureOutputs = {
-                    {"gi-filtered", previewGI, UINT_MAX, "linear E/pi, selected GI tier, before receiver response/intensity/AA/tone mapping"},
-                    {"gi-full-raw", ssgiOutput.rawLighting, UINT_MAX, "full GI raw observations (screen plus world when unshared); checker-skipped values may contain reused history"},
-                    {"gi-full-reconstructed", ssgiOutput.reconstructedLighting, UINT_MAX, "full GI after reconstruction, before temporal and A-trous"},
-                    {"bounce-source", deferredOutput.bounceSource, UINT_MAX, "linear known source Lo0"},
+                    {"gi-filtered", previewGI, UINT_MAX, "linear E/pi, selected GI tier, before camera fade/receiver response/intensity/AA/tone mapping"},
+                    {"gi-full-raw", ssgiOutput.rawLighting, UINT_MAX, "Surface Cache GI raw observations; checker-skipped values may contain reused history"},
+                    {"gi-full-reconstructed", ssgiOutput.reconstructedLighting, UINT_MAX, "GI at denoising resolution after reconstruction, before temporal and A-trous; dimensions in denoise_size"},
                     {"depth", gbufferOutput.depth, UINT_MAX, "device depth"},
                     {"normal", gbufferOutput.normal, UINT_MAX, "GBuffer normal"}
                 };
-                if (ssgiOutput.worldDisplay.IsValid())
-                    giCaptureOutputs.push_back({"gi-full-world", ssgiOutput.worldDisplay, UINT_MAX,
-                        "full GI normalized raw Mesh+Global gather, before final temporal and A-trous"});
-                if (ssgiOutput.worldOwners.IsValid())
-                    giCaptureOutputs.push_back({"gi-full-world-owners", ssgiOutput.worldOwners, UINT_MAX,
-                        frameSSGI.screenProbes ? "8x8 directional cells per receiver; RGB=temporally accumulated incident Li, alpha=min geometric hit distance of the fresh batch; no spatial feedback" :
-                        "same-frame world-owner atlas: Mesh left half, Global right half; RGB=linear E/pi (accumulated when filtered_feedback=true), alpha=latest batch age; coarse slots repeat owners"});
+                if (ssgiOutput.probeDirections.IsValid())
+                    giCaptureOutputs.push_back({"screen-probe-directions", ssgiOutput.probeDirections, UINT_MAX,
+                        "8x8 directional cells per receiver; RGB=temporally accumulated cached Li, alpha=min screen/world hit distance; no spatial feedback"});
                 if (frameSSGI.screenProbes)
                 {
                     giCaptureOutputs.push_back({"screen-probe-positions", ssgiOutput.probePosition, UINT_MAX,
@@ -2424,14 +2579,30 @@ void D3D12App::Render()
                         "full-resolution pixel linear index + 1; zero invalid"});
                     giCaptureOutputs.push_back({"screen-probe-filtered-directions", ssgiOutput.probeFiltered, UINT_MAX,
                         "spatially filtered incident Li RGB, alpha=center hit distance; integrated only afterwards"});
+                    giCaptureOutputs.push_back({"screen-probe-sh", ssgiOutput.probes.sh, UINT_MAX,
+                        "3x3 SH2 coefficients per atlas probe, after directional filtering and diffuse convolution"});
+                    giCaptureOutputs.push_back({"screen-probe-validity", ssgiOutput.probes.validity, UINT_MAX,
+                        "RGB=slow GI history, alpha=accepted pixel history length; zero alpha is missing support"});
+                    if (ssgiOutput.probes.adaptiveCount.IsValid())
+                    {
+                        giCaptureOutputs.push_back({"screen-probe-adaptive-count", ssgiOutput.probes.adaptiveCount, UINT_MAX,
+                            "uint requested adaptive allocations; actual active count=min(requested, capacity)"});
+                        giCaptureOutputs.push_back({"screen-probe-adaptive-header", ssgiOutput.probes.tileHeader, UINT_MAX,
+                            "uint actual adaptive probe count per uniform tile, maximum eight"});
+                        giCaptureOutputs.push_back({"screen-probe-adaptive-indices", ssgiOutput.probes.tileIndices, UINT_MAX,
+                            "eight uint full atlas ProbeIDs per tile; read only header-count slots"});
+                    }
+                    if (ssgiOutput.probes.diagnostics.IsValid())
+                        giCaptureOutputs.push_back({"screen-probe-diagnostics", ssgiOutput.probes.diagnostics, UINT_MAX,
+                            "uint[32]: 0..13 placement/history/repair; 16 screen hits,17 near Mesh hits,18 Global candidates,19 cache misses,20 world emitter visibility queries,21 emitter samples accepted,22 emission replacements,23 screen cache reads,24 near Mesh cache reads,25 confirmed far cache reads; remaining reserved"});
                 }
             }
             if (pureGIView)
             {
                 giDisplay = SSGIPass::AddIrradiancePreviewToGraph(deferredGraph, &m_resourceManager,
-                    &m_pipelineManager, m_currViewGpu, m_currJitteredInvProjGpu, SceneWidth, SceneHeight,
-                    frameIndex, frameSSGI.screenProbes ? 1u : static_cast<UINT>(frameSSGI.traceDownsampleFactor), ssgiInput,
-                    previewGI, frameSSGI.intensity, frameSSGI.screenProbes ? RDGTextureHandle{} : previewReceiverGuide);
+                    &m_pipelineManager, m_currViewGpu, m_currJitteredInvProjGpu, m_currJitteredInvViewProjGpu, SceneWidth, SceneHeight,
+                    frameIndex, frameSSGI.DenoiseFactor(), ssgiInput,
+                    previewGI, frameSSGI, frameSSGI.screenProbes ? RDGTextureHandle{} : previewReceiverGuide, ssgiOutput.probes);
                 if (!giDisplay.texture.IsValid() || !giDisplay.pass.IsValid())
                 {
                     ErrorLog::Write("SSGI: irradiance display construction failed; rendering stopped.");
@@ -2764,57 +2935,10 @@ void D3D12App::Render()
         }
     }
 
-    if (!passViewer.Active() && !showGIOnly && m_settingsManager.vxgi.enabled && m_settingsManager.vxgi.debugView >= 1 &&
-        m_settingsManager.vxgi.debugView <= 3 &&
-        !m_vxgiDebugRenderer.Record(m_deviceContext, m_resourceManager.GetMainDescriptorHeap(),
-            frameIndex, m_currUnjitteredViewProjGpu, m_imguiRtvHandles[frameIndex],
-            m_vxgiWorld.GetOccupiedCenters(), m_vxgiWorld.GetVoxelSize(), m_vxgiWorld.GetRevision(),
-            m_settingsManager.vxgi.debugView >= 2,
-            m_settingsManager.vxgi.debugView == 1 || m_settingsManager.vxgi.debugView == 3))
-    {
-        ErrorLog::Write("VXGI: debug drawing failed; frame was not submitted.");
-        Running = false;
-        EndFrame();
-        return;
-    }
-
-    if (!passViewer.Active() && !showGIOnly && m_settingsManager.vxgi.enabled && ((m_settingsManager.vxgi.debugView >= 4 && m_settingsManager.vxgi.debugView <= 12) ||
-        (m_settingsManager.vxgi.debugView >= 18 && m_settingsManager.vxgi.debugView <= 20)))
-    {
-        XMFLOAT3 sunTowardLight;
-        XMStoreFloat3(&sunTowardLight, -XMVector3Normalize(XMLoadFloat3(&m_settingsManager.lighting.lightDir)));
-        if (!m_vxgiSDFDebugRenderer.Record(m_deviceContext, m_resourceManager.GetMainDescriptorHeap(),
-            frameIndex, m_currUnjitteredInvViewProjGpu, m_imguiRtvHandles[frameIndex], m_vxgiSDF, m_vxgiGPUScene,
-            m_settingsManager.vxgi.debugView, m_settingsManager.vxgi.sdfSliceAxis,
-            m_settingsManager.vxgi.sdfSlicePosition, sunTowardLight, &m_vxgiSurface,
-            m_resourceManager.GetMaterialBufferGPUAddress(), m_vxgiWorld.GetVoxelSize(),
-            static_cast<uint32_t>(m_vxgiWorld.GetOccupiedCenters().size()), m_vxgiProbePass.GetDisplayHistory()))
-        {
-            ErrorLog::Write("VXGI: SDF debug drawing failed; frame was not submitted.");
-            Running = false;
-            EndFrame();
-            return;
-        }
-    }
-
-    if (!passViewer.Active() && !showGIOnly && m_settingsManager.vxgi.enabled && m_settingsManager.vxgi.debugView >= 13 && m_settingsManager.vxgi.debugView <= 17 &&
-        !m_vxgiProbeDebugRenderer.Record(m_deviceContext, m_resourceManager.GetMainDescriptorHeap(), frameIndex,
-            m_currUnjitteredViewProjGpu, m_imguiRtvHandles[frameIndex], m_vxgiGPUScene,
-            m_settingsManager.vxgi.debugView == 16 ? m_vxgiProbeFilterPass.GetFilteredRecords() : m_vxgiProbePass.GetDisplayHistory(),
-            m_vxgiWorld.GetVoxelSize(),
-            static_cast<uint32_t>(m_vxgiWorld.GetOccupiedCenters().size()),
-            static_cast<uint32_t>(m_settingsManager.vxgi.debugView), m_vxgiProbePass.GetDisplayFrame(),
-            m_vxgiProbeFilterPass.GetVisibilityMasks()))
-    {
-        ErrorLog::Write("VXGI: probe diagnostic drawing failed; frame was not submitted.");
-        Running = false;
-        EndFrame();
-        return;
-    }
-
-    if (!passViewer.Active()) m_editorSelectionRenderer.Record(m_deviceContext, m_resourceManager, m_editorSelection,
+    if (!geometryDiagnostic && !passViewer.Active()) m_editorSelectionRenderer.Record(m_deviceContext, m_resourceManager, m_editorSelection,
         frameIndex, m_currUnjitteredViewProjGpu, m_imguiRtvHandles[frameIndex], io.DisplaySize.x, io.DisplaySize.y);
 
+    m_surfaceCacheCapture.RecordFeedbackReadback(m_deviceContext);
     if (!EndFrame())
     {
         // The command list could not be finalized; skip submission and presentation
@@ -2825,6 +2949,13 @@ void D3D12App::Render()
     // Submit recorded rendering commands to the GPU for execution
     m_deviceContext.GetCommandQueue()->ExecuteCommandLists(1, lists);
     captureFrame.executed = true;
+    if (!m_worldGeometry.OnSubmitted())
+    {
+        ErrorLog::Write(m_worldGeometry.GetLastError());
+        Running = false;
+    }
+    m_surfaceCacheCapture.OnSubmitted();
+    m_surfaceCacheLighting.OnSubmitted();
     // Insert a signal into the queue to track GPU progress
     HRESULT hr = m_deviceContext.GetCommandQueue()->Signal(
         m_deviceContext.GetFence(frameIndex),
@@ -2846,15 +2977,11 @@ void D3D12App::Render()
         m_lastRenderedDebugPass = m_debugPass;
         m_lastRenderedPureGI = pureGIView;
         m_lastRenderedPureGISource = m_passView.giSource;
-        m_lastRenderedGIWorldMode = ssgiHistoryWritten ? ssgiSourceKey.effectiveWorldMode : 0;
         if (ssgiHistoryWritten)
         {
             m_ssgiSources.Commit(ssgiSourceKey);
             ++m_ssgiFrameIndex;
         }
-        if (m_settingsManager.vxgi.enabled &&
-            !m_resourceManager.GetVXGI().OnSubmitted(frameIndex, m_deviceContext.GetFenceValue(frameIndex)))
-            ReportFrameError("VXGI: failed to commit the submitted probe batch.", E_FAIL);
         m_editorSelectionRenderer.OnSubmitted(frameIndex, m_deviceContext.GetFenceValue(frameIndex));
     }
 
@@ -2918,9 +3045,7 @@ void D3D12App::ShowLoadingProgress(float fraction, const std::string& status)
     m_loadingProgress = (std::max)(m_loadingProgress, (std::clamp)(fraction, 0.0f, 1.0f));
     const ULONGLONG tick = GetTickCount64();
     // Stage/file changes must be visible before their blocking work starts.
-    // Only the rapidly changing probe counters share a throttled stage key.
-    const std::string stageKey = status.rfind("Baking VXGI probe cache:", 0) == 0 ?
-        "Baking VXGI probe cache" : status;
+    const std::string& stageKey = status;
     if (stageKey == m_loadingStageKey && m_loadingLastDrawTick != 0 &&
         tick - m_loadingLastDrawTick < 50 && m_loadingProgress < 1.0f) return;
     const auto check = [](HRESULT hr, const char* operation) {

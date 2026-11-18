@@ -30,6 +30,7 @@ public:
         RDGTextureHandle texture;
         UINT subresource = UINT_MAX; // UINT_MAX exports every mip/array/plane.
         std::string interpretation;
+        D3D12_BOX region = {}; // Optional pixel crop, supported for subresource zero of a simple 2D texture.
     };
     struct RawBuffer
     {
@@ -80,7 +81,8 @@ public:
                 const std::string name = std::to_string(outputIndex++) + "-" + FileName(raw.name);
                 for (UINT subresource = first; subresource < end; ++subresource)
                     if (!AddImage(device, *job, source, subresource,
-                        name + (count > 1 ? "-sub" + std::to_string(subresource) : ""), raw.interpretation, false)) return {};
+                        name + (count > 1 ? "-sub" + std::to_string(subresource) : ""), raw.interpretation, false,
+                        raw.region.right ? &raw.region : nullptr)) return {};
             }
             for (const auto& raw : rawBuffers)
             {
@@ -115,7 +117,7 @@ public:
                         to.pResource = image.readback.Get();
                         to.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
                         to.PlacedFootprint = image.footprint;
-                        commands->CopyTextureRegion(&to, 0, 0, 0, &from, nullptr);
+                        commands->CopyTextureRegion(&to, 0, 0, 0, &from, image.region.right ? &image.region : nullptr);
                     }
                     for (const auto& buffer : job->buffers)
                         commands->CopyBufferRegion(buffer.readback.Get(), 0, buffer.source.Get(), 0, buffer.bytes);
@@ -188,6 +190,7 @@ private:
         UINT64 rowBytes = 0, bytes = 0;
         std::string name, interpretation;
         bool preview = false;
+        D3D12_BOX region = {};
     };
     struct Buffer
     {
@@ -227,7 +230,7 @@ private:
     }
 
     bool AddImage(ID3D12Device* device, Job& job, ID3D12Resource* source, UINT subresource,
-        const std::string& name, const std::string& interpretation, bool preview)
+        const std::string& name, const std::string& interpretation, bool preview, const D3D12_BOX* region = nullptr)
     {
         Image image;
         image.source = source;
@@ -238,7 +241,18 @@ private:
         image.preview = preview;
         if (image.description.Dimension != D3D12_RESOURCE_DIMENSION_TEXTURE2D || image.description.SampleDesc.Count != 1)
             return Fail("Capture supports single-sample 2D textures and arrays.");
-        device->GetCopyableFootprints(&image.description, subresource, 1, 0, &image.footprint,
+        auto copyDescription = image.description;
+        if (region)
+        {
+            if (subresource != 0u || copyDescription.MipLevels != 1u || copyDescription.DepthOrArraySize != 1u ||
+                region->front != 0u || region->back != 1u || region->left >= region->right || region->top >= region->bottom ||
+                region->right > copyDescription.Width || region->bottom > copyDescription.Height)
+                return Fail("Capture crop exceeds a simple 2D source texture.");
+            image.region = *region;
+            copyDescription.Width = region->right - region->left;
+            copyDescription.Height = region->bottom - region->top;
+        }
+        device->GetCopyableFootprints(&copyDescription, subresource, 1, 0, &image.footprint,
             &image.rows, &image.rowBytes, &image.bytes);
         if (!image.bytes || image.bytes == UINT64_MAX || image.rowBytes == 0 || image.rows == 0 ||
             image.rowBytes > image.footprint.Footprint.RowPitch ||
@@ -333,6 +347,12 @@ private:
                     {"subresource", image.subresource}, {"mip", mip}, {"array_slice", slice}, {"plane", plane},
                     {"row_bytes", image.rowBytes}, {"row_count", image.rows}, {"byte_count", pixels.size()},
                     {"interpretation", image.interpretation}});
+                if (image.region.right)
+                {
+                    metadata["outputs"].back()["source_region"] = {image.region.left, image.region.top,
+                        image.region.right, image.region.bottom};
+                    metadata["outputs"].back()["source_size"] = {image.description.Width, image.description.Height};
+                }
             }
             metadata["buffers"] = Json::array();
             for (const auto& buffer : job.buffers)

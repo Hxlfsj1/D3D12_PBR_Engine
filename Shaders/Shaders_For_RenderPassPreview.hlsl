@@ -1,10 +1,13 @@
 #include "FullscreenTriangle.hlsli"
+#include "BlueNoise.hlsli"
 
 cbuffer PreviewConstants : register(b0)
 {
     uint sourceIndex, beforeIndex, mapping, channel;
     uint slice, arraySize, sourceWidth, sourceHeight;
     float nearZ, farZ, exposure, motionScale;
+    uint blueNoiseIndex;
+    uint3 padding;
 };
 
 struct VertexOutput { float4 position : SV_Position; float2 uv : TEXCOORD; };
@@ -50,7 +53,7 @@ float4 PSMain(VertexOutput input) : SV_Target0
     float4 value = LoadValue(sourceIndex, uv, layer);
     if (mapping == 8) return value - LoadValue(beforeIndex, uv, layer);
     if (!all(isfinite(value))) return float4(1, 0, 1, 1);
-    if (mapping == 0) return float4(DisplayHDR(value.rgb), 1);
+    if (mapping == 0) return float4(ApplyOutputDither(DisplayHDR(value.rgb), uint2(input.position.xy), blueNoiseIndex), 1);
     if (mapping == 1) return float4(saturate(value.rgb), 1);
     if (mapping == 2) return float4(saturate(value.xyz), 1); // GBuffer stores encoded normals.
     if (mapping == 3) return float4(saturate(value[channel]).xxx, 1);
@@ -73,5 +76,5 @@ float4 PSMain(VertexOutput input) : SV_Target0
     float positive = dot(max(delta, 0), float3(0.2126, 0.7152, 0.0722));
     float negative = dot(max(-delta, 0), float3(0.2126, 0.7152, 0.0722));
     float3 heat = positive * float3(1, 0.45, 0.05) + negative * float3(0.05, 0.45, 1);
-    return float4(DisplayHDR(heat), 1);
+    return float4(ApplyOutputDither(DisplayHDR(heat), uint2(input.position.xy), blueNoiseIndex), 1);
 }

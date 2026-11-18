@@ -34,8 +34,16 @@ Reproduce with Pillow: `python ThirdParty/NVIDIA/STBN/decode.py path/to/STBN.zip
 
 `Resources/BlueNoiseTexture.h` uploads and owns the immutable texture once. Other
 passes can share it via ResourceManager and register a read-only RDG dependency.
-It is currently requested only when deferred SSGI is enabled. Ship the raw asset
-and license with the renderer, keeping the same project-relative path as its shaders.
+It is loaded for Forward and Deferred rendering, including final-output dithering.
+Ship the raw asset and license with the renderer, keeping the same project-relative
+path as its shaders.
+
+SDR output dithering shares this allocation. `ApplyOutputDither` uses the red
+channel of fixed slice 0 at output-pixel coordinates, with shared RGB noise below
+half an 8-bit code value after tone mapping and gamma encoding. HDR pass previews
+use the same rule; LDR preview copies and native HDR/difference exports are left
+unchanged. Fixed sampling avoids adding temporal shimmer. No new asset or JSON
+setting is required.
 
 `Shaders/BlueNoise.hlsli` indexes the consumer's pixel grid and advances the array
 slice using `frame % 64`. Multiple rays use fixed R2-distributed XY offsets; there

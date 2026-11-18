@@ -1,4 +1,4 @@
-﻿// Wrapping up the main functions and variables
+// Wrapping up the main functions and variables
 
 // 1. Abstract the foundational boilerplate of the Win32 windowing system.
 // 2. Encapsulate the intricacies of Direct3D 12 hardware initialization and synchronization.
@@ -22,27 +22,19 @@
 #include "RenderStructs.h"
 #include "EditorSelectionRenderer.h"
 #include "EditorGizmo.h"
-#include "VXGIWorld.h"
-#include "VXGIDebugRenderer.h"
-#include "VXGISDF.h"
-#include "VXGIMeshSDF.h"
-#include "VXGIMeshSDFScene.h"
-#include "VXGISurface.h"
-#include "VXGISDFDebugRenderer.h"
-#include "VXGIGPUScene.h"
-#include "VXGIProbeState.h"
-#include "VXGIProbeCache.h"
-#include "VXGIProbePass.h"
-#include "VXGIProbeFilterPass.h"
-#include "VXGIProbeTopology.h"
-#include "VXGIProbeDebugRenderer.h"
-#include "SSGIHybridState.h"
+#include "SSGISourceState.h"
 #include "RenderDebugPass.h"
 #include "RenderPassPreview.h"
 #include "RenderPassCapture.h"
 #include "FiniteGPUFrameTimer.h"
 #include "RenderPassRunOptions.h"
 #include "SceneEditState.h"
+#include "WorldGeometryRuntime.h"
+#include "VXGISDFDebugRenderer.h"
+#include "SurfaceCacheCapturePass.h"
+#include "SurfaceCacheLightingPass.h"
+#include "SurfaceCacheGIData.h"
+#include "SurfaceCacheQueryDebugRenderer.h"
 
 // Forward declaration keeps Dear ImGui headers out of this header
 struct ImGui_ImplDX12_InitInfo;
@@ -75,6 +67,7 @@ private:
 
     // Internal routines invoked per frame during runtime
     void Update();
+    RenderPassCapture::Json WorldGeometryReport() const;
     void InvalidateTemporalHistories();
     void UpdateTemporalHistoryValidity();
     void CommitTemporalHistories(bool temporalWritten, bool hbaoWritten, bool dlssWritten, bool ssgiWritten);
@@ -134,9 +127,8 @@ private:
     PipelineManager m_pipelineManager;
     SSGIHistoryState m_ssgiHistory;
     SSGIHistoryState m_ssgiPreviewHistory;
-    SSGIHybridState m_ssgiSources;
+    SSGISourceState m_ssgiSources;
     SceneEditState m_sceneEdits;
-    uint64_t m_ssgiScreenSourceStamp = 0;
     SettingsManager m_settingsManager;
     RenderDebugPass m_debugPass = RenderDebugPass::Default;
     RenderPassView m_passView;
@@ -149,23 +141,17 @@ private:
     RenderDebugPass m_lastRenderedDebugPass = RenderDebugPass::Default;
     bool m_lastRenderedPureGI = false;
     RenderPassGISource m_lastRenderedPureGISource = RenderPassGISource::Default;
-    uint32_t m_lastRenderedGIWorldMode = 0;
     EditorSelection m_editorSelection;
     EditorHistory m_editorHistory;
     EditorGizmo m_editorGizmo;
     EditorSelectionRenderer m_editorSelectionRenderer;
-    // The initial bake and persistent cache belong to ResourceManager.
-    VXGIWorld& m_vxgiWorld = m_resourceManager.GetVXGI().world;
-    VXGIDebugRenderer m_vxgiDebugRenderer;
-    VXGISDF& m_vxgiSDF = m_resourceManager.GetVXGI().legacySDF;
-    VXGIMeshSDFScene& m_vxgiMeshSDFScene = m_resourceManager.GetVXGI().meshSDFScene;
-    VXGISurface& m_vxgiSurface = m_resourceManager.GetVXGI().surface;
-    VXGISDFDebugRenderer m_vxgiSDFDebugRenderer;
-    VXGIGPUScene& m_vxgiGPUScene = m_resourceManager.GetVXGI().gpuScene;
-    VXGIProbeState& m_vxgiProbes = m_resourceManager.GetVXGI().probes;
-    VXGIProbePass& m_vxgiProbePass = m_resourceManager.GetVXGI().probePass;
-    VXGIProbeFilterPass& m_vxgiProbeFilterPass = m_resourceManager.GetVXGI().filterPass;
-    VXGIProbeDebugRenderer m_vxgiProbeDebugRenderer;
+    WorldGeometryRuntime m_worldGeometry;
+    VXGISDFDebugRenderer m_sdfDebugRenderer;
+    SurfaceCacheCapturePass m_surfaceCacheCapture;
+    SurfaceCacheLightingPass m_surfaceCacheLighting;
+    SurfaceCacheGIData m_surfaceCacheGI;
+    SurfaceCacheQueryDebugRenderer m_surfaceCacheQueryDebug;
+    int m_geometryFrameSlot = 0;
     float m_uiScaleOverride = 0.0f;
 
     D3D12_VIEWPORT viewport;

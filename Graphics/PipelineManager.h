@@ -44,7 +44,7 @@ public:
     struct PostProcessBinding
     {
         enum Slot : UINT { Constants, Count };
-        static constexpr UINT ConstantCount = 1;
+        static constexpr UINT ConstantCount = 2;
     };
 
     struct SMAABinding
@@ -136,13 +136,19 @@ public:
     {
         return ssgiRootSignature.Get();
     }
-    ID3D12PipelineState* GetScreenEmissiveClearPSO() { return screenEmissiveClearPSO.Get(); }
-    ID3D12PipelineState* GetScreenEmissiveBuildPSO() { return screenEmissiveBuildPSO.Get(); }
+    ID3D12PipelineState* GetScreenEmissiveClearPSO(){return screenEmissiveClearPSO.Get();}
+    ID3D12PipelineState* GetScreenEmissiveBuildPSO(){return screenEmissiveBuildPSO.Get();}
     ID3D12PipelineState* GetScreenProbePlacePSO() { return screenProbePlacePSO.Get(); }
     ID3D12PipelineState* GetScreenProbeTracePSO() { return screenProbeTracePSO.Get(); }
     ID3D12PipelineState* GetScreenProbeFilterPSO() { return screenProbeFilterPSO.Get(); }
     ID3D12PipelineState* GetScreenProbeIntegratePSO() { return screenProbeIntegratePSO.Get(); }
     ID3D12PipelineState* GetScreenProbeResolvePSO() { return screenProbeResolvePSO.Get(); }
+    ID3D12PipelineState* GetScreenProbeClearPSO() { return screenProbeClearPSO.Get(); }
+    ID3D12PipelineState* GetScreenProbePrepareHistoryPSO() { return screenProbePrepareHistoryPSO.Get(); }
+    ID3D12PipelineState* GetScreenProbeAdaptiveMarkPSO() { return screenProbeAdaptiveMarkPSO.Get(); }
+    ID3D12PipelineState* GetScreenProbeAdaptiveSpawnPSO() { return screenProbeAdaptiveSpawnPSO.Get(); }
+    ID3D12PipelineState* GetScreenProbeAdaptiveArgsPSO() { return screenProbeAdaptiveArgsPSO.Get(); }
+    ID3D12CommandSignature* GetScreenProbeDispatchSignature() { return screenProbeDispatchSignature.Get(); }
     ID3D12PipelineState* GetSSGIPyramidPSO()
     {
         return ssgiPyramidPSO.Get();
@@ -151,16 +157,6 @@ public:
     {
         return ssgiTracePSO.Get();
     }
-    ID3D12PipelineState* GetSSGISharedWorldPSO()
-    {
-        return ssgiSharedWorldPSO.Get();
-    }
-    ID3D12PipelineState* GetSSGISharedTracePSO()
-    {
-        return ssgiSharedTracePSO.Get();
-    }
-    ID3D12PipelineState* GetSSGISharedClearPSO() { return ssgiSharedClearPSO.Get(); }
-    ID3D12PipelineState* GetSSGISharedRepairPSO() { return ssgiSharedRepairPSO.Get(); }
     ID3D12PipelineState* GetSSGIReconstructPSO()
     {
         return ssgiReconstructPSO.Get();
@@ -321,9 +317,9 @@ public:
         return deferredRootSignature.Get();
     }
 
-    ID3D12PipelineState* GetDeferredPSO(bool outputBounceSource = false)
+    ID3D12PipelineState* GetDeferredPSO()
     {
-        return outputBounceSource ? deferredBouncePSO.Get() : deferredPSO.Get();
+        return deferredPSO.Get();
     }
 
     ID3D12RootSignature* GetHBAORootSignature()
@@ -438,8 +434,8 @@ private:
         rootParameters[MeshBinding::DrawConstants].Constants.RegisterSpace = 0;
         rootParameters[MeshBinding::DrawConstants].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
 
-        // Material, comparison-shadow, and point-shadow samplers.
-        D3D12_STATIC_SAMPLER_DESC samplers[3];
+        // Material, comparison-shadow, point-shadow and BRDF LUT samplers.
+        D3D12_STATIC_SAMPLER_DESC samplers[4];
         samplers[0] = CD3DX12_STATIC_SAMPLER_DESC(0, D3D12_FILTER_ANISOTROPIC);
         samplers[0].MaxAnisotropy = 16;
 
@@ -459,9 +455,15 @@ private:
             D3D12_TEXTURE_ADDRESS_MODE_CLAMP,
             D3D12_TEXTURE_ADDRESS_MODE_CLAMP);
 
+        samplers[3] = CD3DX12_STATIC_SAMPLER_DESC(
+            3, D3D12_FILTER_MIN_MAG_MIP_LINEAR,
+            D3D12_TEXTURE_ADDRESS_MODE_CLAMP,
+            D3D12_TEXTURE_ADDRESS_MODE_CLAMP,
+            D3D12_TEXTURE_ADDRESS_MODE_CLAMP);
+
         // Enable instancing and bindless resources
         CD3DX12_ROOT_SIGNATURE_DESC rsDesc;
-        rsDesc.Init(MeshBinding::Count, rootParameters, 3, samplers,
+        rsDesc.Init(MeshBinding::Count, rootParameters, 4, samplers,
             D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT |
             D3D12_ROOT_SIGNATURE_FLAG_CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED);
 
@@ -955,7 +957,7 @@ private:
         rootParameters[DeferredBinding::SphericalHarmonics].Descriptor.RegisterSpace = 0;
         rootParameters[DeferredBinding::SphericalHarmonics].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
 
-        D3D12_STATIC_SAMPLER_DESC samplers[3];
+        D3D12_STATIC_SAMPLER_DESC samplers[4];
         samplers[0] = CD3DX12_STATIC_SAMPLER_DESC(0, D3D12_FILTER_MIN_MAG_MIP_LINEAR);
         samplers[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
 
@@ -977,8 +979,15 @@ private:
             D3D12_TEXTURE_ADDRESS_MODE_CLAMP);
         samplers[2].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
 
+        samplers[3] = CD3DX12_STATIC_SAMPLER_DESC(
+            3, D3D12_FILTER_MIN_MAG_MIP_LINEAR,
+            D3D12_TEXTURE_ADDRESS_MODE_CLAMP,
+            D3D12_TEXTURE_ADDRESS_MODE_CLAMP,
+            D3D12_TEXTURE_ADDRESS_MODE_CLAMP);
+        samplers[3].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+
         CD3DX12_ROOT_SIGNATURE_DESC rsDesc;
-        rsDesc.Init(DeferredBinding::Count, rootParameters, 3, samplers,
+        rsDesc.Init(DeferredBinding::Count, rootParameters, 4, samplers,
             D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT |
             D3D12_ROOT_SIGNATURE_FLAG_CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED);
 
@@ -1023,35 +1032,22 @@ private:
             return false;
         }
 
-        auto bouncePS = ShaderCompiler::CompileFromFile(
-            L"Shaders/Shaders_For_Deferred.hlsl", L"PSMain", L"ps_6_6", { L"OUTPUT_BOUNCE_SOURCE=1" });
-        psoDesc.PS = CD3DX12_SHADER_BYTECODE(bouncePS->GetBufferPointer(), bouncePS->GetBufferSize());
-        psoDesc.NumRenderTargets = 2;
-        psoDesc.RTVFormats[1] = Formats::SceneColor;
-        if (FAILED(dc->GetDevice()->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(&deferredBouncePSO))))
-        {
-            ErrorLog::Write("PipelineManager: deferred bounce-source PSO creation failed.");
-            return false;
-        }
-
         return true;
     }
 
     bool BuildSSGIPipeline(RenderDevice* dc)
     {
         auto* device = dc->GetDevice();
-        // Six world resources and a raw view of the trace constants for the
-        // mode flag. Other SSGI stages use b0 and the bindless texture heap.
-        CD3DX12_ROOT_PARAMETER parameters[8];
+        // Non-trace stages use only b0 and bindless textures. Ray stages also
+        // bind the existing world geometry, Card metadata and emitter triangles.
+        CD3DX12_ROOT_PARAMETER parameters[14];
         parameters[0].InitAsConstantBufferView(0);
-        parameters[1].InitAsShaderResourceView(0);
-        parameters[2].InitAsShaderResourceView(6);
-        parameters[3].InitAsShaderResourceView(7);
-        parameters[4].InitAsShaderResourceView(0, 1);
-        parameters[5].InitAsShaderResourceView(1, 1);
-        parameters[6].InitAsShaderResourceView(3, 1);
-        parameters[7].InitAsShaderResourceView(4, 1);
-        CD3DX12_ROOT_SIGNATURE_DESC desc(8, parameters, 0, nullptr,
+        parameters[1].InitAsConstantBufferView(1);
+        for(UINT i=0;i<5;++i)parameters[i+2].InitAsShaderResourceView(i);
+        for(UINT i=0;i<4;++i)parameters[i+7].InitAsShaderResourceView(i,1);
+        for(UINT i=0;i<3;++i)parameters[i+11].InitAsShaderResourceView(i,2);
+        const auto sampler=CD3DX12_STATIC_SAMPLER_DESC(0,D3D12_FILTER_MIN_MAG_MIP_LINEAR);
+        CD3DX12_ROOT_SIGNATURE_DESC desc(14, parameters, 1, &sampler,
                                          D3D12_ROOT_SIGNATURE_FLAG_CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED);
         Microsoft::WRL::ComPtr<ID3DBlob> blob;
         HRESULT hr = D3D12SerializeRootSignature(&desc, D3D_ROOT_SIGNATURE_VERSION_1, &blob, nullptr);
@@ -1065,18 +1061,22 @@ private:
             ErrorLog::HRESULT("SSGI: root signature creation failed.", hr);
             return false;
         }
+        D3D12_INDIRECT_ARGUMENT_DESC dispatch = {};
+        dispatch.Type = D3D12_INDIRECT_ARGUMENT_TYPE_DISPATCH;
+        D3D12_COMMAND_SIGNATURE_DESC indirect = {};
+        indirect.ByteStride = sizeof(D3D12_DISPATCH_ARGUMENTS);
+        indirect.NumArgumentDescs = 1;
+        indirect.pArgumentDescs = &dispatch;
+        hr = device->CreateCommandSignature(&indirect, nullptr, IID_PPV_ARGS(&screenProbeDispatchSignature));
+        if (FAILED(hr))
+        {
+            ErrorLog::HRESULT("SSGI: dispatch command signature creation failed.", hr);
+            return false;
+        }
         return BuildSSGIComputePipeline(device, L"Shaders/Shaders_For_SSGI.hlsl", L"CSMain_Pyramid", ssgiPyramidPSO,
                                         {L"SSGI_PASS_PYRAMID=1"}) &&
                BuildSSGIComputePipeline(device, L"Shaders/Shaders_For_SSGI.hlsl", L"CSMain_Trace", ssgiTracePSO,
-                                        {L"SSGI_PASS_TRACE=1",L"VXGI_SSGI_THRESHOLD=1",L"SSGI_MODE_FROM_SRV=1",L"VXGI_SSGI_GLOBAL=1"}) &&
-               BuildSSGIComputePipeline(device, L"Shaders/Shaders_For_SSGI.hlsl", L"CSMain_SharedWorld", ssgiSharedWorldPSO,
-                                        {L"SSGI_PASS_TRACE=1",L"SSGI_SHARED_WORLD_PASS=1",L"VXGI_SSGI_THRESHOLD=1",L"SSGI_MODE_FROM_SRV=1",L"VXGI_SSGI_GLOBAL=1"}) &&
-               BuildSSGIComputePipeline(device, L"Shaders/Shaders_For_SSGI.hlsl", L"CSMain_Trace", ssgiSharedTracePSO,
-                                        {L"SSGI_PASS_TRACE=1",L"SSGI_SHARED_TRACE=1",L"VXGI_SSGI_THRESHOLD=1",L"SSGI_MODE_FROM_SRV=1",L"VXGI_SSGI_GLOBAL=1"}) &&
-               BuildSSGIComputePipeline(device, L"Shaders/Shaders_For_SSGI.hlsl", L"CSMain_ClearRepairs", ssgiSharedClearPSO,
-                                        {L"SSGI_PASS_TRACE=1",L"SSGI_SHARED_CLEAR_PASS=1",L"VXGI_SSGI_THRESHOLD=1",L"SSGI_MODE_FROM_SRV=1",L"VXGI_SSGI_GLOBAL=1"}) &&
-               BuildSSGIComputePipeline(device, L"Shaders/Shaders_For_SSGI.hlsl", L"CSMain_RepairWorld", ssgiSharedRepairPSO,
-                                        {L"SSGI_PASS_TRACE=1",L"SSGI_SHARED_REPAIR_PASS=1",L"VXGI_SSGI_THRESHOLD=1",L"SSGI_MODE_FROM_SRV=1",L"VXGI_SSGI_GLOBAL=1"}) &&
+                                        {L"SSGI_PASS_TRACE=1"}) &&
                BuildSSGIComputePipeline(device, L"Shaders/Shaders_For_SSGI_Spatial.hlsl", L"CSMain_Reconstruct",
                                         ssgiReconstructPSO, {L"SSGI_PASS_RECONSTRUCT=1"}) &&
                BuildSSGIComputePipeline(device, L"Shaders/Shaders_For_SSGI_Temporal.hlsl", L"CSMain_Temporal",
@@ -1087,13 +1087,18 @@ private:
                                         ssgiAtrousFirstPSO, {L"SSGI_PASS_ATROUS=1", L"SSGI_ATROUS_FIRST=1"}) &&
                BuildSSGIComputePipeline(device, L"Shaders/Shaders_For_SSGI_Spatial.hlsl", L"CSMain_Atrous",
                                         ssgiAtrousPSO, {L"SSGI_PASS_ATROUS=1"}) &&
-               BuildSSGIComputePipeline(device, L"Shaders/ScreenProbeGather.hlsl", L"CSMain_EmissiveClear", screenEmissiveClearPSO) &&
-               BuildSSGIComputePipeline(device, L"Shaders/ScreenProbeGather.hlsl", L"CSMain_EmissiveBuild", screenEmissiveBuildPSO) &&
                BuildSSGIComputePipeline(device, L"Shaders/ScreenProbeGather.hlsl", L"CSMain_ProbePlace", screenProbePlacePSO) &&
+               BuildSSGIComputePipeline(device, L"Shaders/ScreenProbeGather.hlsl", L"CSMain_ProbeClear", screenProbeClearPSO) &&
+               BuildSSGIComputePipeline(device, L"Shaders/ScreenProbeGather.hlsl", L"CSMain_ProbePrepareHistory", screenProbePrepareHistoryPSO) &&
+               BuildSSGIComputePipeline(device, L"Shaders/ScreenProbeGather.hlsl", L"CSMain_AdaptiveMark", screenProbeAdaptiveMarkPSO) &&
+               BuildSSGIComputePipeline(device, L"Shaders/ScreenProbeGather.hlsl", L"CSMain_AdaptiveSpawn", screenProbeAdaptiveSpawnPSO) &&
+               BuildSSGIComputePipeline(device, L"Shaders/ScreenProbeGather.hlsl", L"CSMain_AdaptiveArgs", screenProbeAdaptiveArgsPSO) &&
                BuildSSGIComputePipeline(device, L"Shaders/ScreenProbeGather.hlsl", L"CSMain_ProbeTrace", screenProbeTracePSO) &&
                BuildSSGIComputePipeline(device, L"Shaders/ScreenProbeGather.hlsl", L"CSMain_ProbeFilter", screenProbeFilterPSO) &&
                BuildSSGIComputePipeline(device, L"Shaders/ScreenProbeGather.hlsl", L"CSMain_ProbeIntegrate", screenProbeIntegratePSO) &&
                BuildSSGIComputePipeline(device, L"Shaders/ScreenProbeGather.hlsl", L"CSMain_ProbeResolve", screenProbeResolvePSO) &&
+               BuildSSGIComputePipeline(device,L"Shaders/ScreenProbeGather.hlsl",L"CSMain_EmissiveClear",screenEmissiveClearPSO) &&
+               BuildSSGIComputePipeline(device,L"Shaders/ScreenProbeGather.hlsl",L"CSMain_EmissiveBuild",screenEmissiveBuildPSO) &&
                BuildSSGICompositePipeline(device);
     }
 
@@ -1749,16 +1754,15 @@ private:
 
     ComPtr<ID3D12RootSignature> deferredRootSignature;
     ComPtr<ID3D12PipelineState> deferredPSO;
-    ComPtr<ID3D12PipelineState> deferredBouncePSO;
 
     ComPtr<ID3D12RootSignature> ssgiRootSignature;
     ComPtr<ID3D12PipelineState> ssgiPyramidPSO;
     ComPtr<ID3D12PipelineState> ssgiTracePSO;
-    ComPtr<ID3D12PipelineState> screenEmissiveClearPSO,screenEmissiveBuildPSO;
     ComPtr<ID3D12PipelineState> screenProbePlacePSO,screenProbeTracePSO,screenProbeFilterPSO,screenProbeIntegratePSO,screenProbeResolvePSO;
-    ComPtr<ID3D12PipelineState> ssgiSharedWorldPSO;
-    ComPtr<ID3D12PipelineState> ssgiSharedTracePSO;
-    ComPtr<ID3D12PipelineState> ssgiSharedClearPSO, ssgiSharedRepairPSO;
+    ComPtr<ID3D12PipelineState> screenEmissiveClearPSO,screenEmissiveBuildPSO;
+    ComPtr<ID3D12PipelineState> screenProbeClearPSO,screenProbePrepareHistoryPSO;
+    ComPtr<ID3D12PipelineState> screenProbeAdaptiveMarkPSO,screenProbeAdaptiveSpawnPSO,screenProbeAdaptiveArgsPSO;
+    ComPtr<ID3D12CommandSignature> screenProbeDispatchSignature;
     ComPtr<ID3D12PipelineState> ssgiReconstructPSO;
     ComPtr<ID3D12PipelineState> ssgiTemporalPSO;
     ComPtr<ID3D12PipelineState> ssgiHistoryClampPSO;

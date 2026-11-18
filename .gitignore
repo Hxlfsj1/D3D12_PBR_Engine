@@ -1,3 +1,9 @@
+# Maintained Git directories (not ignored): Core/, Graphics/, Logic/, Resources/,
+# Passes/, RDG/, Editor/, Shaders/, Settings/, ThirdParty/ and root project/docs.
+# Keep Surface Cache, screen-probe and SDF source files in these directories.
+# Local GI atlases, validation fixtures and review reports belong in tmp/ or
+# Captures/ below; they are not runtime dependencies for a fresh clone.
+
 # Visual Studio user data and caches
 /.vs/
 *.suo
@@ -45,6 +51,8 @@
 /HDRs/
 /Scene_Assets/
 
+# Local validation only: Surface Cache sharing/final-review reports, GPU captures,
+# raw atlases, generated fixtures, build logs and temporary validation projects.
 # Temporary files
 /tmp/
 /Captures/

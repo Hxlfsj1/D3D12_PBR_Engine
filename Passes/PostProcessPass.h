@@ -6,6 +6,7 @@
 #include "ResourceManager.h"
 #include "PipelineManager.h"
 #include "RDG.h"
+#include "OutputDither.h"
 
 class PostProcessPass
 {
@@ -25,6 +26,7 @@ public:
         const D3D12_RECT& scissorRect,
         D3D12_CPU_DESCRIPTOR_HANDLE outputRtv,
         UINT inputSrvIdx,
+        UINT blueNoiseSrvIdx,
         bool enableSharpen)
     {
         cmdList->OMSetRenderTargets(1, &outputRtv, FALSE, nullptr);
@@ -43,7 +45,7 @@ public:
 
         UINT postProcessConstants[PipelineManager::PostProcessBinding::ConstantCount] =
         {
-            inputSrvIdx
+            inputSrvIdx, blueNoiseSrvIdx
         };
         cmdList->SetGraphicsRoot32BitConstants(PipelineManager::PostProcessBinding::Constants, PipelineManager::PostProcessBinding::ConstantCount, postProcessConstants, 0);
 
@@ -100,6 +102,9 @@ public:
         }
 
         RDGPassParameters parameters = {};
+        const auto noise = ImportOutputDither(graph, resourceManager->GetBlueNoiseTexture());
+        if (!noise.IsValid()) return {};
+        parameters.ReadSRV(noise);
         parameters.ReadSRV(inputSrv);
         parameters.WriteRTV(outputRtv);
 
@@ -118,6 +123,7 @@ public:
                     scissorRect,
                     outputRtv.cpuHandle,
                     inputSrv.descriptorIndex,
+                    noise.descriptorIndex,
                     enableSharpen);
             });
 
@@ -161,6 +167,9 @@ public:
         }
 
         RDGPassParameters postParams;
+        const auto noise = ImportOutputDither(graph, resourceManager->GetBlueNoiseTexture());
+        if (!noise.IsValid()) return {};
+        postParams.ReadSRV(noise);
         postParams.ReadSRV(inputSrv);
         postParams.WriteRTV(backBufferRtv);
 
@@ -179,6 +188,7 @@ public:
                     scissorRect,
                     backBufferRtv.cpuHandle,
                     inputSrv.descriptorIndex,
+                    noise.descriptorIndex,
                     enableSharpen);
             });
     }

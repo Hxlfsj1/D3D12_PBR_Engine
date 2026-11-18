@@ -19,6 +19,13 @@
     <ClInclude Include="Resources\VXGIGlobalSDF.h"><Filter>Resources</Filter></ClInclude>
     <ClInclude Include="Resources\VXGIGlobalSDFState.h"><Filter>Resources</Filter></ClInclude>
     <ClInclude Include="Resources\VXGIGlobalSDFRuntime.h"><Filter>Resources</Filter></ClInclude>
+    <ClInclude Include="Resources\WorldGeometryRuntime.h"><Filter>Resources</Filter></ClInclude>
+    <ClInclude Include="Resources\SurfaceCacheCards.h"><Filter>Resources</Filter></ClInclude>
+    <ClInclude Include="Passes\SurfaceCacheCapturePass.h"><Filter>Passes</Filter></ClInclude>
+    <ClInclude Include="Passes\SurfaceCacheLightingPass.h"><Filter>Passes</Filter></ClInclude>
+    <ClInclude Include="Resources\SurfaceCacheGIData.h"><Filter>Resources</Filter></ClInclude>
+    <ClInclude Include="Resources\SurfaceCacheFeedback.h"><Filter>Resources</Filter></ClInclude>
+    <ClInclude Include="Editor\SurfaceCacheQueryDebugRenderer.h"><Filter>Editor</Filter></ClInclude>
     <ClInclude Include="Passes\VXGIGlobalSDFPass.h"><Filter>Passes</Filter></ClInclude>
     <ClInclude Include="Resources\VXGIMeshSDFGPUData.h"><Filter>Resources</Filter></ClInclude>
     <ClInclude Include="Resources\VXGITraceAcceleration.h"><Filter>Resources</Filter></ClInclude>
@@ -29,33 +36,24 @@
     <None Include="Shaders\VXGISDFCommon.hlsli"><Filter>Shaders</Filter></None>
     <None Include="Shaders\GISourceCommon.hlsli"><Filter>Shaders</Filter></None>
     <None Include="Shaders\VXGISurfaceCommon.hlsli"><Filter>Shaders</Filter></None>
-    <None Include="Shaders\VXGISurfaceValidate.hlsl"><Filter>Shaders</Filter></None>
     <None Include="Shaders\Shaders_For_VXGI_SDF_Debug.hlsl"><Filter>Shaders</Filter></None>
-    <None Include="Shaders\VXGISDFValidate.hlsl"><Filter>Shaders</Filter></None>
+    <None Include="Shaders\SurfaceCacheCapture.hlsl"><Filter>Shaders</Filter></None>
+    <None Include="Shaders\SurfaceCacheAtlasPreview.hlsl"><Filter>Shaders</Filter></None>
+    <None Include="Shaders\SurfaceCacheQuery.hlsli"><Filter>Shaders</Filter></None>
+    <None Include="Shaders\SurfaceCacheQueryDebug.hlsl"><Filter>Shaders</Filter></None>
+    <None Include="Shaders\SurfaceCacheLighting.hlsl"><Filter>Shaders</Filter></None>
+    <None Include="Shaders\ScreenProbeScreenEmissive.hlsli"><Filter>Shaders</Filter></None>
+    <None Include="Shaders\ScreenProbeWorldEmissive.hlsli"><Filter>Shaders</Filter></None>
+    <None Include="Shaders\SSGISurfaceCache.hlsli"><Filter>Shaders</Filter></None>
     <None Include="Shaders\VXGISDFThresholdCommon.hlsli"><Filter>Shaders</Filter></None>
     <None Include="Shaders\VXGIMeshSDFData.hlsli"><Filter>Shaders</Filter></None>
     <None Include="Shaders\VXGIMeshSDFThresholdCommon.hlsli"><Filter>Shaders</Filter></None>
     <None Include="Shaders\VXGIGlobalSDFCommon.hlsli"><Filter>Shaders</Filter></None>
     <None Include="Shaders\Shaders_For_VXGI_GlobalSDF.hlsl"><Filter>Shaders</Filter></None>
-    <None Include="Shaders\VXGIProbeData.hlsli"><Filter>Shaders</Filter></None>
-    <None Include="Shaders\VXGIProbeDependency.hlsli" />
-    <None Include="Shaders\VXGIProbeRadianceCommon.hlsli"><Filter>Shaders</Filter></None>
-    <None Include="Shaders\VXGIMeshSDFThresholdValidate.hlsl"><Filter>Shaders</Filter></None>
-    <None Include="Shaders\VXGISDFThresholdValidate.hlsl"><Filter>Shaders</Filter></None>
-    <None Include="Shaders\VXGIProbeCommon.hlsli"><Filter>Shaders</Filter></None>
-    <None Include="Shaders\VXGIProbeQueryCommon.hlsli"><Filter>Shaders</Filter></None>
-    <None Include="Shaders\SSGIHybridCommon.hlsli"><Filter>Shaders</Filter></None>
-    <None Include="Shaders\SSGICameraQuality.hlsli"><Filter>Shaders</Filter></None>
-    <None Include="Shaders\SSGIWorldOwnerCache.hlsli"><Filter>Shaders</Filter></None>
-    <None Include="Shaders\VXGIHybridValidate.hlsl"><Filter>Shaders</Filter></None>
-    <None Include="Shaders\Shaders_For_VXGI_Probe_Filter.hlsl"><Filter>Shaders</Filter></None>
-    <None Include="Shaders\VXGIProbeQueryValidate.hlsl"><Filter>Shaders</Filter></None>
-    <None Include="Shaders\Shaders_For_VXGI_Probe_Update.hlsl"><Filter>Shaders</Filter></None>
-    <None Include="Shaders\Shaders_For_VXGI_Probe_Debug.hlsl"><Filter>Shaders</Filter></None>
-    <None Include="Shaders\VXGIProbeValidate.hlsl"><Filter>Shaders</Filter></None>
-    <None Include="Shaders\VXGIStage74SupportValidate.hlsl"><Filter>Shaders</Filter></None>
-    <None Include="Shaders\VXGIStage74RasterValidate.hlsl"><Filter>Shaders</Filter></None>
-    <None Include="Shaders\VXGIDenseBVHValidate.hlsl"><Filter>Shaders</Filter></None>
+    <None Include="Shaders\SSGIScreenTraceCommon.hlsli"><Filter>Shaders</Filter></None>
+    <None Include="Shaders\ScreenProbeAdaptive.hlsl"><Filter>Shaders</Filter></None>
+    <None Include="Shaders\ScreenProbeCommon.hlsli"><Filter>Shaders</Filter></None>
+    <None Include="Shaders\SSGIHiZTrace.hlsli"><Filter>Shaders</Filter></None>
   </ItemGroup>
   <ItemGroup>
     <Filter Include="Shaders">
@@ -398,22 +396,16 @@
       <Filter>Editor</Filter>
     </ClInclude>
     <ClInclude Include="Resources\VXGIGPUScene.h"><Filter>Resources</Filter></ClInclude>
-    <ClInclude Include="Resources\VXGIProbeState.h"><Filter>Resources</Filter></ClInclude>
-    <ClInclude Include="Resources\VXGIProbeCache.h"><Filter>Resources</Filter></ClInclude>
-    <ClInclude Include="Resources\VXGIResources.h"><Filter>Resources</Filter></ClInclude>
-    <ClInclude Include="Resources\VXGIProbeInvalidation.h"><Filter>Resources</Filter></ClInclude>
-    <ClInclude Include="Passes\VXGIProbePass.h"><Filter>Passes</Filter></ClInclude>
-    <ClInclude Include="Passes\VXGIProbeFilterPass.h"><Filter>Passes</Filter></ClInclude>
-    <ClInclude Include="Resources\VXGIProbeTopology.h"><Filter>Resources</Filter></ClInclude>
-    <ClInclude Include="Resources\SSGIHybridState.h"><Filter>Resources</Filter></ClInclude>
+    <ClInclude Include="Resources\SSGISourceState.h"><Filter>Resources</Filter></ClInclude>
+    <ClInclude Include="Resources\ScreenProbeLayout.h"><Filter>Resources</Filter></ClInclude>
     <ClInclude Include="Resources\RenderDebugPass.h"><Filter>Resources</Filter></ClInclude>
     <ClInclude Include="Resources\RenderPassView.h"><Filter>Resources</Filter></ClInclude>
     <ClInclude Include="Passes\RenderPassPreview.h"><Filter>Passes</Filter></ClInclude>
+    <ClInclude Include="Passes\OutputDither.h"><Filter>Passes</Filter></ClInclude>
     <ClInclude Include="Passes\RenderPassViewer.h"><Filter>Passes</Filter></ClInclude>
     <ClInclude Include="Core\RenderPassCapture.h"><Filter>Core</Filter></ClInclude>
     <ClInclude Include="Core\RenderPassRunOptions.h"><Filter>Core</Filter></ClInclude>
     <None Include="Shaders\Shaders_For_RenderPassPreview.hlsl"><Filter>Shaders</Filter></None>
     <ClInclude Include="Resources\SceneEditState.h"><Filter>Resources</Filter></ClInclude>
-    <ClInclude Include="Editor\VXGIProbeDebugRenderer.h"><Filter>Editor</Filter></ClInclude>
   </ItemGroup>
 </Project>

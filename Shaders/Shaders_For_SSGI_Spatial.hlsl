@@ -16,50 +16,9 @@ cbuffer SSGIReconstructConstants : register(b0)
     uint rawTextureIdx;
     uint outputTextureIdx;
     uint traceDownsampleFactor;
-    uint worldDisplayTextureIdx;
-    uint worldOwnerCacheEnabled;
-    uint worldSpatialStep;
-    uint3 reserved;
+    uint2 padding;
 };
 
-
-// Filter displayed world estimates only; never feed this spatial result into
-// owner history or count neighboring cached values as independent samples.
-float3 FilterDisplayedWorld(uint2 center, float3 p, float3 n, float tolerance)
-{
-    Texture2D<float4> world = ResourceDescriptorHeap[worldDisplayTextureIdx];
-    Texture2D<float> depth = ResourceDescriptorHeap[depthTextureIdx];
-    Texture2D<float4> normals = ResourceDescriptorHeap[normalTextureIdx];
-    Texture2D<float4> orm = ResourceDescriptorHeap[ormTextureIdx];
-    float3 sum = world.Load(int3(center, 0)).rgb * 36.0;
-    float weights = 36.0;
-    uint factor = SSGITraceFactor(traceDownsampleFactor);
-    [loop] for (int y = -2; y <= 2; ++y)
-    [loop] for (int x = -2; x <= 2; ++x)
-    {
-        if (x == 0 && y == 0) continue;
-        int2 tap = int2(center) + int2(x, y) * int(worldSpatialStep);
-        if (any(tap < 0) || any(tap >= int2(outputSize))) continue;
-        float4 value = world.Load(int3(tap, 0));
-        // Checkerboard history reuse leaves no current world-display value.
-        // Such holes must not be blended as black observations.
-        if (value.a <= 0 || !all(isfinite(value))) continue;
-        int2 pixel = tap * int(factor);
-        float z = depth.Load(int3(pixel, 0));
-        if (z >= 1 || orm.Load(int3(pixel, 0)).a < 0.5) continue;
-        float3 m = SSGIDecodeViewNormal(normals.Load(int3(pixel, 0)).xyz, viewMat);
-        float agreement = saturate(dot(n, m));
-        if (agreement < 0.8) continue;
-        float3 q = ReconstructPosition((pixel + 0.5) / sceneSize, z, invProjMat);
-        float error = SymmetricPlaneDistance(q - p, n, m) / tolerance;
-        if (error >= 3) continue;
-        float kernel = (x == 0 ? 6 : (abs(x) == 1 ? 4 : 1)) * (y == 0 ? 6 : (abs(y) == 1 ? 4 : 1));
-        float w = SSGIApplyBilateralGeometryWeight(kernel, agreement, error);
-        sum += value.rgb * w;
-        weights += w;
-    }
-    return sum / weights;
-}
 
 [numthreads(8, 8, 1)]
 void CSMain_Reconstruct(uint3 id : SV_DispatchThreadID)
@@ -95,19 +54,6 @@ void CSMain_Reconstruct(uint3 id : SV_DispatchThreadID)
     float3 n = SSGIDecodeViewNormal(normals.Load(int3(pixel, 0)).xyz, viewMat);
     float footprint = SameDepthPixelFootprint(uv, z, p, sceneSize, invProjMat);
     float planeTolerance = max(0.5 * footprint, 1e-4);
-
-    // Screen and displayed world estimates are reconstructed independently.
-    // World spatial filtering affects display/final pixel history only; owner
-    // cache feedback stays separate. A zero step preserves the original path.
-    bool separateWorld = worldOwnerCacheEnabled != 0u && worldDisplayTextureIdx != 0xffffffffu;
-    float3 centerWorld = 0;
-    if (separateWorld)
-    {
-        Texture2D<float4> worldDisplay = ResourceDescriptorHeap[worldDisplayTextureIdx];
-        centerWorld = worldDisplay.Load(int3(id.xy, 0)).rgb;
-        if (worldSpatialStep > 0u)
-            centerWorld = FilterDisplayedWorld(id.xy, p, n, planeTolerance);
-    }
 
     // Binomial 5x5 kernel [1,4,6,4,1] in each axis. Gather more current-frame
     // samples without extending temporal persistence. Geometry weights preserve surface edges.
@@ -166,7 +112,6 @@ void CSMain_Reconstruct(uint3 id : SV_DispatchThreadID)
     // RGB remains E/pi; alpha is the filtered hit fraction.
     // Zero-radiance misses are valid samples, not holes. Never divide by hit fraction.
     float4 reconstructed = sum / weightSum;
-    reconstructed.rgb += centerWorld;
     output[id.xy] = reconstructed;
 }
 

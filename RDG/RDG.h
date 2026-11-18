@@ -13,6 +13,7 @@
 #include <wrl/client.h>
 #include "RenderDevice.h"
 #include "RDGResourceLease.h"
+#include "FiniteGPUFrameTimer.h"
 
 enum class ERDGPassFlags : uint32_t
 {
@@ -39,6 +40,7 @@ enum class ERDGAccess
     Unknown,
     SRV,
     ComputeSRV,
+    IndirectArgs, // Buffer-only read, consumed by ExecuteIndirect.
     UAV,
     RTV,
     DSVRead,
@@ -200,6 +202,11 @@ struct RDGPassParameters
     void ReadSRV(RDGBufferSRVHandle srv)
     {
         ReadSRV(srv.buffer);
+    }
+
+    void ReadIndirectArgs(RDGBufferHandle buffer)
+    {
+        buffers.push_back({ buffer, ERDGAccess::IndirectArgs });
     }
 
     void WriteRTV(RDGTextureHandle texture)
@@ -1445,6 +1452,8 @@ public:
         }
 #endif
         // Execute the passes sequentially in order
+        std::string timingGroup;
+        UINT timingQuery=UINT_MAX;
         for (uint32_t passIndex : m_compiledPassOrder)
         {
             if (passIndex >= m_passes.size())
@@ -1453,6 +1462,13 @@ public:
             }
 
             RDGPass& pass = m_passes[passIndex];
+            const auto nextTimingGroup=FiniteGPUFrameTimer::PassGroup(pass.name);
+            if(nextTimingGroup!=timingGroup)
+            {
+                FiniteGPUFrameTimer::EndPass(cmdList,timingQuery);
+                timingQuery=FiniteGPUFrameTimer::BeginPass(cmdList,nextTimingGroup);
+                timingGroup=nextTimingGroup;
+            }
             SubmitBarriers(cmdList, m_passBarriers[passIndex]);
 
             if (pass.execute)
@@ -1460,6 +1476,7 @@ public:
                 pass.execute(cmdList);
             }
         }
+        FiniteGPUFrameTimer::EndPass(cmdList,timingQuery);
 
         SubmitBarriers(cmdList, m_finalBarriers);
         ExtractResources();
@@ -2411,6 +2428,7 @@ private:
     {
         return access == ERDGAccess::SRV ||
             access == ERDGAccess::ComputeSRV ||
+            access == ERDGAccess::IndirectArgs ||
             access == ERDGAccess::DSVRead ||
             access == ERDGAccess::CopySrc;
     }
@@ -2430,6 +2448,7 @@ private:
         {
         case ERDGAccess::SRV: return "SRV";
         case ERDGAccess::ComputeSRV: return "ComputeSRV";
+        case ERDGAccess::IndirectArgs: return "IndirectArgs";
         case ERDGAccess::UAV: return "UAV";
         case ERDGAccess::RTV: return "RTV";
         case ERDGAccess::DSVRead: return "DSVRead";
@@ -2460,6 +2479,9 @@ private:
 
         if (state == D3D12_RESOURCE_STATE_COPY_SOURCE)
             return "COPY_SOURCE";
+
+        if (state == D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT)
+            return "INDIRECT_ARGUMENT";
 
         if (state == D3D12_RESOURCE_STATE_COPY_DEST)
             return "COPY_DEST";
@@ -2893,6 +2915,8 @@ private:
             return D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
         case ERDGAccess::ComputeSRV:
             return D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+        case ERDGAccess::IndirectArgs:
+            return D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT;
         case ERDGAccess::UAV:
             return D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
         case ERDGAccess::RTV:

@@ -15,7 +15,7 @@
 #include <vector>
 
 // Stage 1 owns CPU world triangles and sparse allocation only. Neither allocation
-// nor probe positions depend on the render-visible list, camera LOD or isDirty.
+// nor geometry indices depend on the render-visible list, camera LOD or isDirty.
 // Triangle retains the original surface identity and transformed vertex attributes
 // so ray hits can reconstruct the same UV/TBN contract as the GBuffer.
 class VXGIWorld
@@ -67,18 +67,10 @@ public:
         Coordinate coordinate;
         uint32_t firstTriangle = 0;
         uint32_t triangleCount = 0;
-        // Compact index within the owning collection. GetCells() retains its
-        // geometry index; GetProbeCells() owns the actual probe index.
-        uint32_t probeIndex = 0;
     };
 
-    enum class ProbeState : uint8_t { Unclassified, Valid, Disabled };
-    struct Probe
-    {
-        DirectX::XMFLOAT3 position;
-        std::array<DirectX::XMFLOAT3, 4> sh = {}; // Unconvolved RGB SH, l=0,1.
-        ProbeState state = ProbeState::Unclassified;
-    };
+
+
 
     struct Stats
     {
@@ -90,9 +82,6 @@ public:
         uint64_t degenerateTriangles = 0;
         uint64_t invalidTriangles = 0;
         uint64_t cells = 0;
-        uint64_t probeCells = 0;
-        uint64_t haloProbeCells = 0;
-        uint32_t probePaddingLayers = 0;
         uint64_t triangleReferences = 0;
         uint64_t candidateBoxTests = 0;
         uint64_t memoryBytes = 0; // Retained CPU capacity plus estimated hash nodes.
@@ -110,24 +99,19 @@ public:
     // Invalidate after editing vertex/index contents in place (static assets are
     // otherwise immutable). Transforms are reconstructed from TRS, not cachedMat.
     template<class InstanceRange>
-    bool Update(const InstanceRange& allInstances, float voxelSize, uint32_t probePaddingLayers = 0)
+    bool Update(const InstanceRange& allInstances, float voxelSize)
     {
         if (!std::isfinite(voxelSize) || voxelSize <= 0.0f)
         {
             m_lastError = "VXGI voxelSize must be finite and greater than zero.";
             return false;
         }
-        if (probePaddingLayers > 2)
-        {
-            m_lastError = "VXGI probe padding supports zero, one or two layers.";
-            return false;
-        }
+
         try
         {
             auto snapshot = CaptureSnapshot(allInstances);
             const bool snapshotUnchanged = snapshot == m_snapshot;
-            if (!m_invalidated && m_initialized && voxelSize == m_voxelSize && snapshotUnchanged &&
-                probePaddingLayers == m_storage.stats.probePaddingLayers)
+            if (!m_invalidated && m_initialized && voxelSize == m_voxelSize && snapshotUnchanged)
             {
                 m_lastError.clear();
                 return true;
@@ -138,23 +122,13 @@ public:
             const bool materialChanged = !m_initialized || materialFingerprint != m_storage.stats.materialFingerprint;
             if (!geometryChanged && voxelSize == m_voxelSize)
             {
-                // Padding changes only the probe allocation. Build it before
-                // touching committed geometry/material metadata, and retain the
-                // original SAT occupancy, triangle CSR and distance-field key.
-                const bool paddingChanged = probePaddingLayers != m_storage.stats.probePaddingLayers;
-                ProbeAllocation nextProbes;
-                if (paddingChanged && !AllocateProbes(m_storage.cells, voxelSize, probePaddingLayers, nextProbes)) return false;
                 if (!snapshotUnchanged) RefreshMaterials(allInstances, snapshot);
                 const auto coverageFingerprint=CoverageFingerprint(m_storage.triangles);
                 if(coverageFingerprint!=m_storage.stats.coverageFingerprint) ++m_coverageRevision;
                 m_storage.stats.coverageFingerprint=coverageFingerprint;
                 m_storage.stats.materialFingerprint = materialFingerprint;
                 m_storage.stats.geometryRebuilt = false;
-                if (paddingChanged)
-                {
-                    PublishProbes(m_storage, std::move(nextProbes), probePaddingLayers);
-                    ++m_allocationRevision;
-                }
+
                 m_snapshot = std::move(snapshot);
                 if (materialChanged) ++m_materialRevision;
                 ++m_revision;
@@ -265,9 +239,6 @@ public:
             next.stats.coverageFingerprint = CoverageFingerprint(next.triangles);
             next.stats.geometryRebuilt = geometryChanged;
             if (!Allocate(next, voxelSize)) return false;
-            ProbeAllocation nextProbes;
-            if (!AllocateProbes(next.cells, voxelSize, probePaddingLayers, nextProbes)) return false;
-            PublishProbes(next, std::move(nextProbes), probePaddingLayers);
             if(!m_initialized || next.stats.coverageFingerprint!=m_storage.stats.coverageFingerprint) ++m_coverageRevision;
             m_storage = std::move(next);
             m_snapshot = std::move(snapshot);
@@ -275,7 +246,6 @@ public:
             m_initialized = true;
             m_invalidated = false;
             if (geometryChanged) ++m_geometryRevision;
-            ++m_allocationRevision;
             if (materialChanged) ++m_materialRevision;
             ++m_revision;
             m_storage.stats.memoryBytes = EstimateMemoryBytes();
@@ -292,23 +262,15 @@ public:
     }
 
     void Invalidate() { m_invalidated = true; }
-    // These centers include the optional fixed-grid halo. Geometry accessors
-    // deliberately retain the original triangle-occupied allocation.
-    const std::vector<DirectX::XMFLOAT3>& GetOccupiedCenters() const { return m_storage.probeAllocation.centers; }
     const std::vector<Cell>& GetCells() const { return m_storage.cells; }
-    const std::vector<Cell>& GetProbeCells() const { return m_storage.probeAllocation.cells; }
-    const std::vector<Probe>& GetProbes() const { return m_storage.probeAllocation.probes; }
     const std::vector<Triangle>& GetTriangles() const { return m_storage.triangles; }
     const std::vector<uint32_t>& GetTriangleReferences() const { return m_storage.triangleReferences; }
     const Grid& GetGrid() const { return m_storage.grid; }
-    const Grid& GetProbeGrid() const { return m_storage.probeAllocation.grid; }
-    uint32_t GetProbePaddingLayers() const { return m_storage.stats.probePaddingLayers; }
     const Stats& GetStats() const { return m_storage.stats; }
     uint64_t GetRevision() const { return m_revision; }
     uint64_t GetGeometryRevision() const { return m_geometryRevision; }
     uint64_t GetMaterialRevision() const { return m_materialRevision; }
     uint64_t GetCoverageRevision() const { return m_coverageRevision; }
-    uint64_t GetAllocationRevision() const { return m_allocationRevision; }
     float GetVoxelSize() const { return m_voxelSize; }
     const std::string& GetLastError() const { return m_lastError; }
 
@@ -323,18 +285,8 @@ public:
         if (!m_initialized || !PositionCoordinate(position, m_voxelSize, coordinate)) return -1;
         return FindCell(coordinate);
     }
-    int32_t FindProbeCell(Coordinate coordinate) const
-    {
-        const auto& lookup = m_storage.probeAllocation.lookup;
-        const auto found = lookup.find(coordinate);
-        return found == lookup.end() ? -1 : static_cast<int32_t>(found->second);
-    }
-    int32_t FindProbeCell(const DirectX::XMFLOAT3& position) const
-    {
-        Coordinate coordinate;
-        if (!m_initialized || !PositionCoordinate(position, m_voxelSize, coordinate)) return -1;
-        return FindProbeCell(coordinate);
-    }
+
+
 
     // Thirteen-axis triangle/AABB SAT. Touching a cell boundary counts as overlap;
     // a triangle's bounding box is only a candidate generator, never occupancy.
@@ -360,21 +312,13 @@ private:
             return static_cast<size_t>(hash);
         }
     };
-    struct ProbeAllocation
-    {
-        Grid grid;
-        std::vector<Cell> cells; // Allocation only: no triangle CSR references.
-        std::vector<Probe> probes;
-        std::vector<DirectX::XMFLOAT3> centers;
-        std::unordered_map<Coordinate, uint32_t, CoordinateHash> lookup;
-    };
+
     struct Storage
     {
         Grid grid;
         Stats stats;
         std::vector<Triangle> triangles;
         std::vector<Cell> cells;
-        ProbeAllocation probeAllocation;
         std::vector<uint32_t> triangleReferences;
         std::unordered_map<Coordinate, uint32_t, CoordinateHash> lookup;
     };
@@ -615,63 +559,8 @@ private:
         grid.boundsMaximum = {float((double(grid.maximum.x)+1)*size), float((double(grid.maximum.y)+1)*size),
             float((double(grid.maximum.z)+1)*size)};
     }
-    bool AllocateProbes(const std::vector<Cell>& geometryCells, float size, uint32_t paddingLayers, ProbeAllocation& next)
-    {
-        const int64_t padding = paddingLayers;
-        // Full Chebyshev dilation, including edges and corners. Only coordinate
-        // identity is expanded: halo cells never inherit triangle references.
-        next.lookup.reserve((std::min)(MaximumCells, uint64_t(geometryCells.size()) * (2*paddingLayers+1)));
-        for (const auto& cell : geometryCells)
-        {
-            const auto source = cell.coordinate;
-            if (int64_t(source.x)-padding < INT32_MIN || int64_t(source.x)+padding > INT32_MAX ||
-                int64_t(source.y)-padding < INT32_MIN || int64_t(source.y)+padding > INT32_MAX ||
-                int64_t(source.z)-padding < INT32_MIN || int64_t(source.z)+padding > INT32_MAX)
-            {
-                m_lastError = "VXGI probe padding exceeds the supported grid coordinate range.";
-                return false;
-            }
-            for (int64_t x = int64_t(source.x)-padding; x <= int64_t(source.x)+padding; ++x)
-                for (int64_t y = int64_t(source.y)-padding; y <= int64_t(source.y)+padding; ++y)
-                    for (int64_t z = int64_t(source.z)-padding; z <= int64_t(source.z)+padding; ++z)
-                    {
-                        next.lookup.emplace(Coordinate{static_cast<int32_t>(x),static_cast<int32_t>(y),static_cast<int32_t>(z)}, 0);
-                        if (next.lookup.size() > MaximumCells)
-                        {
-                            m_lastError = "VXGI probe allocation exceeds two million cells; reduce probe padding or increase voxelSize.";
-                            return false;
-                        }
-                    }
-        }
-        std::vector<Coordinate> coordinates;
-        coordinates.reserve(next.lookup.size());
-        for (const auto& entry : next.lookup) coordinates.push_back(entry.first);
-        std::sort(coordinates.begin(), coordinates.end());
-        next.cells.reserve(coordinates.size()); next.probes.reserve(coordinates.size()); next.centers.reserve(coordinates.size());
-        for (const auto coordinate : coordinates)
-        {
-            const auto position = Center(coordinate, size);
-            if (!Finite(position))
-            {
-                m_lastError = "VXGI probe padding produces a non-finite world center.";
-                return false;
-            }
-            const auto index = static_cast<uint32_t>(next.cells.size());
-            next.cells.push_back({coordinate,0,0,index});
-            next.centers.push_back(position); next.probes.push_back({position});
-            next.lookup.find(coordinate)->second = index;
-            ExtendGrid(next.grid, coordinate);
-        }
-        FinishGrid(next.grid, size);
-        return true;
-    }
-    static void PublishProbes(Storage& storage, ProbeAllocation&& probes, uint32_t paddingLayers)
-    {
-        storage.probeAllocation = std::move(probes);
-        storage.stats.probeCells = storage.probeAllocation.cells.size();
-        storage.stats.haloProbeCells = storage.stats.probeCells - storage.cells.size();
-        storage.stats.probePaddingLayers = paddingLayers;
-    }
+
+
     bool Allocate(Storage& next, float size)
     {
         std::unordered_map<Coordinate, std::vector<uint32_t>, CoordinateHash> candidates;
@@ -734,7 +623,7 @@ private:
             }
             const uint32_t cellIndex = static_cast<uint32_t>(next.cells.size());
             next.cells.push_back({ coordinate, static_cast<uint32_t>(next.triangleReferences.size()),
-                static_cast<uint32_t>(references.size()), cellIndex });
+                static_cast<uint32_t>(references.size()) });
             next.triangleReferences.insert(next.triangleReferences.end(), references.begin(), references.end());
             next.lookup.emplace(coordinate, cellIndex);
             ExtendGrid(next.grid, coordinate);
@@ -747,12 +636,8 @@ private:
     {
         const auto& data = m_storage;
         return sizeof(*this) + data.triangles.capacity()*sizeof(Triangle) + data.cells.capacity()*sizeof(Cell) +
-            data.probeAllocation.cells.capacity()*sizeof(Cell) + data.probeAllocation.probes.capacity()*sizeof(Probe) +
-            data.probeAllocation.centers.capacity()*sizeof(DirectX::XMFLOAT3) +
             data.triangleReferences.capacity()*sizeof(uint32_t) + m_snapshot.capacity()*sizeof(Snapshot) +
-            data.lookup.bucket_count()*sizeof(void*) + data.lookup.size()*(sizeof(decltype(data.lookup)::value_type)+2*sizeof(void*)) +
-            data.probeAllocation.lookup.bucket_count()*sizeof(void*) +
-            data.probeAllocation.lookup.size()*(sizeof(decltype(data.probeAllocation.lookup)::value_type)+2*sizeof(void*));
+            data.lookup.bucket_count()*sizeof(void*) + data.lookup.size()*(sizeof(decltype(data.lookup)::value_type)+2*sizeof(void*));
     }
 
     Storage m_storage;
@@ -763,7 +648,6 @@ private:
     uint64_t m_geometryRevision = 0;
     uint64_t m_materialRevision = 0;
     uint64_t m_coverageRevision = 0;
-    uint64_t m_allocationRevision = 0;
     bool m_initialized = false;
     bool m_invalidated = true;
 };

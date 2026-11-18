@@ -4,16 +4,6 @@
 #include "VXGIMeshSDFData.hlsli"
 #include "VXGISDFThresholdCommon.hlsli"
 
-// Preorder stackless tree; UINT_MAX instanceIndex identifies interior nodes.
-// All bounds are tight world model bounds, not the padded SDF lattice.
-struct VXGIMeshSDFBVHNode
-{
-    float3 boundsMinimum; uint instanceIndex;
-    float3 boundsMaximum; uint escapeIndex;
-};
-
-StructuredBuffer<VXGIMeshSDFBVHNode> VXGIMeshSDFBVH : register(t3, space1);
-
 // Root SRVs do not provide descriptor element counts. The caller supplies the
 // immutable node/asset sizes and the current instance/BVH sizes explicitly.
 struct VXGIMeshSDFThresholdCounts

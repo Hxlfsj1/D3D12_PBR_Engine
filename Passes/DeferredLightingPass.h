@@ -16,7 +16,6 @@ public:
     {
         RDGTextureHandle sceneColor;
         RDGPassHandle pass;
-        RDGTextureHandle bounceSource;
     };
 
     struct Input
@@ -50,17 +49,9 @@ public:
         int height,
         int frameIndex,
         D3D12_CPU_DESCRIPTOR_HANDLE outputRtv,
-        const SrvIndices& srvIndices,
-        D3D12_CPU_DESCRIPTOR_HANDLE bounceRtv = {})
+        const SrvIndices& srvIndices)
     {
-        const bool outputBounceSource = bounceRtv.ptr != 0;
-        D3D12_CPU_DESCRIPTOR_HANDLE targets[] = { outputRtv, bounceRtv };
-        cmdList->OMSetRenderTargets(outputBounceSource ? 2 : 1, targets, FALSE, nullptr);
-        if (outputBounceSource)
-        {
-            const float black[4] = {};
-            cmdList->ClearRenderTargetView(bounceRtv, black, 0, nullptr);
-        }
+        cmdList->OMSetRenderTargets(1, &outputRtv, FALSE, nullptr);
 
         D3D12_VIEWPORT viewport = { 0.0f, 0.0f, (float)width, (float)height, 0.0f, 1.0f };
         D3D12_RECT scissorRect = { 0, 0, width, height };
@@ -88,7 +79,7 @@ public:
         cmdList->SetDescriptorHeaps(1, heaps);
 
         cmdList->SetGraphicsRootSignature(pipelineManager->GetDeferredRootSignature());
-        cmdList->SetPipelineState(pipelineManager->GetDeferredPSO(outputBounceSource));
+        cmdList->SetPipelineState(pipelineManager->GetDeferredPSO());
 
         cmdList->SetGraphicsRootConstantBufferView(PipelineManager::DeferredBinding::FrameConstants, resourceManager->GetCBVGPUAddress(frameIndex));
         cmdList->SetGraphicsRootConstantBufferView(PipelineManager::DeferredBinding::LightingConstants, allocation.gpuAddress);
@@ -106,8 +97,7 @@ public:
         int width,
         int height,
         int frameIndex,
-        const Input& input,
-        bool outputBounceSource = false)
+        const Input& input)
     {
         if (!input.gbufferAlbedo.IsValid() ||
             !input.gbufferNormal.IsValid() ||
@@ -135,27 +125,6 @@ public:
             D3D12_RESOURCE_STATE_RENDER_TARGET,
             "PostProcessRT");
         graph.MarkTextureAsOutput(sceneColor);
-
-        RDGTextureHandle bounceSource;
-        RDGTextureRTVHandle bounceRtv;
-        if (outputBounceSource)
-        {
-            RDGTextureDesc desc;
-            desc.width = static_cast<uint32_t>(width);
-            desc.height = static_cast<uint32_t>(height);
-            desc.format = PipelineManager::Formats::SceneColor;
-            desc.flags = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
-            desc.hasClearValue = true;
-            desc.clearValue.Format = desc.format;
-            bounceSource = graph.CreateTexture(desc, D3D12_RESOURCE_STATE_COMMON,
-                D3D12_RESOURCE_STATE_COMMON, "SSGI.BounceSource");
-            bounceRtv = graph.CreateTextureRTVView(bounceSource);
-            if (!bounceSource.IsValid() || !bounceRtv.IsValid())
-            {
-                ErrorLog::Write("DeferredLightingPass: failed to create SSGI bounce source.");
-                return {};
-            }
-        }
 
         D3D12_SHADER_RESOURCE_VIEW_DESC depthSrvDesc = {};
         depthSrvDesc.Format = PipelineManager::Formats::DepthSRV;
@@ -204,7 +173,6 @@ public:
         params.ReadSRV(hbaoBlurredSrv);
         params.ReadSRV(shadowMapSrv);
         params.WriteRTV(sceneColorRtv);
-        if (outputBounceSource) params.WriteRTV(bounceRtv);
 
         RDGPassHandle pass = graph.AddPass(
             "DeferredLighting",
@@ -221,11 +189,10 @@ public:
                     height,
                     frameIndex,
                     sceneColorRtv.cpuHandle,
-                    srvIndices,
-                    bounceRtv.cpuHandle);
+                    srvIndices);
             });
 
-        return { sceneColor, pass, bounceSource };
+        return { sceneColor, pass };
     }
 };
 

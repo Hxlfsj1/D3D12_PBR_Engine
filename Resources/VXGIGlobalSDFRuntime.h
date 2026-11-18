@@ -72,7 +72,7 @@ public:
         }
         VXGIGlobalSDFPass::Inputs inputs{m_empty.Get(), m_empty.Get(), m_empty.Get()};
         if (!scene.GetInstances().empty())
-            inputs = {gpuScene.Get(slot, 0), gpuScene.Get(slot, 7), gpuScene.Get(slot, 8)};
+            inputs = {gpuScene.Get(slot, 0), gpuScene.Get(slot, 4), gpuScene.Get(slot, 5)};
         if (!m_pass.RecordRegions(device.GetCommandList(), plan.layout, inputs, plan.regions))
             return Fail(m_pass.GetLastError());
         m_pending = true;

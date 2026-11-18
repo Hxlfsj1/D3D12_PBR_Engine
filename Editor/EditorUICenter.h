@@ -322,8 +322,15 @@ namespace EditorUICenter
         label += stableId;
         return ImGui::MenuItem(label.c_str(), shortcut, selected, enabled);
     }
+    inline bool GITracingModeContent(bool& lumen,bool enabled=true)
+    {
+        bool selected=false;
+        if(WrappedMenuItem("SSGI","gi-mode-ssgi",!lumen,enabled)){lumen=false;selected=true;}
+        if(WrappedMenuItem("Lumen","gi-mode-lumen",lumen,enabled)){lumen=true;selected=true;}
+        return selected;
+    }
     inline void DebugPassMenu(RenderDebugPass& pass, RenderPassView& view,
-        const RenderPassAvailability& available, bool accumulatedReady = false)
+        const RenderPassAvailability& available, bool accumulatedReady = false, bool* lumen = nullptr)
     {
         NormalizeRenderPassView(view, available);
         NormalizeRenderDebugPass(pass, available);
@@ -351,29 +358,8 @@ namespace EditorUICenter
                 };
                 if (info.pass == RenderPassId::GI)
                 {
-                    const char* defaultLabel = IsGlobalGIAvailable(available) ?
-                        "\xe9\xbb\x98\xe8\xae\xa4\xef\xbc\x88SSGI + Mesh SDF VXGI + Global SDF GI\xef\xbc\x89" : IsWorldGIAvailable(available) ?
-                        "\xe9\xbb\x98\xe8\xae\xa4\xef\xbc\x88SSGI + Mesh SDF VXGI\xef\xbc\x89" :
-                        "\xe9\xbb\x98\xe8\xae\xa4\xef\xbc\x88SSGI\xef\xbc\x89";
-                    if (WrappedMenuItem(defaultLabel, "pass-view-gi-default",
-                        view.pass == info.pass && view.result == RenderPassResult::PassOutput &&
-                        view.giSource == RenderPassGISource::Default))
+                    if(lumen && GITracingModeContent(*lumen))
                         select(RenderPassResult::PassOutput);
-                    if (WrappedMenuItem("SSGI", "pass-view-gi-ssgi",
-                        view.pass == info.pass && view.result == RenderPassResult::PassOutput &&
-                        view.giSource == RenderPassGISource::SSGIOnly))
-                        select(RenderPassResult::PassOutput, RenderPassChannel::Albedo, RenderPassGISource::SSGIOnly);
-                    if (WrappedMenuItem("SSGI + Mesh SDF VXGI", "pass-view-gi-mesh",
-                        view.pass == info.pass && view.result == RenderPassResult::PassOutput &&
-                        view.giSource == RenderPassGISource::SSGIAndMeshSDF, IsWorldGIAvailable(available),
-                        IsWorldGIAvailable(available) ? nullptr : "\xe6\x9c\xaa\xe5\x90\xaf\xe7\x94\xa8"))
-                        select(RenderPassResult::PassOutput, RenderPassChannel::Albedo, RenderPassGISource::SSGIAndMeshSDF);
-                    ImGui::Separator();
-                    ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + Px(160));
-                    Muted(available.antiAliasing ?
-                        "\xe7\xba\xaf GI \xe8\xbe\x93\xe5\x87\xba\xef\xbc\x9a\xe6\x8a\x97\xe9\x94\xaf\xe9\xbd\xbf\xe5\xb7\xb2\xe5\x90\xaf\xe7\x94\xa8" :
-                        "\xe7\xba\xaf GI \xe8\xbe\x93\xe5\x87\xba\xef\xbc\x9a\xe6\x8a\x97\xe9\x94\xaf\xe9\xbd\xbf\xe6\x9c\xaa\xe5\x90\xaf\xe7\x94\xa8", true);
-                    ImGui::PopTextWrapPos();
                 }
                 else if (info.pass == RenderPassId::GBuffer)
                 {
@@ -408,7 +394,7 @@ namespace EditorUICenter
     }
     inline bool MainMenu(float& height, const EditorCameraSnapshot& camera,
         RenderDebugPass& pass, RenderPassView& view, const RenderPassAvailability& available,
-        bool accumulatedReady = false)
+        bool accumulatedReady = false, bool* lumen = nullptr)
     {
         NormalizeRenderPassView(view, available);
         NormalizeRenderDebugPass(pass, available);
@@ -435,7 +421,7 @@ namespace EditorUICenter
             }
             if (ImGui::BeginMenu("Debug"))
             {
-                DebugPassMenu(pass, view, available, accumulatedReady);
+                DebugPassMenu(pass, view, available, accumulatedReady, lumen);
                 ImGui::EndMenu();
             }
             ImGui::EndMainMenuBar();
@@ -522,12 +508,11 @@ namespace EditorUICenter
         static double loadingPreviewUntil = 0;
         static RenderDebugPass debugPass = RenderDebugPass::Default;
         static RenderPassView passView;
+        static bool lumen=true;
         static RenderPassAvailability available = [] {
             RenderPassAvailability value;
             value.deferred = true;
             value.ssgi = true;
-            value.vxgi = true;
-            value.globalSDF = true;
             value.zPrepass = true;
             value.hbao = true;
             value.antiAliasing = true;
@@ -555,7 +540,7 @@ namespace EditorUICenter
             {
                 if (ImGui::BeginMenu("Debug"))
                 {
-                    DebugPassMenu(debugPass, passView, available, true);
+                    DebugPassMenu(debugPass, passView, available, true, &lumen);
                     ImGui::EndMenu();
                 }
                 ImGui::EndMenuBar();
@@ -575,11 +560,10 @@ namespace EditorUICenter
                     Camera({-.3f, 1.05f, -1.1f}, {0, 1, 0}, 116.565f, 68.542f), 1707, 1067);
                 CameraTransformContent(sample);
             }
+            if(Section("GI tracing mode")){GITracingModeContent(lumen,available.deferred && available.ssgi);}
             if(Section("Debug pass"))
             {
                 BoolProperty("SSGI enabled", available.ssgi);
-                BoolProperty("VXGI enabled", available.vxgi);
-                BoolProperty("GDF enabled", available.globalSDF);
                 BoolProperty("Deferred enabled", available.deferred);
                 BoolProperty("HBAO enabled", available.hbao);
                 BoolProperty("AA enabled", available.antiAliasing);
@@ -595,7 +579,7 @@ namespace EditorUICenter
                 Button("Apply");ImGui::SameLine();Button("Disabled",false);}
             if(Section("Loading"))
             {
-                LoadingContent(.63f, "Preparing VXGI probes: 63 / 100 batches");
+                LoadingContent(.63f, "Preparing scene resources: 63 / 100 batches");
                 if(Button("Preview startup screen")) loadingPreviewUntil = ImGui::GetTime() + 3.0;
                 Muted("Preview lasts three seconds. Long loading details wrap at narrow widths.",true);
             }
@@ -603,6 +587,6 @@ namespace EditorUICenter
         }
         ImGui::End();
         if(ImGui::GetTime() < loadingPreviewUntil)
-            LoadingScreen(.63f, "Preparing VXGI probes: 63 / 100 batches");
+            LoadingScreen(.63f, "Preparing scene resources: 63 / 100 batches");
     }
 }

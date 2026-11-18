@@ -6,10 +6,7 @@
 #include "ResourceManager.h"
 #include "PipelineManager.h"
 #include "Settings_Manager.h"
-#include "VXGIGPUScene.h"
-#include "VXGIGlobalSDF.h"
-#include "VXGIGlobalSDFRuntime.h"
-#include "../Shaders/SSGIMeshTracePolicy.hlsli"
+#include "SurfaceCacheGIData.h"
 
 // Keep these layouts in sync with the SSGI shader cbuffers.
 constexpr uint32_t SSGIMaxLevels = 7; // Reduced mips 1..7; original depth is mip 0.
@@ -28,29 +25,6 @@ struct SSGIPyramidConstants
 };
 static_assert(sizeof(SSGIPyramidConstants) == 96);
 
-struct SSGIHybridParameters
-{
-    DirectX::XMFLOAT3 gridOrigin; float cellSize;
-    DirectX::XMUINT3 cellDimensions; uint32_t triangleCount;
-    DirectX::XMFLOAT3 boundsMaximum; uint32_t materialCount;
-    // Reserved to preserve the shared shader constant-buffer layout.
-    // World fallback reads cached radiance; it has no per-hit light/range inputs.
-    DirectX::XMFLOAT3 reservedLighting0; float materialMipLevel;
-    DirectX::XMFLOAT3 reservedLighting1; float worldMeshMaxTraceDistance; // y = Mesh ray minimum distance.
-    float worldMaxTraceDistance; float voxelSize; uint32_t probeCount; uint32_t worldMode;
-    uint32_t nodeCount, assetCount, instanceCount, bvhNodeCount;
-};
-static_assert(sizeof(SSGIHybridParameters) == 112);
-
-struct SSGIGlobalParameters
-{
-    uint32_t enabled = 0, textureIndex = 0;
-    float maxTraceDistance = 0;
-    uint32_t maxSteps = 0;
-    VXGIGlobalSDF::Constants constants;
-};
-static_assert(sizeof(SSGIGlobalParameters) == 192 && offsetof(SSGIGlobalParameters, constants) == 16);
-
 struct SSGITraceConstants
 {
     DirectX::XMFLOAT4X4 view;
@@ -63,7 +37,7 @@ struct SSGITraceConstants
     uint32_t depthIndex;
     uint32_t normalIndex;
     uint32_t ormIndex;
-    uint32_t sourceIndex;
+    uint32_t emissiveSourceIndex;
     uint32_t outputIndex;
     uint32_t levelCount;
     uint32_t frameIndex;
@@ -71,65 +45,83 @@ struct SSGITraceConstants
     float radius;
     float thickness;
     float normalBias;
-    float padding2;
-    uint32_t rayCount;
     uint32_t maxIterations;
-    uint32_t albedoIndex;
     uint32_t traceDownsampleFactor;
+    uint32_t denoiseDownsampleFactor;
+    uint32_t probeScreenRays;
+    uint32_t emissiveSamples;
     // uint arrays in HLSL cbuffers have 16-byte stride. Use uint4 explicitly.
-    // x = depth SRV. Reserved yzw slots also carry screen/world-policy inputs;
-    // see their assignments after pyramid creation. This preserves the 1024B ABI.
+    // x = depth SRV; yzw provide the required cbuffer array stride.
     DirectX::XMUINT4 levels[SSGIMaxLevels];
     DirectX::XMFLOAT4X4 invView;
     DirectX::XMFLOAT4X4 invViewProj;
-    SSGIHybridParameters hybrid;
-    // Appended to preserve the worldMode SRV alias at byte 604.
+    // Screen-space temporal history.
     DirectX::XMFLOAT4X4 previousViewProj;
     DirectX::XMFLOAT4X4 previousInvViewProj;
     uint32_t previousGIIndex;
     uint32_t previousDepthIndex;
     uint32_t previousNormalIndex;
     uint32_t historyValid;
-    uint32_t probeNeighborsIndex; // Optional bindless six-neighbor topology SRV.
     uint32_t previousFastIndex;
     uint32_t reprojectedGIIndex;
     uint32_t reprojectedFastIndex;
-    SSGIGlobalParameters global;
-    // Separate SRV/UAV descriptors are supplied to the sparse and full-rate passes.
-    uint32_t worldSharingEnabled;
-    uint32_t sharedMeshLightingIndex;
-    uint32_t sharedMeshReceiverIndex;
-    uint32_t sharedGlobalLightingIndex;
-    uint32_t sharedGlobalReceiverIndex;
-    uint32_t sharedRepairQueueIndex;
-    uint32_t sharedRepairCountIndex;
-    uint32_t sharedMeshSpan;
-    uint32_t previousMeshBandIndex;
-    uint32_t previousGlobalBandIndex;
-    uint32_t currentMeshBandIndex;
-    uint32_t currentGlobalBandIndex;
+    uint32_t probePositionIndex;
+    uint32_t probeNormalIndex;
+    uint32_t probeReceiverIndex;
+    uint32_t previousProbePositionIndex;
+    uint32_t previousProbeNormalIndex;
+    uint32_t previousProbeRadianceIndex;
+    uint32_t probeRadianceUavIndex;
+    uint32_t probeRadianceIndex;
+    uint32_t probeFilteredUavIndex;
+    uint32_t probeFilteredIndex;
+    uint32_t probeHistoryLimit;
+    uint32_t probeSHUavIndex;
+    uint32_t probeSHIndex;
+    uint32_t probePositionUavIndex;
+    uint32_t probeNormalUavIndex;
+    uint32_t probeReceiverUavIndex;
+    float probeJitterWidth;
+    uint32_t probeAnchorUavIndex;
+    uint32_t previousProbeAnchorIndex;
+    uint32_t probeDispatchBase;
+    uint32_t emissiveListIndex;
+    DirectX::XMUINT2 probeAtlasSize;
+    uint32_t adaptiveCapacity;
+    uint32_t adaptiveCountIndex;
+    uint32_t adaptiveCountUavIndex;
+    uint32_t adaptiveHeaderIndex;
+    uint32_t adaptiveHeaderUavIndex;
+    uint32_t adaptiveIndicesIndex;
+    uint32_t adaptiveIndicesUavIndex;
+    uint32_t adaptiveMaskIndex;
+    uint32_t adaptiveMaskUavIndex;
+    uint32_t adaptiveArgsUavIndex;
+    uint32_t previousAdaptiveHeaderIndex;
+    uint32_t previousAdaptiveIndicesIndex;
+    uint32_t previousAdaptiveCountIndex;
+    uint32_t probeHistoryLinkIndex;
+    uint32_t probeHistoryLinkUavIndex;
+    uint32_t probeSeedIndex;
+    uint32_t probeSeedUavIndex;
+    uint32_t previousProbeSeedIndex;
+    float probeCameraFadeEnd;
+    uint32_t probeCameraFadeEnabled;
+    uint32_t probeDiagnosticsIndexPlusOne;
+    uint32_t emissiveCountIndex;
+    uint32_t emissiveListUavIndex,emissiveCountUavIndex;
+    DirectX::XMUINT2 screenEmissivePadding;
 };
+static_assert(offsetof(SSGITraceConstants, maxIterations) == 252);
+static_assert(offsetof(SSGITraceConstants, probeScreenRays) == 264);
+static_assert(offsetof(SSGITraceConstants, emissiveSamples) == 268);
 static_assert(offsetof(SSGITraceConstants, levels) == 272);
-static_assert(offsetof(SSGITraceConstants, levels) + offsetof(DirectX::XMUINT4, y) == 276);
-static_assert(offsetof(SSGITraceConstants, levels) + sizeof(DirectX::XMUINT4) + offsetof(DirectX::XMUINT4, w) == 300);
-static_assert(offsetof(SSGITraceConstants, levels) + 2 * sizeof(DirectX::XMUINT4) + offsetof(DirectX::XMUINT4, y) == 308);
-static_assert(offsetof(SSGITraceConstants, levels) + 2 * sizeof(DirectX::XMUINT4) + offsetof(DirectX::XMUINT4, w) == 316);
-static_assert(offsetof(SSGITraceConstants, levels) + 3 * sizeof(DirectX::XMUINT4) + offsetof(DirectX::XMUINT4, y) == 324);
-static_assert(offsetof(SSGITraceConstants, levels) + 3 * sizeof(DirectX::XMUINT4) + offsetof(DirectX::XMUINT4, z) == 328);
-static_assert(offsetof(SSGITraceConstants, levels) + 6 * sizeof(DirectX::XMUINT4) + offsetof(DirectX::XMUINT4, z) == 376);
-static_assert(offsetof(SSGITraceConstants, albedoIndex) == 264);
-static_assert(offsetof(SSGITraceConstants, traceDownsampleFactor) == 268);
-static_assert(offsetof(SSGITraceConstants, invView) == 384);
-static_assert(offsetof(SSGITraceConstants, hybrid) == 512);
-static_assert(offsetof(SSGITraceConstants, hybrid) + offsetof(SSGIHybridParameters, worldMode) == 604);
-static_assert(offsetof(SSGITraceConstants, previousViewProj) == 624);
-static_assert(offsetof(SSGITraceConstants, previousGIIndex) == 752);
-static_assert(offsetof(SSGITraceConstants, probeNeighborsIndex) == 768);
-static_assert(offsetof(SSGITraceConstants, reprojectedGIIndex) == 776);
-static_assert(offsetof(SSGITraceConstants, global) == 784);
-static_assert(offsetof(SSGITraceConstants, worldSharingEnabled) == 976);
-static_assert(offsetof(SSGITraceConstants, previousMeshBandIndex) == 1008);
-static_assert(sizeof(SSGITraceConstants) == 1024);
+static_assert(offsetof(SSGITraceConstants, previousViewProj) == 512);
+static_assert(offsetof(SSGITraceConstants, probePositionIndex) == 668);
+static_assert(sizeof(SSGITraceConstants) == 864);
+static_assert(offsetof(SSGITraceConstants, probeDispatchBase) == 744);
+static_assert(offsetof(SSGITraceConstants, probeAtlasSize) == 752);
+static_assert(offsetof(SSGITraceConstants, probeHistoryLinkIndex) == 812);
 
 struct SSGIReconstructConstants
 {
@@ -146,11 +138,8 @@ struct SSGIReconstructConstants
     uint32_t outputIndex;
     uint32_t traceDownsampleFactor;
     uint32_t padding[2];
-    uint32_t worldSpatialStep;
-    uint32_t reserved[3];
 };
-static_assert(sizeof(SSGIReconstructConstants) == 192);
-static_assert(offsetof(SSGIReconstructConstants, worldSpatialStep) == 176);
+static_assert(sizeof(SSGIReconstructConstants) == 176);
 static_assert(offsetof(SSGIReconstructConstants, traceDownsampleFactor) == 164);
 
 struct SSGITemporalConstants
@@ -236,37 +225,36 @@ struct SSGICompositeConstants
     float intensity;
     uint32_t traceDownsampleFactor;
     uint32_t padding;
+    float cameraFadeStart;
+    float cameraFadeEnd;
+    uint32_t cameraFadeEnabled;
+    uint32_t cameraFadePadding;
+    DirectX::XMFLOAT4X4 invViewProj;
+    DirectX::XMUINT2 probeUniformSize;
+    DirectX::XMUINT2 probeAtlasSize;
+    uint32_t probeFactor;
+    uint32_t probePositionIndex;
+    uint32_t probeNormalIndex;
+    uint32_t probeReceiverIndex;
+    uint32_t probeSHIndex;
+    uint32_t adaptiveCapacity;
+    uint32_t adaptiveCountIndex;
+    uint32_t adaptiveHeaderIndex;
+    uint32_t adaptiveIndicesIndex;
+    uint32_t validityIndexPlusOne;
+    uint32_t probeDiagnosticsIndexPlusOne;
+    uint32_t probeCompositePadding;
 };
-static_assert(sizeof(SSGICompositeConstants) == 176);
+static_assert(sizeof(SSGICompositeConstants) == 320);
 static_assert(offsetof(SSGICompositeConstants, traceDownsampleFactor) == 168);
+static_assert(offsetof(SSGICompositeConstants, cameraFadeStart) == 176);
+static_assert(offsetof(SSGICompositeConstants, cameraFadeEnabled) == 184);
+static_assert(offsetof(SSGICompositeConstants, probeUniformSize) == 256);
+static_assert(offsetof(SSGICompositeConstants, validityIndexPlusOne) == 308);
 
 class SSGIPass
 {
 public:
-    struct WorldInput
-    {
-        const VXGIGPUScene* scene = nullptr;
-        ID3D12Resource* rawRecords = nullptr;
-        ID3D12Resource* distanceCache = nullptr;
-        ID3D12Resource* materialBuffer = nullptr;
-        uint32_t probeCount = 0;
-        float voxelSize = 1.0f;
-        uint32_t mode = 0;
-        const VXGIGlobalSDFRuntime* globalSDF = nullptr;
-        float globalTraceDistance = 128.0f;
-        uint32_t globalMaxSteps = 256;
-    };
-    static uint32_t EffectiveWorldMode(const WorldInput* world, int frameIndex)
-    {
-        if (!world || world->mode == 0 || world->mode > 2 || !world->scene ||
-            !world->scene->IsMeshBackend(frameIndex) || !world->scene->GetGrid(frameIndex).valid ||
-            !world->scene->GetDistanceNodeCount(frameIndex) || !world->scene->GetAssetCount(frameIndex) ||
-            !world->scene->GetInstanceCount(frameIndex) || !world->scene->GetInstanceBVHNodeCount(frameIndex)) return 0;
-        for (const UINT i : {0u, 7u, 8u, 10u}) if (!world->scene->Get(frameIndex, i)) return 0;
-        if (!world->rawRecords || !world->probeCount ||
-            !world->scene->Get(frameIndex, 5)) return 0;
-        return world->mode;
-    }
     struct Input
     {
         RDGTextureHandle sceneColor;
@@ -274,8 +262,14 @@ public:
         RDGTextureHandle normal;
         RDGTextureHandle orm;
         RDGTextureHandle albedo;
-        RDGTextureHandle bounceSource;
         RDGTextureHandle emissive;
+        SurfaceCacheGIData::Bindings world;
+        bool diagnostics = false; // Capture-only counters; absent in ordinary rendering.
+    };
+    struct ProbeData
+    {
+        RDGTextureHandle position, normal, receiver, sh;
+        RDGTextureHandle adaptiveCount, tileHeader, tileIndices, diagnostics, validity;
     };
     struct Output
     {
@@ -284,9 +278,9 @@ public:
         RDGTextureHandle indirectLighting; // Final filtered E/pi, before receiver material response.
         RDGTextureHandle rawLighting;
         RDGTextureHandle reconstructedLighting;
-        RDGTextureHandle worldDisplay;
-        RDGTextureHandle worldOwners;
+        RDGTextureHandle probeDirections;
         RDGTextureHandle receiverGuide,probePosition,probeNormal,probeFiltered;
+        ProbeData probes;
     };
 
     struct TextureViews
@@ -300,17 +294,17 @@ public:
     static Output AddToGraph(RDGBuilder& graph, ResourceManager* resourceManager, PipelineManager* pipelineManager,
         const SSGIHistoryState& history, const DirectX::XMFLOAT4X4& view, const DirectX::XMFLOAT4X4& proj,
         const DirectX::XMFLOAT4X4& invProj, const DirectX::XMFLOAT4X4& invViewProj, UINT width, UINT height,
-        int frameIndex, UINT sampleFrame, const SSGIConfig& config, const Input& input,
-        const WorldInput* world = nullptr)
+        int frameIndex, UINT sampleFrame, const SSGIConfig& config, const Input& input)
     {
         auto lighting = AddLightingToGraph(graph, resourceManager, pipelineManager, history, view, proj,
-            invProj, invViewProj, width, height, frameIndex, sampleFrame, config, input, world, false);
+            invProj, invViewProj, width, height, frameIndex, sampleFrame, config, input, false);
         if (!lighting.gi.IsValid() || !lighting.pass.IsValid()) return {};
-        const auto factor = config.screenProbes ? 1u : static_cast<uint32_t>(config.traceDownsampleFactor);
-        auto composite = AddCompositeToGraph(graph, resourceManager, pipelineManager, view, invProj, width, height,
-            frameIndex, factor, lighting.views, {input.sceneColor, lighting.gi}, config.intensity, config.giOnly, config.screenProbes ? RDGTextureHandle{} : lighting.receiverGuide);
+        const auto factor = config.DenoiseFactor();
+        auto composite = AddCompositeToGraph(graph, resourceManager, pipelineManager, view, invProj, invViewProj, width, height,
+            frameIndex, factor, lighting.views, {input.sceneColor, lighting.gi}, config, config.giOnly,
+            config.screenProbes ? RDGTextureHandle{} : lighting.receiverGuide, lighting.probes);
         if (!composite.IsValid()) return {};
-        return {input.sceneColor, composite, lighting.gi, lighting.raw, lighting.reconstructed, lighting.worldDisplay, lighting.worldOwners, lighting.receiverGuide,lighting.probePosition,lighting.probeNormal,lighting.probeFiltered};
+        return {input.sceneColor, composite, lighting.gi, lighting.raw, lighting.reconstructed, lighting.probeDirections, lighting.receiverGuide,lighting.probePosition,lighting.probeNormal,lighting.probeFiltered,lighting.probes};
     }
 
     // Diagnostic output only. The normal mixed GI and its SceneColor/history
@@ -320,11 +314,10 @@ public:
         PipelineManager* pipelineManager, const SSGIHistoryState& history,
         const DirectX::XMFLOAT4X4& view, const DirectX::XMFLOAT4X4& proj,
         const DirectX::XMFLOAT4X4& invProj, const DirectX::XMFLOAT4X4& invViewProj, UINT width, UINT height,
-        int frameIndex, UINT sampleFrame, const SSGIConfig& config, const Input& input,
-        const WorldInput* world = nullptr)
+        int frameIndex, UINT sampleFrame, const SSGIConfig& config, const Input& input)
     {
         auto lighting = AddLightingToGraph(graph, resourceManager, pipelineManager, history, view, proj,
-            invProj, invViewProj, width, height, frameIndex, sampleFrame, config, input, world, true);
+            invProj, invViewProj, width, height, frameIndex, sampleFrame, config, input, true);
         return lighting.pass.IsValid() ? lighting.gi : RDGTextureHandle{};
     }
 
@@ -339,9 +332,10 @@ public:
     // and tone mapping without changing normal SceneColor or GI histories.
     static IrradiancePreviewOutput AddIrradiancePreviewToGraph(RDGBuilder& graph,
         ResourceManager* resourceManager, PipelineManager* pipelineManager,
-        const DirectX::XMFLOAT4X4& view, const DirectX::XMFLOAT4X4& invProj,
+        const DirectX::XMFLOAT4X4& view, const DirectX::XMFLOAT4X4& invProj, const DirectX::XMFLOAT4X4& invViewProj,
         UINT width, UINT height, int frameIndex, uint32_t traceDownsampleFactor,
-        const Input& input, RDGTextureHandle filteredGI, float intensity, RDGTextureHandle receiverGuide = {})
+        const Input& input, RDGTextureHandle filteredGI, const SSGIConfig& config, RDGTextureHandle receiverGuide,
+        const ProbeData& probes)
     {
         if (!resourceManager || !pipelineManager || !width || !height || !filteredGI.IsValid() ||
             !SSGIConfig::IsValidTraceDownsampleFactor(static_cast<int>(traceDownsampleFactor))) return {};
@@ -365,13 +359,14 @@ public:
         const auto target = graph.CreateTexture(desc, D3D12_RESOURCE_STATE_COMMON,
             D3D12_RESOURCE_STATE_COMMON, "SSGI.IrradiancePreview");
         if (!target.IsValid()) return {};
-        const auto pass = AddCompositeToGraph(graph, resourceManager, pipelineManager, view, invProj,
-            width, height, frameIndex, traceDownsampleFactor, views, {target, filteredGI}, intensity, true, receiverGuide);
+        auto previewProbes = probes;
+        previewProbes.diagnostics = {}; // The ordinary composite already counted these pixels.
+        const auto pass = AddCompositeToGraph(graph, resourceManager, pipelineManager, view, invProj, invViewProj,
+            width, height, frameIndex, traceDownsampleFactor, views, {target, filteredGI}, config, true, receiverGuide, previewProbes);
         return pass.IsValid() ? IrradiancePreviewOutput{target, pass} : IrradiancePreviewOutput{};
     }
 
 private:
-    using WorldAddresses = std::array<D3D12_GPU_VIRTUAL_ADDRESS, 6>;
     static UINT TraceExtent(UINT dimension, uint32_t factor)
     {
         return dimension / factor + (dimension % factor != 0 ? 1u : 0u);
@@ -381,49 +376,44 @@ private:
         RDGTextureHandle gi;
         RDGPassHandle pass;
         TextureViews views;
-        RDGTextureHandle raw, reconstructed, worldDisplay, worldOwners;
+        RDGTextureHandle raw, reconstructed, probeDirections;
         RDGTextureHandle receiverGuide,probePosition,probeNormal,probeFiltered;
+        ProbeData probes;
     };
     static LightingOutput AddLightingToGraph(RDGBuilder& graph, ResourceManager* resourceManager,
         PipelineManager* pipelineManager, const SSGIHistoryState& history,
         const DirectX::XMFLOAT4X4& view, const DirectX::XMFLOAT4X4& proj,
         const DirectX::XMFLOAT4X4& invProj, const DirectX::XMFLOAT4X4& invViewProj, UINT width, UINT height,
         int frameIndex, UINT sampleFrame, const SSGIConfig& config, const Input& input,
-        const WorldInput* world, bool previewHistory)
+        bool previewHistory)
     {
         if (!resourceManager || !pipelineManager || width == 0 || height == 0 ||
             !SSGIConfig::IsValidTraceDownsampleFactor(config.traceDownsampleFactor) ||
-            !SSGIConfig::IsValidMeshMinHitDistance(config.worldMeshMinHitDistance) ||
-            !config.HasValidTraceDistances()) return {};
-        if (config.screenProbes && (!config.HasValidScreenProbeRayCounts() || !config.HasValidScreenProbeJitter() ||
-            config.screenProbeHistoryUpdates < 1 || config.screenProbeHistoryUpdates > 32)) return {};
+            !config.HasValidTraceDistances() || !config.HasValidTraceIterations()) return {};
+        if (config.screenProbes && (!config.HasValidScreenProbeSamples() || !config.HasValidScreenProbeJitter() ||
+            !config.HasValidScreenProbeAdaptive() ||
+            config.screenProbeHistoryUpdates < 1 || config.screenProbeHistoryUpdates > 32 ||
+            !SSGIConfig::IsValidDenoiseDownsampleFactor(config.denoiseDownsampleFactor))) return {};
         const uint32_t traceDownsampleFactor = static_cast<uint32_t>(config.traceDownsampleFactor);
+        const uint32_t denoiseFactor = config.DenoiseFactor();
+        const UINT historyWidth = TraceExtent(width, denoiseFactor), historyHeight = TraceExtent(height, denoiseFactor);
         const UINT traceWidth = TraceExtent(width, traceDownsampleFactor), traceHeight = TraceExtent(height, traceDownsampleFactor);
         // A resolution/factor change must recreate both history sets before any
         // pass is recorded. Refuse mismatched resources rather than writing OOB.
         for (int index = 0; index < 2; ++index)
         {
             const auto& textures = resourceManager->GetSSGIHistoryTextures(index, previewHistory);
-            for (ID3D12Resource* texture : {textures.gi.Get(), textures.fastGI.Get(),
-                textures.screenBand.Get(), textures.meshBand.Get(), textures.globalBand.Get(),
-                textures.worldPolicy.Get(), textures.depth.Get(), textures.normal.Get()})
+            for (ID3D12Resource* texture : {textures.gi.Get(), textures.fastGI.Get(), textures.depth.Get(), textures.normal.Get()})
             {
                 if (!texture) return {};
                 const auto desc = texture->GetDesc();
-                const bool fullHistory = config.screenProbes && (texture == textures.gi.Get() || texture == textures.fastGI.Get() ||
+                const bool pixelHistory = config.screenProbes && (texture == textures.gi.Get() || texture == textures.fastGI.Get() ||
                     texture == textures.depth.Get() || texture == textures.normal.Get());
                 if (desc.Dimension != D3D12_RESOURCE_DIMENSION_TEXTURE2D ||
-                    desc.Width != (fullHistory ? width : traceWidth) || desc.Height != (fullHistory ? height : traceHeight))
+                    desc.Width != (pixelHistory ? historyWidth : traceWidth) || desc.Height != (pixelHistory ? historyHeight : traceHeight))
                     return {};
             }
-            for (ID3D12Resource* texture : {textures.globalOwnerRaw.Get(), textures.globalOwnerState.Get(),
-                textures.globalOwnerReceiver.Get()})
-            {
-                if (!texture) return {};
-                const auto desc = texture->GetDesc();
-                if (desc.Dimension != D3D12_RESOURCE_DIMENSION_TEXTURE2D ||
-                    desc.Width != 2u * ((traceWidth + 1u) / 2u) || desc.Height != (traceHeight + 1u) / 2u) return {};
-            }
+
         }
         D3D12_SHADER_RESOURCE_VIEW_DESC depthDesc = {};
         depthDesc.Format = RenderFormats::DepthSRV;
@@ -440,32 +430,34 @@ private:
             return {};
         }
         auto trace = AddTraceToGraph(graph, resourceManager, pipelineManager, view, proj, invProj, invViewProj, width, height,
-            frameIndex, sampleFrame, config, views, {input.bounceSource, input.emissive}, world, history, previewHistory);
+            frameIndex, sampleFrame, config, views, {input.world, input.emissive, input.diagnostics}, history, previewHistory);
         if (!trace.reconstructedGI.IsValid() || !trace.reconstructionPass.IsValid())
         {
             return {};
         }
         auto temporal = AddTemporalToGraph(graph, resourceManager, pipelineManager, width, height,
-            frameIndex, config.screenProbes ? 1u : traceDownsampleFactor, views,
+            frameIndex, denoiseFactor, views,
             {trace.reconstructedGI, trace.reprojectedGI, trace.reprojectedFast}, previewHistory, config.screenProbes ? RDGTextureHandle{} : trace.receiverGuide,
-            config.screenProbes ? traceDownsampleFactor : 1u);
+            config.screenProbes ? (traceDownsampleFactor + denoiseFactor - 1u) / denoiseFactor : 1u);
         if (!temporal.gi.IsValid() || !temporal.pass.IsValid())
         {
             return {};
         }
         auto spatial = AddAtrousToGraph(graph, resourceManager, pipelineManager, view, invProj, width, height,
-            frameIndex, config.screenProbes ? 1u : traceDownsampleFactor, views, {temporal.moments, temporal.gi}, config.screenProbes ? RDGTextureHandle{} : trace.receiverGuide);
+            frameIndex, denoiseFactor, views, {temporal.moments, temporal.gi}, config.screenProbes ? RDGTextureHandle{} : trace.receiverGuide);
         if (!spatial.gi.IsValid() || !spatial.pass.IsValid())
         {
             return {};
         }
-        return {spatial.gi, spatial.pass, views, trace.rawGI, trace.reconstructedGI, trace.worldDisplay, trace.worldOwners,trace.receiverGuide,trace.probePosition,trace.probeNormal,trace.probeFiltered};
+        trace.probes.validity = temporal.gi;
+        return {spatial.gi, spatial.pass, views, trace.rawGI, trace.reconstructedGI, trace.probeDirections,trace.receiverGuide,trace.probePosition,trace.probeNormal,trace.probeFiltered,trace.probes};
     }
 
     struct TraceInput
     {
-        RDGTextureHandle bounceSource;
+        SurfaceCacheGIData::Bindings world;
         RDGTextureHandle emissive;
+        bool diagnostics = false;
     };
     struct TraceOutput
     {
@@ -475,9 +467,9 @@ private:
         RDGPassHandle reconstructionPass;
         RDGTextureHandle reprojectedGI;
         RDGTextureHandle reprojectedFast;
-        RDGTextureHandle worldDisplay;
-        RDGTextureHandle worldOwners;
+        RDGTextureHandle probeDirections;
         RDGTextureHandle receiverGuide,probePosition,probeNormal,probeFiltered;
+        ProbeData probes;
     };
 
 #include "ScreenProbeGather.inl"
@@ -486,13 +478,12 @@ private:
         PipelineManager* pipelineManager, const DirectX::XMFLOAT4X4& view, const DirectX::XMFLOAT4X4& proj,
         const DirectX::XMFLOAT4X4& invProj, const DirectX::XMFLOAT4X4& invViewProj,
         UINT width, UINT height, int frameIndex, UINT sampleFrame,
-        const SSGIConfig& config, const TextureViews& views, const TraceInput& input, const WorldInput* world,
+        const SSGIConfig& config, const TextureViews& views, const TraceInput& input,
         const SSGIHistoryState& history, bool previewHistory)
     {
         auto depth = views.depth;
         auto normal = views.normal;
         auto orm = views.orm;
-        auto source = graph.CreateTextureSRVView(input.bounceSource);
         const int historyIndex = resourceManager->GetSSGICurrentHistoryIdx(previewHistory);
         const auto& previous = resourceManager->GetSSGIHistoryTextures(1 - historyIndex, previewHistory);
         const auto& current = resourceManager->GetSSGIHistoryTextures(historyIndex, previewHistory);
@@ -504,27 +495,8 @@ private:
         auto previousFast = importHistory(previous.fastGI.Get(), "SSGI.PreviousFastGI");
         auto previousHistoryDepth = importHistory(previous.depth.Get(), "SSGI.PreviousDepth");
         auto previousNormal = importHistory(previous.normal.Get(), "SSGI.PreviousNormal");
-        auto previousScreenBand = importHistory(previous.screenBand.Get(), "SSGI.PreviousScreenBand");
-        auto previousWorldPolicy = importHistory(previous.worldPolicy.Get(), "SSGI.PreviousWorldPolicy");
-        auto previousMeshBand = importHistory(previous.meshBand.Get(), "SSGI.PreviousMeshBand");
-        auto previousGlobalBand = importHistory(previous.globalBand.Get(), "SSGI.PreviousGlobalBand");
-        auto currentScreenBand = graph.CreateTextureUAVView(graph.RegisterExternalTexture(
-            current.screenBand.Get(), D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_COMMON, "SSGI.CurrentScreenBand"));
-        auto currentWorldPolicy = graph.CreateTextureUAVView(graph.RegisterExternalTexture(
-            current.worldPolicy.Get(), D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_COMMON, "SSGI.CurrentWorldPolicy"));
-        auto currentMeshBand = graph.CreateTextureUAVView(graph.RegisterExternalTexture(
-            current.meshBand.Get(), D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_COMMON, "SSGI.CurrentMeshBand"));
-        auto currentGlobalBand = graph.CreateTextureUAVView(graph.RegisterExternalTexture(
-            current.globalBand.Get(), D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_COMMON, "SSGI.CurrentGlobalBand"));
-        if (!depth.IsValid() || !normal.IsValid() || !orm.IsValid() || !source.IsValid() ||
-            !previousGI.IsValid() || !previousFast.IsValid() || !previousHistoryDepth.IsValid() || !previousNormal.IsValid() ||
-            !previousScreenBand.IsValid() || !previousWorldPolicy.IsValid() ||
-            !previousMeshBand.IsValid() || !previousGlobalBand.IsValid() ||
-            !currentScreenBand.IsValid() || !currentWorldPolicy.IsValid() ||
-            !currentMeshBand.IsValid() || !currentGlobalBand.IsValid())
-        {
-            return {};
-        }
+        if (!depth.IsValid() || !normal.IsValid() || !orm.IsValid() ||
+            !previousGI.IsValid() || !previousFast.IsValid() || !previousHistoryDepth.IsValid() || !previousNormal.IsValid()) return {};
 
         auto noiseTexture = graph.RegisterExternalTexture(resourceManager->GetBlueNoiseTexture(),
             D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
@@ -545,20 +517,11 @@ private:
         traceParams.ReadComputeSRV(depth);
         traceParams.ReadComputeSRV(normal);
         traceParams.ReadComputeSRV(orm);
-        traceParams.ReadComputeSRV(views.albedo);
-        traceParams.ReadComputeSRV(source);
         traceParams.ReadComputeSRV(noise);
         traceParams.ReadComputeSRV(previousGI);
         traceParams.ReadComputeSRV(previousFast);
         traceParams.ReadComputeSRV(previousHistoryDepth);
         traceParams.ReadComputeSRV(previousNormal);
-        traceParams.ReadComputeSRV(previousScreenBand);
-        traceParams.ReadComputeSRV(previousWorldPolicy);
-        // SharedWorld produces quality/provenance; Trace and Repair read/update
-        // it through the same R32_UINT UAV. RDG orders their UAV accesses.
-        traceParams.WriteUAV(currentWorldPolicy);
-        traceParams.ReadComputeSRV(previousMeshBand);
-        traceParams.ReadComputeSRV(previousGlobalBand);
         SSGITraceConstants trace = {};
         trace.view = view;
         trace.proj = proj;
@@ -572,21 +535,15 @@ private:
         trace.previousDepthIndex = previousHistoryDepth.descriptorIndex;
         trace.previousNormalIndex = previousNormal.descriptorIndex;
         trace.historyValid = history.valid;
-        trace.probeNeighborsIndex = UINT_MAX; // Missing topology uses the original lookup.
-        trace.previousMeshBandIndex = previousMeshBand.descriptorIndex;
-        trace.previousGlobalBandIndex = previousGlobalBand.descriptorIndex;
-        trace.currentMeshBandIndex = currentMeshBand.descriptorIndex;
-        trace.currentGlobalBandIndex = currentGlobalBand.descriptorIndex;
         trace.width = width;
         trace.height = height;
         trace.traceDownsampleFactor = static_cast<uint32_t>(config.traceDownsampleFactor);
+        trace.denoiseDownsampleFactor = config.DenoiseFactor();
         trace.outputWidth = TraceExtent(width, trace.traceDownsampleFactor);
         trace.outputHeight = TraceExtent(height, trace.traceDownsampleFactor);
         trace.depthIndex = depth.descriptorIndex;
         trace.normalIndex = normal.descriptorIndex;
         trace.ormIndex = orm.descriptorIndex;
-        trace.albedoIndex = views.albedo.descriptorIndex;
-        trace.sourceIndex = source.descriptorIndex;
         trace.frameIndex = sampleFrame;
         trace.blueNoiseIndex = noise.descriptorIndex;
         constexpr float TraceThickness = 0.15f;
@@ -594,126 +551,25 @@ private:
         trace.radius = config.screenTraceDistance;
         trace.thickness = TraceThickness;
         trace.normalBias = TraceNormalBias;
-        // Screen remains four member observations per 2x2. Each world tile uses
-        // its configured near/far count at the camera-selected sharing span.
-        // rayCount remains reserved for the constant ABI.
+        // Legacy pixel tracing uses four screen observations; probe budgets are explicit.
         // Hi-Z budgets count visited cells/descents, not sample directions.
-        trace.rayCount = 1;
-        trace.maxIterations = 64;
+        trace.maxIterations = static_cast<uint32_t>(config.maxTraceIterations);
 
-        WorldAddresses worldAddresses = {};
-        // Bind legal addresses even for unused resources in screen-only shaders.
-        ID3D12Resource* fallbackBuffer = world && world->materialBuffer ? world->materialBuffer : resourceManager->GetMaterialBuffer();
-        worldAddresses.fill(fallbackBuffer ? fallbackBuffer->GetGPUVirtualAddress() : resourceManager->GetCBVGPUAddress(frameIndex));
-        trace.hybrid.worldMeshMaxTraceDistance = config.worldMeshMaxTraceDistance;
-        trace.hybrid.worldMaxTraceDistance = config.worldMaxTraceDistance;
-        trace.hybrid.worldMode = EffectiveWorldMode(world, frameIndex);
-        if (trace.hybrid.worldMode)
+        // Root buffers are immutable for this retired frame slot, prepared before
+        // graph recording. Upload heaps retain GENERIC_READ; atlas/field states
+        // are declared here and restored for their persistent owners.
+        for(UINT i=0;i<5;++i)
         {
-            if (!world->distanceCache)
-            {
-                ErrorLog::Write("SSGI: world probe visibility cache is required.");
-                return {};
-            }
-            const auto& grid = world->scene->GetGrid(frameIndex);
-            trace.hybrid.gridOrigin = grid.origin;
-            trace.hybrid.cellSize = grid.cellSize;
-            trace.hybrid.cellDimensions = {grid.cellDimensions[0], grid.cellDimensions[1], grid.cellDimensions[2]};
-            trace.hybrid.boundsMaximum = grid.boundsMaximum;
-            trace.hybrid.voxelSize = world->voxelSize;
-            trace.hybrid.probeCount = world->probeCount;
-            trace.hybrid.nodeCount = world->scene->GetDistanceNodeCount(frameIndex);
-            trace.hybrid.assetCount = world->scene->GetAssetCount(frameIndex);
-            trace.hybrid.instanceCount = world->scene->GetInstanceCount(frameIndex);
-            trace.hybrid.bvhNodeCount = world->scene->GetInstanceBVHNodeCount(frameIndex);
-            trace.hybrid.reservedLighting1.y = config.worldMeshMinHitDistance;
-            const auto bind = [&](UINT binding, ID3D12Resource* buffer, const char* name) {
-                const auto handle = graph.RegisterExternalBuffer(buffer, VXGIGPUScene::ReadState,
-                    VXGIGPUScene::ReadState, name);
-                traceParams.ReadSRV(handle);
-                worldAddresses[binding] = buffer->GetGPUVirtualAddress();
-            };
-            bind(0, world->scene->Get(frameIndex, 0), "SSGI.SDFNodes");
-            bind(1, world->scene->Get(frameIndex, 5), "SSGI.ProbeLookup");
-            bind(2, world->rawRecords, "SSGI.RawProbeSH");
-            bind(3, world->scene->Get(frameIndex, 7), "SSGI.MeshSDFAssets");
-            bind(4, world->scene->Get(frameIndex, 8), "SSGI.MeshSDFInstances");
-            bind(5, world->scene->Get(frameIndex, 10), "SSGI.InstanceBVH");
-#if SSGI_MESH_ORIGIN_CONFIRMATION_ENABLED
-            // Reuse the existing cell lists and triangles for near-origin hit confirmation.
-            // Descriptor indices occupy reserved constants; the root layout is unchanged.
-            const char* geometryNames[] = {"SSGI.MeshCellOffsets", "SSGI.MeshTriangleReferences", "SSGI.MeshTriangles"};
-            for (UINT i = 0; i < 3; ++i)
-            {
-                auto* resource = world->scene->Get(frameIndex, i + 1);
-                const auto buffer = graph.RegisterExternalBuffer(resource, VXGIGPUScene::ReadState,
-                    VXGIGPUScene::ReadState, geometryNames[i]);
-                D3D12_SHADER_RESOURCE_VIEW_DESC desc{};
-                desc.Format = DXGI_FORMAT_UNKNOWN;
-                desc.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
-                desc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-                desc.Buffer.StructureByteStride = i == 2 ? sizeof(VXGIMeshSDFGPUData::Triangle) : sizeof(uint32_t);
-                desc.Buffer.NumElements = static_cast<UINT>(resource->GetDesc().Width / desc.Buffer.StructureByteStride);
-                const auto view = graph.CreateBufferSRVView(buffer, &desc);
-                if (!view.IsValid()) return {};
-                traceParams.ReadSRV(view);
-                float* index = i == 0 ? &trace.hybrid.reservedLighting0.y
-                    : i == 1 ? &trace.hybrid.reservedLighting0.z : &trace.hybrid.reservedLighting1.x;
-                memcpy(index, &view.descriptorIndex, sizeof(uint32_t));
-            }
-#endif
-            if(world->probeCount)
-            {
-                const auto buffer=graph.RegisterExternalBuffer(world->distanceCache,VXGIGPUScene::ReadState,
-                    VXGIGPUScene::ReadState,"SSGI.ProbeDistance");
-                D3D12_SHADER_RESOURCE_VIEW_DESC desc{};desc.Format=DXGI_FORMAT_UNKNOWN;
-                desc.ViewDimension=D3D12_SRV_DIMENSION_BUFFER;desc.Shader4ComponentMapping=D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-                desc.Buffer.NumElements=world->probeCount*64;desc.Buffer.StructureByteStride=8;
-                const auto distanceView=graph.CreateBufferSRVView(buffer,&desc);
-                if(!distanceView.IsValid() || distanceView.descriptorIndex == 0u) return {};
-                traceParams.ReadSRV(distanceView);
-                memcpy(&trace.hybrid.reservedLighting0.x,&distanceView.descriptorIndex,sizeof(uint32_t));
-            }
-            if (auto* neighbors = world->scene->Get(frameIndex, 6); neighbors && world->probeCount)
-            {
-                const auto buffer = graph.RegisterExternalBuffer(neighbors, VXGIGPUScene::ReadState,
-                    VXGIGPUScene::ReadState, "SSGI.ProbeNeighbors");
-                D3D12_SHADER_RESOURCE_VIEW_DESC neighborDesc{};
-                neighborDesc.Format = DXGI_FORMAT_UNKNOWN;
-                neighborDesc.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
-                neighborDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-                neighborDesc.Buffer.NumElements = world->probeCount;
-                neighborDesc.Buffer.StructureByteStride = static_cast<UINT>(sizeof(VXGIProbeTopology::NeighborRecord));
-                const auto neighborView = graph.CreateBufferSRVView(buffer, &neighborDesc);
-                if (!neighborView.IsValid()) return {};
-                traceParams.ReadSRV(neighborView);
-                trace.probeNeighborsIndex = neighborView.descriptorIndex;
-            }
-            if (world->globalSDF && world->globalSDF->GetPass().GetTexture() &&
-                (world->globalSDF->GetState().HasPendingPlan() || world->globalSDF->GetState().IsInitialized()))
-            {
-                const auto texture = graph.RegisterExternalTexture(world->globalSDF->GetPass().GetTexture(),
-                    D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
-                    "SSGI.GlobalSDF");
-                D3D12_SHADER_RESOURCE_VIEW_DESC globalDesc{};
-                globalDesc.Format = DXGI_FORMAT_R32_FLOAT;
-                globalDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE3D;
-                globalDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-                globalDesc.Texture3D.MipLevels = 1;
-                const auto globalView = graph.CreateTextureSRVView(texture, &globalDesc);
-                if (!globalView.IsValid() || !std::isfinite(world->globalTraceDistance) ||
-                    world->globalTraceDistance <= 0 || !world->globalMaxSteps) return {};
-                traceParams.ReadComputeSRV(globalView);
-                trace.global.enabled = 1;
-                trace.global.textureIndex = globalView.descriptorIndex;
-                trace.global.maxTraceDistance = config.worldMaxTraceDistance;
-                trace.global.maxSteps = world->globalMaxSteps;
-                const auto& state = world->globalSDF->GetState();
-                trace.global.constants = state.HasPendingPlan() ?
-                    state.GetPendingPlan().layout.constants : state.GetLayout().constants;
-            }
+            const auto texture=graph.RegisterExternalTexture(input.world.textures[i],SurfaceCacheCapturePass::ReadState,
+                SurfaceCacheCapturePass::ReadState,"SSGI.SurfaceCache");
+            traceParams.ReadComputeSRV(texture);
         }
-
+        if(input.world.globalEnabled)
+        {
+            const auto texture=graph.RegisterExternalTexture(input.world.textures[5],D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
+                D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,"SSGI.GlobalSDF");
+            traceParams.ReadComputeSRV(texture);
+        }
         auto previousDepth = depth;
         UINT sourceWidth = width, sourceHeight = height;
         for (UINT level = 0; level < SSGIMaxLevels; ++level)
@@ -766,241 +622,34 @@ private:
 
         if (config.screenProbes)
             return AddScreenProbesToGraph(graph, resourceManager, pipelineManager, frameIndex,
-                trace, traceParams, worldAddresses, config, previewHistory, input.emissive);
+                trace, traceParams, config, previewHistory, input.world, input.emissive, input.diagnostics);
 
-        // Fixed compatibility values for the inactive legacy path. These are
-        // not settings and do not participate in screen-probe history identity.
-        constexpr bool LegacyWorldSharing = true, LegacySpatialFilter = false;
-        constexpr float LegacyNearDistance = 2.0f, LegacyNearExitDistance = 2.2f;
-        constexpr uint32_t LegacyNearRayCount = 8, LegacyFarRayCount = 8;
-        constexpr uint32_t LegacyHistoryUpdates = 1, LegacySpatialStep = 2;
+        const auto feedback=graph.RegisterExternalBuffer(input.world.feedback,D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+            D3D12_RESOURCE_STATE_UNORDERED_ACCESS,"SurfaceCache.CardFeedback");
+        traceParams.WriteUAV(feedback);
 
-        // Preserve every mip's x descriptor while reusing its formerly reserved
-        // yzw channels. Keep this after the pyramid's uint4 initializations.
-        trace.levels[0].y = previousScreenBand.descriptorIndex;
-        trace.levels[0].z = currentScreenBand.descriptorIndex;
-        trace.levels[0].w = UINT_MAX; // Sparse screen lighting, supplied below.
-        trace.levels[1].y = UINT_MAX; // Sparse screen receiver, supplied below.
-        trace.levels[1].z = previousWorldPolicy.descriptorIndex;
-        trace.levels[1].w = currentWorldPolicy.descriptorIndex;
-        const float nearDistanceSquared = LegacyNearDistance * LegacyNearDistance;
-        const float nearExitDistanceSquared = LegacyNearExitDistance * LegacyNearExitDistance;
-        memcpy(&trace.levels[2].y, &nearDistanceSquared, sizeof(nearDistanceSquared));
-        memcpy(&trace.levels[2].z, &nearExitDistanceSquared, sizeof(nearExitDistanceSquared));
-        trace.levels[2].w = static_cast<uint32_t>(LegacyNearRayCount);
-        trace.levels[3].y = static_cast<uint32_t>(LegacyFarRayCount);
-        // Owner caching uses only reserved channels; all depth-pyramid x
-        // descriptors and the 1024-byte trace constant ABI remain unchanged.
-        trace.levels[3].z = trace.levels[3].w = UINT_MAX;
-        trace.levels[4].y = trace.levels[4].z = UINT_MAX;
-        trace.levels[5].y = UINT_MAX;
-        trace.levels[5].z = static_cast<uint32_t>(LegacyHistoryUpdates);
-        trace.levels[6].z = 0u;
-
-        auto raw = CreateUAVTexture(
-            graph, trace.outputWidth, trace.outputHeight, RenderFormats::IndirectLighting, "SSGI.RawGI");
+        auto raw = CreateUAVTexture(graph, trace.outputWidth, trace.outputHeight, RenderFormats::IndirectLighting, "SSGI.RawGI");
+        auto reprojectedGI = CreateUAVTexture(graph, trace.outputWidth, trace.outputHeight, DXGI_FORMAT_R32G32B32A32_FLOAT, "SSGI.ReprojectedGI");
+        auto reprojectedFast = CreateUAVTexture(graph, trace.outputWidth, trace.outputHeight, DXGI_FORMAT_R32G32B32A32_FLOAT, "SSGI.ReprojectedFast");
         auto rawUav = graph.CreateTextureUAVView(raw);
-        // Reprojection is computed once in Trace and consumed by Temporal.
-        // Float32 preserves its interpolated colors, moments and sample count.
-        auto reprojectedGI = CreateUAVTexture(graph, trace.outputWidth, trace.outputHeight,
-            DXGI_FORMAT_R32G32B32A32_FLOAT, "SSGI.ReprojectedGI");
-        auto reprojectedFast = CreateUAVTexture(graph, trace.outputWidth, trace.outputHeight,
-            DXGI_FORMAT_R32G32B32A32_FLOAT, "SSGI.ReprojectedFastGI");
-        auto reprojectedGIUav = graph.CreateTextureUAVView(reprojectedGI);
-        auto reprojectedFastUav = graph.CreateTextureUAVView(reprojectedFast);
-        if (!rawUav.IsValid() || !reprojectedGIUav.IsValid() || !reprojectedFastUav.IsValid())
-        {
-            return {};
-        }
+        auto rawSrv = graph.CreateTextureSRVView(raw);
+        auto reprojectedGIUav = graph.CreateTextureUAVView(reprojectedGI), reprojectedFastUav = graph.CreateTextureUAVView(reprojectedFast);
+        if (!rawUav.IsValid() || !rawSrv.IsValid() || !reprojectedGIUav.IsValid() || !reprojectedFastUav.IsValid()) return {};
         trace.outputIndex = rawUav.descriptorIndex;
         trace.reprojectedGIIndex = reprojectedGIUav.descriptorIndex;
         trace.reprojectedFastIndex = reprojectedFastUav.descriptorIndex;
-        RDGTextureUAVHandle repairQueueUav{}, repairCountUav{}, worldDisplayUav{};
-        RDGTextureSRVHandle worldDisplaySrv{};
-        RDGTextureHandle worldDisplay{};
-        RDGTextureHandle worldOwners{};
-        if (LegacyWorldSharing)
-        {
-            // Screen uses fixed 2x2. World estimates choose 2x2 or 4x4;
-            // coarse estimates are replicated into four fine-grid atlas slots.
-            // Separate screen / Mesh / Global histories retain their own ages.
-            trace.sharedMeshSpan = 2u;
-            const UINT meshSpan = trace.sharedMeshSpan;
-            const UINT globalSpan = meshSpan;
-            const UINT meshWidth = (trace.outputWidth + meshSpan - 1u) / meshSpan;
-            const UINT meshHeight = (trace.outputHeight + meshSpan - 1u) / meshSpan;
-            const UINT globalWidth = (trace.outputWidth + globalSpan - 1u) / globalSpan;
-            const UINT globalHeight = (trace.outputHeight + globalSpan - 1u) / globalSpan;
-            const auto screenLighting = CreateUAVTexture(graph, meshWidth, meshHeight,
-                RenderFormats::IndirectLighting, "SSGI.SharedScreenLighting");
-            const auto screenReceiver = CreateUAVTexture(graph, meshWidth, meshHeight,
-                DXGI_FORMAT_R32_UINT, "SSGI.SharedScreenReceiver");
-            const bool cacheWorldOwners = trace.hybrid.worldMode != 0u;
-            const auto globalLighting = cacheWorldOwners ? graph.RegisterExternalTexture(
-                current.globalOwnerRaw.Get(), D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_COMMON,
-                "SSGI.CurrentWorldOwnerRaw") : CreateUAVTexture(graph, globalWidth, globalHeight,
-                RenderFormats::IndirectLighting, "SSGI.SharedGlobalLighting");
-            const auto globalReceiver = cacheWorldOwners ? graph.RegisterExternalTexture(
-                current.globalOwnerReceiver.Get(), D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_COMMON,
-                "SSGI.CurrentWorldOwnerReceiver") : CreateUAVTexture(graph, globalWidth, globalHeight,
-                DXGI_FORMAT_R32_UINT, "SSGI.SharedGlobalReceiver");
-            const auto meshLighting = cacheWorldOwners ? globalLighting : CreateUAVTexture(graph, meshWidth, meshHeight,
-                RenderFormats::IndirectLighting, "SSGI.SharedMeshLighting");
-            const auto meshReceiver = cacheWorldOwners ? globalReceiver : CreateUAVTexture(graph, meshWidth, meshHeight,
-                DXGI_FORMAT_R32_UINT, "SSGI.SharedMeshReceiver");
-            if (cacheWorldOwners) worldOwners = globalLighting;
-            RDGTextureSRVHandle previousOwnerRaw{}, previousOwnerState{}, previousOwnerReceiver{};
-            RDGTextureUAVHandle ownerStateUav{};
-            if (cacheWorldOwners)
-            {
-                previousOwnerRaw = importHistory(previous.globalOwnerRaw.Get(), "SSGI.PreviousWorldOwnerRaw");
-                previousOwnerState = importHistory(previous.globalOwnerState.Get(), "SSGI.PreviousWorldOwnerState");
-                previousOwnerReceiver = importHistory(previous.globalOwnerReceiver.Get(), "SSGI.PreviousWorldOwnerReceiver");
-                const auto ownerState = graph.RegisterExternalTexture(current.globalOwnerState.Get(),
-                    D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_COMMON, "SSGI.CurrentWorldOwnerState");
-                ownerStateUav = graph.CreateTextureUAVView(ownerState);
-                worldDisplay = CreateUAVTexture(graph, trace.outputWidth, trace.outputHeight,
-                    RenderFormats::IndirectLighting, "SSGI.WorldDisplay");
-                worldDisplayUav = graph.CreateTextureUAVView(worldDisplay);
-                worldDisplaySrv = graph.CreateTextureSRVView(worldDisplay);
-                if (!previousOwnerRaw.IsValid() || !previousOwnerState.IsValid() || !previousOwnerReceiver.IsValid() ||
-                    !ownerStateUav.IsValid() ||
-                    !worldDisplayUav.IsValid() || !worldDisplaySrv.IsValid()) return {};
-                trace.levels[3].z = previousOwnerRaw.descriptorIndex;
-                trace.levels[3].w = previousOwnerState.descriptorIndex;
-                trace.levels[4].y = previousOwnerReceiver.descriptorIndex;
-                trace.levels[5].y = worldDisplayUav.descriptorIndex;
-                trace.levels[6].z = 1u;
-            }
-            const auto screenLightingUav = graph.CreateTextureUAVView(screenLighting);
-            const auto screenReceiverUav = graph.CreateTextureUAVView(screenReceiver);
-            const auto screenLightingSrv = graph.CreateTextureSRVView(screenLighting);
-            const auto screenReceiverSrv = graph.CreateTextureSRVView(screenReceiver);
-            const auto globalLightingUav = graph.CreateTextureUAVView(globalLighting);
-            const auto globalReceiverUav = graph.CreateTextureUAVView(globalReceiver);
-            const auto globalLightingSrv = graph.CreateTextureSRVView(globalLighting);
-            const auto globalReceiverSrv = graph.CreateTextureSRVView(globalReceiver);
-            const auto meshLightingUav = cacheWorldOwners ? globalLightingUav : graph.CreateTextureUAVView(meshLighting);
-            const auto meshReceiverUav = cacheWorldOwners ? globalReceiverUav : graph.CreateTextureUAVView(meshReceiver);
-            const auto meshLightingSrv = cacheWorldOwners ? globalLightingSrv : graph.CreateTextureSRVView(meshLighting);
-            const auto meshReceiverSrv = cacheWorldOwners ? globalReceiverSrv : graph.CreateTextureSRVView(meshReceiver);
-            if (!screenLightingUav.IsValid() || !screenReceiverUav.IsValid() ||
-                !screenLightingSrv.IsValid() || !screenReceiverSrv.IsValid() ||
-                !meshLightingUav.IsValid() || !meshReceiverUav.IsValid() ||
-                !globalLightingUav.IsValid() || !globalReceiverUav.IsValid() ||
-                !meshLightingSrv.IsValid() || !meshReceiverSrv.IsValid() ||
-                !globalLightingSrv.IsValid() || !globalReceiverSrv.IsValid()) return {};
-            auto shared = trace;
-            shared.worldSharingEnabled = 1;
-            shared.levels[0].w = screenLightingUav.descriptorIndex;
-            shared.levels[1].y = screenReceiverUav.descriptorIndex;
-            shared.sharedMeshLightingIndex = meshLightingUav.descriptorIndex;
-            shared.sharedMeshReceiverIndex = meshReceiverUav.descriptorIndex;
-            shared.sharedGlobalLightingIndex = globalLightingUav.descriptorIndex;
-            shared.sharedGlobalReceiverIndex = globalReceiverUav.descriptorIndex;
-            if (cacheWorldOwners) shared.levels[4].z = ownerStateUav.descriptorIndex;
-            const auto sharedAllocation = resourceManager->AllocatePassConstants(frameIndex, sizeof(shared));
-            if (!sharedAllocation) return {};
-            memcpy(sharedAllocation.cpuAddress, &shared, sizeof(shared));
-            const auto sharedAddress = sharedAllocation.gpuAddress;
-            auto sharedParams = traceParams;
-            sharedParams.WriteUAV(screenLightingUav);
-            sharedParams.WriteUAV(screenReceiverUav);
-            sharedParams.WriteUAV(meshLightingUav);
-            sharedParams.WriteUAV(meshReceiverUav);
-            if (!cacheWorldOwners)
-            {
-                sharedParams.WriteUAV(globalLightingUav);
-                sharedParams.WriteUAV(globalReceiverUav);
-            }
-            if (cacheWorldOwners)
-            {
-                sharedParams.ReadComputeSRV(previousOwnerRaw);
-                sharedParams.ReadComputeSRV(previousOwnerState);
-                sharedParams.ReadComputeSRV(previousOwnerReceiver);
-                sharedParams.WriteUAV(ownerStateUav);
-            }
-            auto* sharedPipeline = pipelineManager->GetSSGISharedWorldPSO();
-            graph.AddPass("SSGI.SharedWorld", ERDGPassFlags::Compute, sharedParams,
-                [=](ID3D12GraphicsCommandList* cmdList) {
-                    ExecuteComputeNoBarrier(cmdList, resourceManager, pipelineManager, sharedPipeline,
-                        sharedAddress, meshWidth * 2u, meshHeight * 2u, &worldAddresses);
-                });
-            trace.worldSharingEnabled = 1;
-            trace.levels[0].w = screenLightingSrv.descriptorIndex;
-            trace.levels[1].y = screenReceiverSrv.descriptorIndex;
-            trace.sharedMeshLightingIndex = meshLightingSrv.descriptorIndex;
-            trace.sharedMeshReceiverIndex = meshReceiverSrv.descriptorIndex;
-            trace.sharedGlobalLightingIndex = globalLightingSrv.descriptorIndex;
-            trace.sharedGlobalReceiverIndex = globalReceiverSrv.descriptorIndex;
-            if (cacheWorldOwners) traceParams.WriteUAV(worldDisplayUav);
-            const auto repairQueue = CreateUAVTexture(graph, trace.outputWidth, trace.outputHeight,
-                DXGI_FORMAT_R32_UINT, "SSGI.SharedRepairQueue");
-            const auto repairCount = CreateUAVTexture(graph, 1, 1,
-                DXGI_FORMAT_R32_UINT, "SSGI.SharedRepairCount");
-            repairQueueUav = graph.CreateTextureUAVView(repairQueue);
-            repairCountUav = graph.CreateTextureUAVView(repairCount);
-            if (!repairQueueUav.IsValid() || !repairCountUav.IsValid()) return {};
-            trace.sharedRepairQueueIndex = repairQueueUav.descriptorIndex;
-            trace.sharedRepairCountIndex = repairCountUav.descriptorIndex;
-            traceParams.ReadComputeSRV(screenLightingSrv);
-            traceParams.ReadComputeSRV(screenReceiverSrv);
-            traceParams.ReadComputeSRV(meshLightingSrv);
-            traceParams.ReadComputeSRV(meshReceiverSrv);
-            if (!cacheWorldOwners)
-            {
-                traceParams.ReadComputeSRV(globalLightingSrv);
-                traceParams.ReadComputeSRV(globalReceiverSrv);
-            }
-            traceParams.WriteUAV(repairQueueUav);
-            traceParams.WriteUAV(repairCountUav);
-        }
         auto allocation = resourceManager->AllocatePassConstants(frameIndex, sizeof(trace));
-        if (!allocation)
-        {
-            return {};
-        }
+        if (!allocation) return {};
         memcpy(allocation.cpuAddress, &trace, sizeof(trace));
         auto address = allocation.gpuAddress;
-        if (trace.worldSharingEnabled)
-        {
-            RDGPassParameters clearParams;
-            clearParams.WriteUAV(repairCountUav);
-            graph.AddPass("SSGI.ClearRepairs", ERDGPassFlags::Compute, clearParams,
-                [=](ID3D12GraphicsCommandList* cmdList) {
-                    ExecuteComputeNoBarrier(cmdList, resourceManager, pipelineManager,
-                        pipelineManager->GetSSGISharedClearPSO(), address, 1, 1, &worldAddresses);
-                });
-        }
-        auto* tracePipeline = trace.worldSharingEnabled ? pipelineManager->GetSSGISharedTracePSO() :
-            pipelineManager->GetSSGITracePSO();
-        traceParams.WriteUAV(rawUav);
-        traceParams.WriteUAV(reprojectedGIUav);
-        traceParams.WriteUAV(reprojectedFastUav);
-        traceParams.WriteUAV(currentScreenBand);
-        traceParams.WriteUAV(currentMeshBand);
-        traceParams.WriteUAV(currentGlobalBand);
-        auto pass =
-            graph.AddPass("SSGI.Trace", ERDGPassFlags::Compute, traceParams, [=](ID3D12GraphicsCommandList* cmdList) {
-            ExecuteComputeNoBarrier(cmdList, resourceManager, pipelineManager, tracePipeline,
-                address, trace.outputWidth, trace.outputHeight, &worldAddresses);
+        traceParams.WriteUAV(rawUav); traceParams.WriteUAV(reprojectedGIUav); traceParams.WriteUAV(reprojectedFastUav);
+        auto pass = graph.AddPass("SSGI.Trace", ERDGPassFlags::Compute, traceParams, [=](ID3D12GraphicsCommandList* cmdList) {
+            ExecuteComputeNoBarrier(cmdList, resourceManager, pipelineManager, pipelineManager->GetSSGITracePSO(), address, trace.outputWidth, trace.outputHeight,&input.world);
         });
-        if (trace.worldSharingEnabled)
-        {
-            // The fixed upper-bound dispatch has only a compact prefix doing
-            // ray work; empty groups return after one count load. This avoids
-            // scattered edge repairs keeping every screen wave in world tracing.
-            pass = graph.AddPass("SSGI.RepairWorld", ERDGPassFlags::Compute, traceParams,
-                [=](ID3D12GraphicsCommandList* cmdList) {
-                    ExecuteComputeNoBarrier(cmdList, resourceManager, pipelineManager,
-                        pipelineManager->GetSSGISharedRepairPSO(), address,
-                        trace.outputWidth * 2u, trace.outputHeight * 2u, &worldAddresses);
-                });
-        }
         auto reconstructed = CreateUAVTexture(
             graph, trace.outputWidth, trace.outputHeight, RenderFormats::IndirectLighting, "SSGI.ReconstructedGI");
         auto reconstructedUav = graph.CreateTextureUAVView(reconstructed);
-        auto rawSrv = graph.CreateTextureSRVView(raw);
+
         if (!reconstructedUav.IsValid() || !rawSrv.IsValid())
         {
             return {};
@@ -1017,9 +666,6 @@ private:
         reconstruction.normalIndex = normal.descriptorIndex;
         reconstruction.ormIndex = orm.descriptorIndex;
         reconstruction.rawIndex = rawSrv.descriptorIndex;
-        reconstruction.padding[0] = worldDisplaySrv.IsValid() ? worldDisplaySrv.descriptorIndex : UINT_MAX;
-        reconstruction.padding[1] = trace.levels[6].z;
-        reconstruction.worldSpatialStep = LegacySpatialFilter ? static_cast<uint32_t>(LegacySpatialStep) : 0u;
 
         reconstruction.outputIndex = reconstructedUav.descriptorIndex;
         auto reconstructionAllocation = resourceManager->AllocatePassConstants(frameIndex, sizeof(reconstruction));
@@ -1034,14 +680,13 @@ private:
         reconstructionParams.ReadComputeSRV(normal);
         reconstructionParams.ReadComputeSRV(orm);
         reconstructionParams.ReadComputeSRV(rawSrv);
-        if (worldDisplaySrv.IsValid()) reconstructionParams.ReadComputeSRV(worldDisplaySrv);
         reconstructionParams.WriteUAV(reconstructedUav);
         auto reconstructionPass = graph.AddPass(
             "SSGI.Reconstruct", ERDGPassFlags::Compute, reconstructionParams, [=](ID3D12GraphicsCommandList* cmdList) {
             ExecuteComputeNoBarrier(cmdList, resourceManager, pipelineManager, pipelineManager->GetSSGIReconstructPSO(),
                 reconstructionAddress, reconstruction.outputWidth, reconstruction.outputHeight);
         });
-        return {raw, pass, reconstructed, reconstructionPass, reprojectedGI, reprojectedFast, worldDisplay, worldOwners};
+        return {raw, pass, reconstructed, reconstructionPass, reprojectedGI, reprojectedFast, {}};
     }
 
     static RDGTextureHandle CreateUAVTexture(
@@ -1057,19 +702,15 @@ private:
 
     static void ExecuteComputeNoBarrier(ID3D12GraphicsCommandList* cmdList, ResourceManager* resourceManager,
         PipelineManager* pipelineManager, ID3D12PipelineState* pso, D3D12_GPU_VIRTUAL_ADDRESS constants, UINT w, UINT h,
-        const WorldAddresses* worldAddresses = nullptr)
+        const SurfaceCacheGIData::Bindings* world=nullptr)
     {
         ID3D12DescriptorHeap* heaps[] = {resourceManager->GetMainDescriptorHeap()};
         cmdList->SetDescriptorHeaps(1, heaps);
         cmdList->SetComputeRootSignature(pipelineManager->GetSSGIRootSignature());
         cmdList->SetPipelineState(pso);
         cmdList->SetComputeRootConstantBufferView(PipelineManager::ConstantBufferBinding::Constants, constants);
-        if (worldAddresses)
-        {
-            for (UINT i = 0; i < worldAddresses->size(); ++i) cmdList->SetComputeRootShaderResourceView(i + 1, (*worldAddresses)[i]);
-            // Temporary worldMode SRV alias; see SSGIWorldMode() for the performance workaround rationale.
-            cmdList->SetComputeRootShaderResourceView(7, constants);
-        }
+        if(world)world->Bind(cmdList);
+
         cmdList->Dispatch((w + 7) / 8, (h + 7) / 8, 1);
     }
 
@@ -1313,9 +954,11 @@ private:
 
     static RDGPassHandle AddCompositeToGraph(RDGBuilder& graph, ResourceManager* resourceManager,
         PipelineManager* pipelineManager, const DirectX::XMFLOAT4X4& view, const DirectX::XMFLOAT4X4& invProj,
+        const DirectX::XMFLOAT4X4& invViewProj,
         UINT width, UINT height, int frameIndex, uint32_t traceDownsampleFactor, const TextureViews& views, const CompositeInput& input,
-        float intensity, bool giOnly, RDGTextureHandle receiverGuide = {})
+        const SSGIConfig& config, bool giOnly, RDGTextureHandle receiverGuide, const ProbeData& probes)
     {
+        if (!config.HasValidCameraFade()) return {};
         auto depth = views.depth;
         auto normal = views.normal;
         auto orm = views.orm;
@@ -1340,9 +983,47 @@ private:
         constants.ormIndex = orm.descriptorIndex;
         constants.albedoIndex = albedo.descriptorIndex;
         constants.giIndex = gi.descriptorIndex;
-        constants.intensity = intensity;
+        constants.intensity = config.intensity;
+        constants.cameraFadeStart = config.cameraFadeStart;
+        constants.cameraFadeEnd = config.cameraFadeEnd;
+        constants.cameraFadeEnabled = config.cameraFadeEnabled ? 1u : 0u;
+        constants.invViewProj = invViewProj;
         auto guide = receiverGuide.IsValid() ? graph.CreateTextureSRVView(receiverGuide) : RDGTextureSRVHandle{};
         constants.padding = guide.IsValid() ? guide.descriptorIndex + 1u : 0u;
+        RDGPassParameters params;
+        if (config.screenProbes)
+        {
+            auto validity = graph.CreateTextureSRVView(probes.validity);
+            if (!validity.IsValid()) return {};
+            constants.validityIndexPlusOne = validity.descriptorIndex + 1u;
+            params.ReadSRV(validity);
+            ScreenProbeLayout layout;
+            if (!ScreenProbeLayout::Calculate(width, height, static_cast<uint32_t>(config.traceDownsampleFactor),
+                config.screenProbeAdaptiveEnabled, config.screenProbeAdaptiveMaxFraction, layout)) return {};
+            if (layout.adaptiveCapacity > 0u)
+            {
+                constants.probeUniformSize = {layout.uniformWidth, layout.uniformHeight};
+                constants.probeAtlasSize = {layout.atlasWidth, layout.atlasHeight};
+                constants.probeFactor = static_cast<uint32_t>(config.traceDownsampleFactor);
+                constants.adaptiveCapacity = layout.adaptiveCapacity;
+                auto bind = [&](RDGTextureHandle texture, uint32_t& field) {
+                    auto srv = graph.CreateTextureSRVView(texture);
+                    if (!srv.IsValid()) return false;
+                    field = srv.descriptorIndex; params.ReadSRV(srv); return true;
+                };
+                if (!bind(probes.position, constants.probePositionIndex) || !bind(probes.normal, constants.probeNormalIndex) ||
+                    !bind(probes.receiver, constants.probeReceiverIndex) || !bind(probes.sh, constants.probeSHIndex) ||
+                    !bind(probes.adaptiveCount, constants.adaptiveCountIndex) || !bind(probes.tileHeader, constants.adaptiveHeaderIndex) ||
+                    !bind(probes.tileIndices, constants.adaptiveIndicesIndex)) return {};
+            }
+            if (probes.diagnostics.IsValid())
+            {
+                auto diagnostic = graph.CreateTextureUAVView(probes.diagnostics);
+                if (!diagnostic.IsValid()) return {};
+                constants.probeDiagnosticsIndexPlusOne = diagnostic.descriptorIndex + 1u;
+                params.WriteUAV(diagnostic);
+            }
+        }
         auto allocation = resourceManager->AllocatePassConstants(frameIndex, sizeof(constants));
         if (!allocation)
         {
@@ -1350,7 +1031,6 @@ private:
         }
         memcpy(allocation.cpuAddress, &constants, sizeof(constants));
         auto address = allocation.gpuAddress;
-        RDGPassParameters params;
         params.ReadSRV(depth);
         params.ReadSRV(normal);
         params.ReadSRV(orm);

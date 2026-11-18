@@ -39,6 +39,7 @@ cbuffer SHBuffer : register(b2)
 SamplerState s1 : register(s0);
 SamplerComparisonState shadowSampler : register(s1);
 SamplerState shadowDepthPointSampler : register(s2);
+SamplerState brdfLUTSampler : register(s3); // Linear Clamp: LUT edges must not wrap.
 
 struct VS_OUTPUT
 {
@@ -59,18 +60,10 @@ VS_OUTPUT VSMain(uint vertexID : SV_VertexID)
 }
 
 #include "LightingCommon.hlsli"
-#include "GISourceCommon.hlsli"
-
-#ifndef OUTPUT_BOUNCE_SOURCE
-#define OUTPUT_BOUNCE_SOURCE 0
-#endif
 
 struct PS_OUTPUT
 {
     float4 sceneColor : SV_Target0;
-#if OUTPUT_BOUNCE_SOURCE
-    float4 bounceSource : SV_Target1;
-#endif
 };
 
 PS_OUTPUT PSMain(VS_OUTPUT input)
@@ -145,7 +138,7 @@ PS_OUTPUT PSMain(VS_OUTPUT input)
     TextureCube tPrefilter = ResourceDescriptorHeap[iblPrefilterIdx];
     float3 prefilteredColor = tPrefilter.SampleLevel(s1, R, roughness * SPECULAR_IBL_MAX_MIP).rgb;
     Texture2D tBRDF = ResourceDescriptorHeap[iblBRDFIdx];
-    float2 brdf = tBRDF.Sample(s1, float2(max(dot(N, V), 0.0), roughness)).rg;
+    float2 brdf = tBRDF.Sample(brdfLUTSampler, float2(max(dot(N, V), 0.0), roughness)).rg;
     float3 specular_IBL = ComputeSplitSumSpecularIBL(prefilteredColor, brdf, F_IBL);
     float3 ambientSpecular = (specular_IBL * environmentIntensity) * finalAO;
     float3 ambient = ambientDiffuse + ambientSpecular;
@@ -158,11 +151,5 @@ PS_OUTPUT PSMain(VS_OUTPUT input)
     float3 color = PBR_Color + emissiveColor;
 
     output.sceneColor = float4(color, 1.0f);
-#if OUTPUT_BOUNCE_SOURCE
-    // Match the camera-independent world-hit source contract. SceneColor above
-    // retains its existing view-dependent BRDF and uncapped visible emission.
-    output.bounceSource = float4(GIComputeSourceRadiance(albedo, metallic,
-        radiance, NdotL, shadow, emissiveColor, false), 1.0f);
-#endif
     return output;
 }
